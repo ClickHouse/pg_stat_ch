@@ -491,4 +491,4 @@ Dropped events indicate the queue filled faster than the background worker could
 
 ## License
 
-This project is licensed under the same terms as PostgreSQL itself.
+This project is licensed under the Apache License, Version 2.0. See [LICENSE.md](LICENSE.md) for the full license text.
