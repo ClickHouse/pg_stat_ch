@@ -134,6 +134,19 @@ jobs:
           cmake --build build --parallel
           sudo cmake --install build
 
+      - name: Wait for ClickHouse HTTP interface
+        run: |
+          for i in {1..30}; do
+            if curl -sf 'http://localhost:18123/' --data 'SELECT 1' >/dev/null 2>&1; then
+              echo "ClickHouse HTTP ready"
+              exit 0
+            fi
+            echo "Waiting for ClickHouse HTTP... ($i/30)"
+            sleep 1
+          done
+          echo "ClickHouse HTTP not ready after 30s"
+          exit 1
+
       - name: Initialize ClickHouse schema
         run: |
           curl -sf 'http://localhost:18123/' --data-binary @docker/init/00-schema.sql
