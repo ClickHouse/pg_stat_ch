@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run pg_stat_ch tests against a specific PostgreSQL version
-# Usage: ./scripts/run-tests.sh <PG_VERSION> [test_type]
-#   PG_VERSION: 16, 17, or 18
+# Usage: ./scripts/run-tests.sh <PG_VERSION|PG_PATH> [test_type]
+#   PG_VERSION: 16, 17, or 18 (uses mise-installed PostgreSQL)
+#   PG_PATH: path to a local PostgreSQL installation (e.g., ../postgres/install_tap)
 #   test_type: regress, tap, isolation, or all (default: all)
 
 set -euo pipefail
@@ -13,15 +14,16 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Usage: $0 <PG_VERSION> [test_type]"
-    echo "  PG_VERSION: PostgreSQL version (16, 17, 18)"
+    echo "Usage: $0 <PG_VERSION|PG_PATH> [test_type]"
+    echo "  PG_VERSION: PostgreSQL version (16, 17, 18) - uses mise"
+    echo "  PG_PATH:    Path to local PostgreSQL installation"
     echo "  test_type:  regress, tap, isolation, stress, or all (default: all)"
     echo ""
     echo "Examples:"
-    echo "  $0 18              # Run all tests against PG 18"
-    echo "  $0 17 regress      # Run only regression tests against PG 17"
-    echo "  $0 18 tap          # Run only TAP tests against PG 18"
-    echo "  $0 18 stress       # Run only stress test against PG 18"
+    echo "  $0 18                      # Run all tests against mise PG 18"
+    echo "  $0 17 regress              # Run only regression tests against mise PG 17"
+    echo "  $0 ../postgres/install_tap tap  # Run TAP tests against local build"
+    echo "  $0 18 stress               # Run only stress test against PG 18"
     exit 1
 }
 
@@ -42,16 +44,27 @@ if [[ $# -lt 1 ]]; then
     usage
 fi
 
-PG_VERSION="$1"
+PG_ARG="$1"
 TEST_TYPE="${2:-all}"
 
-# Find PostgreSQL installation
-PG_DIR=$(mise where "postgres@${PG_VERSION}" 2>/dev/null) || {
-    log_error "PostgreSQL ${PG_VERSION} not found. Install with: mise install postgres@${PG_VERSION}"
-    exit 1
-}
-
-log_info "Using PostgreSQL ${PG_VERSION} from: ${PG_DIR}"
+# Determine if PG_ARG is a version number or a path
+if [[ "$PG_ARG" =~ ^[0-9]+$ ]]; then
+    # It's a version number, use mise
+    PG_VERSION="$PG_ARG"
+    PG_DIR=$(mise where "postgres@${PG_VERSION}" 2>/dev/null) || {
+        log_error "PostgreSQL ${PG_VERSION} not found. Install with: mise install postgres@${PG_VERSION}"
+        exit 1
+    }
+    log_info "Using PostgreSQL ${PG_VERSION} from mise: ${PG_DIR}"
+else
+    # It's a path to a local PostgreSQL installation
+    PG_DIR="$(cd "$(dirname "$0")/.." && cd "$PG_ARG" 2>/dev/null && pwd)" || PG_DIR="$PG_ARG"
+    if [[ ! -d "$PG_DIR" ]]; then
+        log_error "PostgreSQL directory not found: ${PG_DIR}"
+        exit 1
+    fi
+    log_info "Using local PostgreSQL from: ${PG_DIR}"
+fi
 
 # Set up paths
 PG_BIN="${PG_DIR}/bin"
@@ -102,7 +115,19 @@ run_tap() {
         return 0
     fi
 
-    prove -v --timer \
+    local pg_regress="${PG_LIB}/pgxs/src/test/regress/pg_regress"
+    if [[ ! -x "${pg_regress}" ]]; then
+        log_warn "pg_regress not found at ${pg_regress}"
+        log_warn "TAP tests require pg_regress binary."
+        log_warn "Skipping TAP tests."
+        return 0
+    fi
+
+    # Clean up stale test data directories
+    rm -rf tmp_check
+
+    # PG_REGRESS is required by PostgreSQL::Test::Cluster for auth configuration
+    PG_REGRESS="${pg_regress}" prove -v --timer \
         -I "${perl_lib}" \
         -I t \
         t/*.pl
@@ -120,7 +145,15 @@ run_stress() {
         return 0
     fi
 
-    prove -v --timer \
+    local pg_regress="${PG_LIB}/pgxs/src/test/regress/pg_regress"
+    if [[ ! -x "${pg_regress}" ]]; then
+        log_warn "pg_regress not found at ${pg_regress}"
+        log_warn "Stress test requires pg_regress binary."
+        log_warn "Skipping stress test."
+        return 0
+    fi
+
+    PG_REGRESS="${pg_regress}" prove -v --timer \
         -I "${perl_lib}" \
         -I t \
         t/001_stress_test.pl
