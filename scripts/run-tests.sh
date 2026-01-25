@@ -181,7 +181,7 @@ run_isolation() {
         --temp-instance=specs/tmp_check \
         --temp-config=test/regression/pg_stat_ch.conf \
         --load-extension=pg_stat_ch \
-        ring_buffer_concurrent
+        ring_buffer_concurrent ring_buffer_boundary overflow_race
 }
 
 # Run ClickHouse integration tests
