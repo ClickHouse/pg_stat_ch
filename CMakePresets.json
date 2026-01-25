@@ -18,11 +18,11 @@
     },
     {
       "name": "release",
-      "displayName": "Release",
+      "displayName": "Release with Debug Info",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     }
