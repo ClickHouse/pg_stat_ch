@@ -7,7 +7,7 @@ extern "C" {
 
 #include "access/parallel.h"
 #include "access/xact.h"
-#include "utils/lsyscache.h"
+#include "commands/dbcommands.h"
 #include "common/ip.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -16,6 +16,7 @@ extern "C" {
 #include "utils/backend_status.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 
 #if PG_VERSION_NUM >= 140000
@@ -25,11 +26,10 @@ extern "C" {
 #if PG_VERSION_NUM >= 150000
 #include "jit/jit.h"
 #endif
-
 }
 
-#include "hooks/hooks.h"
 #include "config/guc.h"
+#include "hooks/hooks.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
 
@@ -104,7 +104,7 @@ static PgBackendStatus* GetBackendStatus(void) {
   LocalPgBackendStatus* local_beentry;
   int num_backends = pgstat_fetch_stat_numbackends();
   for (int i = 1; i <= num_backends; i++) {
-    local_beentry = pgstat_fetch_stat_local_beentry(i);
+    local_beentry = pgstat_get_local_beentry_by_index(i);
     if (local_beentry == nullptr) {
       continue;
     }
@@ -151,10 +151,9 @@ static int GetClientAddress(char* buf, int buf_size) {
   char remote_host[NI_MAXHOST];
   remote_host[0] = '\0';
 
-  int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr,
-                               beentry->st_clientaddr.salen, remote_host,
-                               sizeof(remote_host), nullptr, 0,
-                               NI_NUMERICHOST | NI_NUMERICSERV);
+  int ret =
+      pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen, remote_host,
+                         sizeof(remote_host), nullptr, 0, NI_NUMERICHOST | NI_NUMERICSERV);
 
   if (ret != 0 || remote_host[0] == '\0') {
     return 0;
@@ -214,8 +213,8 @@ static void ResolveNames(PschEvent* event) {
 }
 
 // Build a PschEvent from a QueryDesc
-static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
-                                    int64 cpu_user_us, int64 cpu_sys_us) {
+static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
+                                    int64 cpu_sys_us) {
   MemSet(event, 0, sizeof(*event));
 
   event->ts_start = query_start_ts;
@@ -236,12 +235,10 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
     // Duration from instrumentation
 #if PG_VERSION_NUM >= 190000
     // PG19+: total is instr_time
-    event->duration_us =
-        static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
+    event->duration_us = static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
 #else
     // PG18 and earlier: total is double (seconds)
-    event->duration_us =
-        static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
+    event->duration_us = static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
 #endif
 
     // Buffer usage from instrumentation
@@ -259,25 +256,18 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
 
     // I/O timing - field names changed in PG17
 #if PG_VERSION_NUM >= 170000
-    event->shared_blk_read_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->shared_blk_read_time);
-    event->shared_blk_write_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->shared_blk_write_time);
-    event->local_blk_read_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->local_blk_read_time);
-    event->local_blk_write_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->local_blk_write_time);
+    event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->shared_blk_read_time);
+    event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->shared_blk_write_time);
+    event->local_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->local_blk_read_time);
+    event->local_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->local_blk_write_time);
 #else
     // PG16 and earlier: blk_read_time/blk_write_time (no local block timing)
     event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_read_time);
-    event->shared_blk_write_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->blk_write_time);
+    event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_write_time);
 #endif
 #if PG_VERSION_NUM >= 150000
-    event->temp_blk_read_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->temp_blk_read_time);
-    event->temp_blk_write_time_us =
-        INSTR_TIME_GET_MICROSEC(buf->temp_blk_write_time);
+    event->temp_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_read_time);
+    event->temp_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_write_time);
 #endif
 
     // WAL usage from instrumentation
@@ -305,8 +295,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
     event->jit_emission_time_us =
         static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->emission_counter));
 #if PG_VERSION_NUM >= 170000
-    event->jit_deform_time_us =
-        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
+    event->jit_deform_time_us = static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
 #endif
   }
 #endif
@@ -324,8 +313,8 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
   // Client context
   event->application_name_len = static_cast<uint8>(
       GetApplicationName(event->application_name, sizeof(event->application_name)));
-  event->client_addr_len = static_cast<uint8>(
-      GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+  event->client_addr_len =
+      static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
 
   // Query text
   if (query_desc->sourceText != nullptr) {
@@ -374,8 +363,7 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   // Set up instrumentation if enabled and query has a valid queryId
   if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
     if (query_desc->totaltime == nullptr) {
-      MemoryContext oldcxt =
-          MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
+      MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
 #if PG_VERSION_NUM < 140000
       query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
 #else
@@ -387,11 +375,10 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
 }
 
 #if PG_VERSION_NUM >= 180000
-static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction,
-                            uint64 count) {
+static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint64 count) {
 #else
-static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction,
-                            uint64 count, bool execute_once) {
+static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint64 count,
+                            bool execute_once) {
 #endif
   // Skip parallel workers
   if (IsParallelWorker()) {
@@ -429,9 +416,7 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction,
 #endif
   }
   PG_FINALLY();
-  {
-    nesting_level--;
-  }
+  { nesting_level--; }
   PG_END_TRY();
 }
 
@@ -456,16 +441,13 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
     }
   }
   PG_FINALLY();
-  {
-    nesting_level--;
-  }
+  { nesting_level--; }
   PG_END_TRY();
 }
 
 static void PschExecutorEnd(QueryDesc* query_desc) {
   // Skip if disabled, parallel worker, or no valid queryId
-  if (!psch_enabled || IsParallelWorker() ||
-      query_desc->plannedstmt->queryId == UINT64CONST(0)) {
+  if (!psch_enabled || IsParallelWorker() || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
     if (prev_executor_end != nullptr) {
       prev_executor_end(query_desc);
     } else {
@@ -502,11 +484,10 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
 }
 
 // Build a PschEvent for utility statements (no QueryDesc available)
-static void BuildEventForUtility(PschEvent* event, const char* queryString,
-                                 TimestampTz start_ts, uint64 duration_us,
-                                 bool is_top_level, uint64 rows,
-                                 BufferUsage* bufusage, WalUsage* walusage,
-                                 int64 cpu_user_us, int64 cpu_sys_us) {
+static void BuildEventForUtility(PschEvent* event, const char* queryString, TimestampTz start_ts,
+                                 uint64 duration_us, bool is_top_level, uint64 rows,
+                                 BufferUsage* bufusage, WalUsage* walusage, int64 cpu_user_us,
+                                 int64 cpu_sys_us) {
   MemSet(event, 0, sizeof(*event));
 
   event->ts_start = start_ts;
@@ -538,25 +519,17 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
 
   // I/O timing - field names changed in PG17
 #if PG_VERSION_NUM >= 170000
-  event->shared_blk_read_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->shared_blk_read_time);
-  event->shared_blk_write_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->shared_blk_write_time);
-  event->local_blk_read_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->local_blk_read_time);
-  event->local_blk_write_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->local_blk_write_time);
+  event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->shared_blk_read_time);
+  event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->shared_blk_write_time);
+  event->local_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->local_blk_read_time);
+  event->local_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->local_blk_write_time);
 #else
-  event->shared_blk_read_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->blk_read_time);
-  event->shared_blk_write_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->blk_write_time);
+  event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->blk_read_time);
+  event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->blk_write_time);
 #endif
 #if PG_VERSION_NUM >= 150000
-  event->temp_blk_read_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->temp_blk_read_time);
-  event->temp_blk_write_time_us =
-      INSTR_TIME_GET_MICROSEC(bufusage->temp_blk_write_time);
+  event->temp_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->temp_blk_read_time);
+  event->temp_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->temp_blk_write_time);
 #endif
 
   // WAL usage
@@ -567,8 +540,8 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
   // Client context
   event->application_name_len = static_cast<uint8>(
       GetApplicationName(event->application_name, sizeof(event->application_name)));
-  event->client_addr_len = static_cast<uint8>(
-      GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+  event->client_addr_len =
+      static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
 
   // Query text
   if (queryString != nullptr) {
@@ -584,26 +557,23 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
 
 // Helper macro to call ProcessUtility (previous hook or standard)
 #if PG_VERSION_NUM >= 140000
-#define CALL_PROCESS_UTILITY()                                              \
-  do {                                                                      \
-    if (prev_process_utility) {                                             \
-      prev_process_utility(pstmt, queryString, readOnlyTree, context,       \
-                           params, queryEnv, dest, qc);                     \
-    } else {                                                                \
-      standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,    \
-                              params, queryEnv, dest, qc);                  \
-    }                                                                       \
+#define CALL_PROCESS_UTILITY()                                                                     \
+  do {                                                                                             \
+    if (prev_process_utility) {                                                                    \
+      prev_process_utility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc); \
+    } else {                                                                                       \
+      standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest,   \
+                              qc);                                                                 \
+    }                                                                                              \
   } while (0)
 #else
-#define CALL_PROCESS_UTILITY()                                              \
-  do {                                                                      \
-    if (prev_process_utility) {                                             \
-      prev_process_utility(pstmt, queryString, context, params, queryEnv,   \
-                           dest, qc);                                       \
-    } else {                                                                \
-      standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,\
-                              dest, qc);                                    \
-    }                                                                       \
+#define CALL_PROCESS_UTILITY()                                                          \
+  do {                                                                                  \
+    if (prev_process_utility) {                                                         \
+      prev_process_utility(pstmt, queryString, context, params, queryEnv, dest, qc);    \
+    } else {                                                                            \
+      standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, qc); \
+    }                                                                                   \
   } while (0)
 #endif
 
@@ -637,38 +607,32 @@ static uint64 GetUtilityRowCount(QueryCompletion* qc) {
 }
 
 // Execute utility with nesting level tracking
-static void ExecuteUtilityWithNesting(PlannedStmt* pstmt,
-                                      const char* queryString,
+static void ExecuteUtilityWithNesting(PlannedStmt* pstmt, const char* queryString,
 #if PG_VERSION_NUM >= 140000
                                       bool readOnlyTree,
 #endif
-                                      ProcessUtilityContext context,
-                                      ParamListInfo params,
-                                      QueryEnvironment* queryEnv,
-                                      DestReceiver* dest, QueryCompletion* qc) {
+                                      ProcessUtilityContext context, ParamListInfo params,
+                                      QueryEnvironment* queryEnv, DestReceiver* dest,
+                                      QueryCompletion* qc) {
   nesting_level++;
   PG_TRY();
-  {
-    CALL_PROCESS_UTILITY();
-  }
+  { CALL_PROCESS_UTILITY(); }
   PG_FINALLY();
-  {
-    nesting_level--;
-  }
+  { nesting_level--; }
   PG_END_TRY();
 }
 
 // ProcessUtility hook - captures DDL and utility statements
 #if PG_VERSION_NUM >= 140000
-static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
-                               bool readOnlyTree, ProcessUtilityContext context,
-                               ParamListInfo params, QueryEnvironment* queryEnv,
-                               DestReceiver* dest, QueryCompletion* qc) {
+static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString, bool readOnlyTree,
+                               ProcessUtilityContext context, ParamListInfo params,
+                               QueryEnvironment* queryEnv, DestReceiver* dest,
+                               QueryCompletion* qc) {
 #else
 static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
-                               ProcessUtilityContext context,
-                               ParamListInfo params, QueryEnvironment* queryEnv,
-                               DestReceiver* dest, QueryCompletion* qc) {
+                               ProcessUtilityContext context, ParamListInfo params,
+                               QueryEnvironment* queryEnv, DestReceiver* dest,
+                               QueryCompletion* qc) {
 #endif
   if (!ShouldTrackUtility(pstmt->utilityStmt)) {
     CALL_PROCESS_UTILITY();
@@ -687,11 +651,9 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
 
   // Execute the utility
 #if PG_VERSION_NUM >= 140000
-  ExecuteUtilityWithNesting(pstmt, queryString, readOnlyTree, context, params,
-                            queryEnv, dest, qc);
+  ExecuteUtilityWithNesting(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
 #else
-  ExecuteUtilityWithNesting(pstmt, queryString, context, params, queryEnv, dest,
-                            qc);
+  ExecuteUtilityWithNesting(pstmt, queryString, context, params, queryEnv, dest, qc);
 #endif
 
   // Calculate duration
@@ -712,17 +674,14 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   int64 cpu_sys_us = 0;
   struct rusage rusage_util_end;
   if (getrusage(RUSAGE_SELF, &rusage_util_end) == 0) {
-    cpu_user_us =
-        TimeDiffMicrosec(rusage_util_end.ru_utime, rusage_util_start.ru_utime);
-    cpu_sys_us =
-        TimeDiffMicrosec(rusage_util_end.ru_stime, rusage_util_start.ru_stime);
+    cpu_user_us = TimeDiffMicrosec(rusage_util_end.ru_utime, rusage_util_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_util_end.ru_stime, rusage_util_start.ru_stime);
   }
 
   // Build and enqueue event
   PschEvent event;
-  BuildEventForUtility(&event, queryString, start_ts,
-                       INSTR_TIME_GET_MICROSEC(duration), is_top_level,
-                       GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta,
+  BuildEventForUtility(&event, queryString, start_ts, INSTR_TIME_GET_MICROSEC(duration),
+                       is_top_level, GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta,
                        cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
 }
@@ -732,8 +691,8 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
 // emit_log_hook - captures errors (WARNING and above)
 static void PschEmitLogHook(ErrorData* edata) {
   // Capture error if conditions are met
-  bool should_capture = (edata != nullptr && psch_enabled &&
-                         !IsParallelWorker() && MyProc != nullptr);
+  bool should_capture =
+      (edata != nullptr && psch_enabled && !IsParallelWorker() && MyProc != nullptr);
 
   if (should_capture && edata->elevel >= WARNING && !disable_error_capture) {
     const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
@@ -764,10 +723,10 @@ static void PschEmitLogHook(ErrorData* edata) {
     }
 
     // Client context
-    event.application_name_len = static_cast<uint8>(GetApplicationName(
-        event.application_name, sizeof(event.application_name)));
-    event.client_addr_len = static_cast<uint8>(
-        GetClientAddress(event.client_addr, sizeof(event.client_addr)));
+    event.application_name_len = static_cast<uint8>(
+        GetApplicationName(event.application_name, sizeof(event.application_name)));
+    event.client_addr_len =
+        static_cast<uint8>(GetClientAddress(event.client_addr, sizeof(event.client_addr)));
 
     // Prevent recursive calls if PschEnqueueEvent triggers an error
     disable_error_capture = true;

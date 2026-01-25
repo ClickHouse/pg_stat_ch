@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CI: true  # Enables -Werror
+
+jobs:
+  build-and-test:
+    name: Build & Test (PG ${{ matrix.pg_version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [16, 17, 18]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
+          echo "deb [arch=amd64] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install PostgreSQL ${{ matrix.pg_version }}
+        run: |
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg_version }} \
+            postgresql-server-dev-${{ matrix.pg_version }}
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake ninja-build g++
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: pg${{ matrix.pg_version }}
+          max-size: 500M
+
+      - name: Configure
+        run: |
+          cmake --preset default \
+            -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install extension
+        run: sudo cmake --install build
+
+      - name: Run regression tests
+        run: |
+          /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/test/regress/pg_regress \
+            --bindir=/usr/lib/postgresql/${{ matrix.pg_version }}/bin \
+            --inputdir=test/regression \
+            --outputdir=test/regression/results \
+            --temp-instance=test/regression/tmp_check \
+            --temp-config=test/regression/pg_stat_ch.conf \
+            basic version guc stats utility buffers cmd_type client_info error_capture
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regress-results-pg${{ matrix.pg_version }}
+          path: |
+            test/regression/results/
+            test/regression/tmp_check/log/
+
+  lint:
+    name: Code Style
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          find src include -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror

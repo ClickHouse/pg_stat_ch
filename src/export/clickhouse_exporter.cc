@@ -10,8 +10,8 @@ extern "C" {
 
 #include <clickhouse/client.h>
 
-#include "export/clickhouse_exporter.h"
 #include "config/guc.h"
+#include "export/clickhouse_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
 
@@ -22,8 +22,8 @@ namespace {
 constexpr int64_t kPostgresEpochOffsetUs = 946684800000000LL;
 
 // Exponential backoff constants
-constexpr int kBaseDelayMs = 1000;      // 1 second
-constexpr int kMaxDelayMs = 60000;      // 60 seconds
+constexpr int kBaseDelayMs = 1000;           // 1 second
+constexpr int kMaxDelayMs = 60000;           // 60 seconds
 constexpr int kMaxConsecutiveFailures = 10;  // Cap for exponential growth
 
 // Exporter state - encapsulates all bgworker-local state
@@ -64,8 +64,7 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
   events.reserve(max_events);
 
   PschEvent event;
-  while (events.size() < static_cast<size_t>(max_events) &&
-         PschDequeueEvent(&event)) {
+  while (events.size() < static_cast<size_t>(max_events) && PschDequeueEvent(&event)) {
     events.push_back(event);
   }
   return events;
@@ -73,8 +72,7 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
 
 // Build a ClickHouse block from events
 clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
-  elog(DEBUG1, "pg_stat_ch: BuildClickHouseBlock() called with %zu events",
-       events.size());
+  elog(DEBUG1, "pg_stat_ch: BuildClickHouseBlock() called with %zu events", events.size());
 
   elog(DEBUG2, "pg_stat_ch: creating column objects");
   clickhouse::Block block;
@@ -109,8 +107,7 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
 
   // I/O timing columns
   auto col_shared_blk_read_time_us = std::make_shared<clickhouse::ColumnInt64>();
-  auto col_shared_blk_write_time_us =
-      std::make_shared<clickhouse::ColumnInt64>();
+  auto col_shared_blk_write_time_us = std::make_shared<clickhouse::ColumnInt64>();
   auto col_local_blk_read_time_us = std::make_shared<clickhouse::ColumnInt64>();
   auto col_local_blk_write_time_us = std::make_shared<clickhouse::ColumnInt64>();
   auto col_temp_blk_read_time_us = std::make_shared<clickhouse::ColumnInt64>();
@@ -150,8 +147,8 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   elog(DEBUG2, "pg_stat_ch: all columns created, starting event loop");
   size_t event_idx = 0;
   for (const auto& ev : events) {
-    elog(DEBUG2, "pg_stat_ch: processing event %zu: pid=%d, query_len=%u",
-         event_idx, ev.pid, ev.query_len);
+    elog(DEBUG2, "pg_stat_ch: processing event %zu: pid=%d, query_len=%u", event_idx, ev.pid,
+         ev.query_len);
 
     int64_t unix_us = ev.ts_start + kPostgresEpochOffsetUs;
     col_ts_start->Append(unix_us);
@@ -169,8 +166,8 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     // Validate query_len before using it
     uint16 safe_query_len = ev.query_len;
     if (safe_query_len > PSCH_MAX_QUERY_LEN) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid query_len %u, clamping",
-           event_idx, safe_query_len);
+      elog(WARNING, "pg_stat_ch: event %zu has invalid query_len %u, clamping", event_idx,
+           safe_query_len);
       safe_query_len = PSCH_MAX_QUERY_LEN;
     }
     col_query->Append(std::string(ev.query, safe_query_len));
@@ -227,19 +224,19 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
     col_err_elevel->Append(ev.err_elevel);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - client context (app_len=%u, addr_len=%u)",
-         event_idx, ev.application_name_len, ev.client_addr_len);
+    elog(DEBUG3, "pg_stat_ch: event %zu - client context (app_len=%u, addr_len=%u)", event_idx,
+         ev.application_name_len, ev.client_addr_len);
     // Client context - validate lengths
     uint8 safe_app_len = ev.application_name_len;
     if (safe_app_len > 63) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid app_name_len %u, clamping",
-           event_idx, safe_app_len);
+      elog(WARNING, "pg_stat_ch: event %zu has invalid app_name_len %u, clamping", event_idx,
+           safe_app_len);
       safe_app_len = 63;
     }
     uint8 safe_addr_len = ev.client_addr_len;
     if (safe_addr_len > 45) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid client_addr_len %u, clamping",
-           event_idx, safe_addr_len);
+      elog(WARNING, "pg_stat_ch: event %zu has invalid client_addr_len %u, clamping", event_idx,
+           safe_addr_len);
       safe_addr_len = 45;
     }
     col_app->Append(std::string(ev.application_name, safe_app_len));
@@ -319,18 +316,12 @@ extern "C" {
 bool PschExporterInit(void) {
   try {
     clickhouse::ClientOptions options;
-    options
-        .SetHost(psch_clickhouse_host != nullptr ? psch_clickhouse_host
-                                                 : "localhost")
+    options.SetHost(psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost")
         .SetPort(psch_clickhouse_port)
-        .SetUser(psch_clickhouse_user != nullptr ? psch_clickhouse_user
-                                                 : "default")
-        .SetPassword(psch_clickhouse_password != nullptr
-                         ? psch_clickhouse_password
-                         : "")
-        .SetDefaultDatabase(psch_clickhouse_database != nullptr
-                                ? psch_clickhouse_database
-                                : "pg_stat_ch")
+        .SetUser(psch_clickhouse_user != nullptr ? psch_clickhouse_user : "default")
+        .SetPassword(psch_clickhouse_password != nullptr ? psch_clickhouse_password : "")
+        .SetDefaultDatabase(psch_clickhouse_database != nullptr ? psch_clickhouse_database
+                                                                : "pg_stat_ch")
         .SetCompressionMethod(clickhouse::CompressionMethod::LZ4)
         .SetPingBeforeQuery(true)
         .SetSendRetries(3)
@@ -339,16 +330,13 @@ bool PschExporterInit(void) {
     g_exporter.client = std::make_unique<clickhouse::Client>(options);
     g_exporter.initialized = true;
 
-    const char* host =
-        psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost";
-    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d", host,
-         psch_clickhouse_port);
+    const char* host = psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost";
+    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d", host, psch_clickhouse_port);
 
     return true;
   } catch (const std::exception& ex) {
     std::string err_msg = ex.what();
-    elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s",
-         err_msg.c_str());
+    elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s", err_msg.c_str());
     g_exporter.client.reset();
     return false;
   }
@@ -373,8 +361,7 @@ void PschExportBatch(void) {
     return;
   }
 
-  elog(DEBUG1, "pg_stat_ch: building ClickHouse block with %zu events",
-       events.size());
+  elog(DEBUG1, "pg_stat_ch: building ClickHouse block with %zu events", events.size());
 
   try {
     clickhouse::Block block = BuildClickHouseBlock(events);
@@ -390,13 +377,11 @@ void PschExportBatch(void) {
     g_exporter.consecutive_failures = 0;
     PschRecordExportSuccess();
 
-    elog(DEBUG1, "pg_stat_ch: exported %zu events to ClickHouse",
-         events.size());
+    elog(DEBUG1, "pg_stat_ch: exported %zu events to ClickHouse", events.size());
 
   } catch (const std::exception& ex) {
     std::string err_msg = ex.what();
-    elog(WARNING, "pg_stat_ch: failed to insert to ClickHouse: %s",
-         err_msg.c_str());
+    elog(WARNING, "pg_stat_ch: failed to insert to ClickHouse: %s", err_msg.c_str());
 
     // Failure: increment counter, record error, reset client for reconnect
     g_exporter.consecutive_failures++;

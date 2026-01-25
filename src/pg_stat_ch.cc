@@ -65,10 +65,9 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
 
   // Build tuple descriptor
   if (get_call_result_type(fcinfo, nullptr, &tupdesc) != TYPEFUNC_COMPOSITE) {
-    ereport(ERROR,
-            (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-             errmsg("function returning record called in context that cannot "
-                    "accept type record")));
+    ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                    errmsg("function returning record called in context that cannot "
+                           "accept type record")));
   }
 
   tupdesc = BlessTupleDesc(tupdesc);
@@ -84,8 +83,8 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   const char* last_error_text = nullptr;
   TimestampTz last_error_ts = 0;
 
-  PschGetStats(&enqueued, &dropped, &exported, &queue_size, &queue_capacity,
-               &send_failures, &last_success_ts, &last_error_text, &last_error_ts);
+  PschGetStats(&enqueued, &dropped, &exported, &queue_size, &queue_capacity, &send_failures,
+               &last_success_ts, &last_error_text, &last_error_ts);
 
   // Fill values
   MemSet(nulls, false, sizeof(nulls));

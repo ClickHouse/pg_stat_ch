@@ -40,8 +40,8 @@ extern "C" {
 #include "utils/timestamp.h"
 }
 
-#include "queue/shmem.h"
 #include "config/guc.h"
+#include "queue/shmem.h"
 
 // Shared memory state
 PschSharedState* psch_shared_state = nullptr;
@@ -54,8 +54,8 @@ static shmem_request_hook_type prev_shmem_request_hook = nullptr;
 
 // Get pointer to the ring buffer array (immediately follows the shared state)
 static inline PschEvent* GetRingBuffer(void) {
-  return reinterpret_cast<PschEvent*>(
-      reinterpret_cast<char*>(psch_shared_state) + sizeof(PschSharedState));
+  return reinterpret_cast<PschEvent*>(reinterpret_cast<char*>(psch_shared_state) +
+                                      sizeof(PschSharedState));
 }
 
 // Handle queue overflow: increment dropped counter and log warning once
@@ -66,8 +66,7 @@ static void HandleOverflow() {
   if (!pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
     ereport(WARNING,
             (errmsg("pg_stat_ch: queue overflow, events being dropped"),
-             errhint(
-                 "Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
+             errhint("Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
   }
 }
 
@@ -101,10 +100,9 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
 static void PschShmemShutdown(int code, Datum arg) {
   (void)code;  // Unused parameter
   (void)arg;   // Unused parameter
-  
+
   if (psch_shared_state != nullptr) {
-    elog(LOG,
-         "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
+    elog(LOG, "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
          pg_atomic_read_u64(&psch_shared_state->enqueued),
          pg_atomic_read_u64(&psch_shared_state->dropped),
          pg_atomic_read_u64(&psch_shared_state->exported));
@@ -155,8 +153,8 @@ static void InitializeSharedState(void) {
   // Zero-initialize the ring buffer
   MemSet(GetRingBuffer(), 0, psch_queue_capacity * sizeof(PschEvent));
 
-  elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, size=%zu)",
-       psch_queue_capacity, PschShmemSize());
+  elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, size=%zu)", psch_queue_capacity,
+       PschShmemSize());
 }
 
 static void PschShmemStartupHook(void) {
@@ -168,14 +166,13 @@ static void PschShmemStartupHook(void) {
 
   LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
-  psch_shared_state = static_cast<PschSharedState*>(
-      ShmemInitStruct("pg_stat_ch", PschShmemSize(), &found));
+  psch_shared_state =
+      static_cast<PschSharedState*>(ShmemInitStruct("pg_stat_ch", PschShmemSize(), &found));
 
   if (psch_shared_state == nullptr) {
     LWLockRelease(AddinShmemInitLock);
-    ereport(ERROR,
-            (errcode(ERRCODE_OUT_OF_MEMORY),
-             errmsg("pg_stat_ch: could not create shared memory segment")));
+    ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY),
+                    errmsg("pg_stat_ch: could not create shared memory segment")));
   }
 
   if (!found) {
@@ -255,9 +252,7 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   PG_TRY();
-  {
-    result = TryEnqueueLocked(event, capacity);
-  }
+  { result = TryEnqueueLocked(event, capacity); }
   PG_CATCH();
   {
     LWLockRelease(psch_shared_state->lock);
@@ -321,9 +316,8 @@ bool PschDequeueEvent(PschEvent* event) {
 // - old counter values with new positions, or
 // - new counter values with old positions
 // causing temporary inconsistencies in the reported queue_size vs counters.
-void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported,
-                  uint32* queue_size, uint32* queue_capacity,
-                  uint64* send_failures, TimestampTz* last_success_ts,
+void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
+                  uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
                   const char** last_error_text, TimestampTz* last_error_ts) {
   if (psch_shared_state == nullptr) {
     *enqueued = 0;

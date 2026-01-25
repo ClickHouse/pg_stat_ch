@@ -34,7 +34,12 @@ target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}
 target_include_directories(pg_stat_ch PRIVATE
   include
   src
+)
+# Mark third-party includes as SYSTEM to suppress warnings from those headers
+target_include_directories(pg_stat_ch SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp
+  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp/contrib/absl
+  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp/contrib/zstd
 )
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
