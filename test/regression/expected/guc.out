@@ -11,13 +11,42 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name;
  pg_stat_ch.clickhouse_user
  pg_stat_ch.enabled
  pg_stat_ch.flush_interval_ms
+ pg_stat_ch.log_min_elevel
  pg_stat_ch.queue_capacity
-(9 rows)
+(10 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
 --------------------
  on
+(1 row)
+
+-- Test log_min_elevel GUC
+SHOW pg_stat_ch.log_min_elevel;
+ pg_stat_ch.log_min_elevel 
+---------------------------
+ warning
+(1 row)
+
+SET pg_stat_ch.log_min_elevel = 'error';
+SHOW pg_stat_ch.log_min_elevel;
+ pg_stat_ch.log_min_elevel 
+---------------------------
+ error
+(1 row)
+
+SET pg_stat_ch.log_min_elevel = 'notice';
+SHOW pg_stat_ch.log_min_elevel;
+ pg_stat_ch.log_min_elevel 
+---------------------------
+ notice
+(1 row)
+
+RESET pg_stat_ch.log_min_elevel;
+SHOW pg_stat_ch.log_min_elevel;
+ pg_stat_ch.log_min_elevel 
+---------------------------
+ warning
 (1 row)
 
 DROP EXTENSION pg_stat_ch;
