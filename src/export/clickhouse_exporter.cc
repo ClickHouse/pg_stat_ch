@@ -94,6 +94,7 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
 clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   clickhouse::Block block;
 
+  // Basic columns
   auto col_ts_start = std::make_shared<clickhouse::ColumnDateTime64>(6);
   auto col_duration_us = std::make_shared<clickhouse::ColumnUInt64>();
   auto col_db = std::make_shared<clickhouse::ColumnString>();
@@ -104,6 +105,32 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   auto col_cmd_type = std::make_shared<clickhouse::ColumnString>();
   auto col_rows = std::make_shared<clickhouse::ColumnUInt64>();
   auto col_query = std::make_shared<clickhouse::ColumnString>();
+
+  // Buffer usage columns
+  auto col_shared_blks_hit = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_shared_blks_read = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_shared_blks_dirtied = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_shared_blks_written = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_local_blks_hit = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_local_blks_read = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_local_blks_dirtied = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_local_blks_written = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_temp_blks_read = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_temp_blks_written = std::make_shared<clickhouse::ColumnInt64>();
+
+  // I/O timing columns
+  auto col_shared_blk_read_time_us = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_shared_blk_write_time_us =
+      std::make_shared<clickhouse::ColumnInt64>();
+  auto col_local_blk_read_time_us = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_local_blk_write_time_us = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_temp_blk_read_time_us = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_temp_blk_write_time_us = std::make_shared<clickhouse::ColumnInt64>();
+
+  // WAL usage columns
+  auto col_wal_records = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_wal_fpi = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_wal_bytes = std::make_shared<clickhouse::ColumnUInt64>();
 
   for (const auto& ev : events) {
     int64_t unix_us = ev.ts_start + kPostgresEpochOffsetUs;
@@ -117,8 +144,34 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_cmd_type->Append(CmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
     col_query->Append(std::string(ev.query, ev.query_len));
+
+    // Buffer usage
+    col_shared_blks_hit->Append(ev.shared_blks_hit);
+    col_shared_blks_read->Append(ev.shared_blks_read);
+    col_shared_blks_dirtied->Append(ev.shared_blks_dirtied);
+    col_shared_blks_written->Append(ev.shared_blks_written);
+    col_local_blks_hit->Append(ev.local_blks_hit);
+    col_local_blks_read->Append(ev.local_blks_read);
+    col_local_blks_dirtied->Append(ev.local_blks_dirtied);
+    col_local_blks_written->Append(ev.local_blks_written);
+    col_temp_blks_read->Append(ev.temp_blks_read);
+    col_temp_blks_written->Append(ev.temp_blks_written);
+
+    // I/O timing
+    col_shared_blk_read_time_us->Append(ev.shared_blk_read_time_us);
+    col_shared_blk_write_time_us->Append(ev.shared_blk_write_time_us);
+    col_local_blk_read_time_us->Append(ev.local_blk_read_time_us);
+    col_local_blk_write_time_us->Append(ev.local_blk_write_time_us);
+    col_temp_blk_read_time_us->Append(ev.temp_blk_read_time_us);
+    col_temp_blk_write_time_us->Append(ev.temp_blk_write_time_us);
+
+    // WAL usage
+    col_wal_records->Append(ev.wal_records);
+    col_wal_fpi->Append(ev.wal_fpi);
+    col_wal_bytes->Append(ev.wal_bytes);
   }
 
+  // Basic columns
   block.AppendColumn("ts_start", col_ts_start);
   block.AppendColumn("duration_us", col_duration_us);
   block.AppendColumn("db", col_db);
@@ -129,6 +182,31 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   block.AppendColumn("cmd_type", col_cmd_type);
   block.AppendColumn("rows", col_rows);
   block.AppendColumn("query", col_query);
+
+  // Buffer usage columns
+  block.AppendColumn("shared_blks_hit", col_shared_blks_hit);
+  block.AppendColumn("shared_blks_read", col_shared_blks_read);
+  block.AppendColumn("shared_blks_dirtied", col_shared_blks_dirtied);
+  block.AppendColumn("shared_blks_written", col_shared_blks_written);
+  block.AppendColumn("local_blks_hit", col_local_blks_hit);
+  block.AppendColumn("local_blks_read", col_local_blks_read);
+  block.AppendColumn("local_blks_dirtied", col_local_blks_dirtied);
+  block.AppendColumn("local_blks_written", col_local_blks_written);
+  block.AppendColumn("temp_blks_read", col_temp_blks_read);
+  block.AppendColumn("temp_blks_written", col_temp_blks_written);
+
+  // I/O timing columns
+  block.AppendColumn("shared_blk_read_time_us", col_shared_blk_read_time_us);
+  block.AppendColumn("shared_blk_write_time_us", col_shared_blk_write_time_us);
+  block.AppendColumn("local_blk_read_time_us", col_local_blk_read_time_us);
+  block.AppendColumn("local_blk_write_time_us", col_local_blk_write_time_us);
+  block.AppendColumn("temp_blk_read_time_us", col_temp_blk_read_time_us);
+  block.AppendColumn("temp_blk_write_time_us", col_temp_blk_write_time_us);
+
+  // WAL usage columns
+  block.AppendColumn("wal_records", col_wal_records);
+  block.AppendColumn("wal_fpi", col_wal_fpi);
+  block.AppendColumn("wal_bytes", col_wal_bytes);
 
   return block;
 }

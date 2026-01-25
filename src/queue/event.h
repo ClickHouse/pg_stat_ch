@@ -1,4 +1,25 @@
 // pg_stat_ch event structure for query telemetry
+//
+// FIXED-SIZE DESIGN RATIONALE:
+// We use fixed-size events (~2KB each) instead of variable-length events for several
+// reasons borrowed from PostgreSQL's design philosophy:
+//
+// 1. SIMPLICITY: Fixed-size events allow simple ring buffer math without fragmentation.
+//    Variable-length would require a memory allocator in shared memory (complex).
+//
+// 2. LOCK-FREE READS: Fixed size enables the consumer to read without coordinating
+//    with producers. Variable-length would need reference counting or complex GC.
+//
+// 3. PREDICTABLE MEMORY: Total memory = capacity * sizeof(PschEvent). Easy to reason
+//    about and configure. Variable-length has unpredictable peak usage.
+//
+// 4. FAST COPY: memcpy() of 2KB is ~20ns on modern CPUs with cache. Variable-length
+//    would require copying arbitrary amounts of data under lock.
+//
+// ALTERNATIVE CONSIDERED: pg_stat_monitor uses DSA (Dynamic Shared Area) for
+// variable-length query text. This allows unlimited query length but adds complexity
+// with DSA allocation, OOM handling, and pointer management. For telemetry/metrics,
+// 2KB query text is sufficient - we don't need full query text for aggregation.
 #ifndef PG_STAT_CH_SRC_QUEUE_EVENT_H_
 #define PG_STAT_CH_SRC_QUEUE_EVENT_H_
 
@@ -7,13 +28,15 @@ extern "C" {
 #endif
 
 #include "postgres.h"
+
 #include "datatype/timestamp.h"
 
-// Maximum query text length stored in events
+// Maximum query text length stored in events (truncated if longer)
+// 2KB is enough for most queries; full query text is available via pg_stat_statements
 #define PSCH_MAX_QUERY_LEN 2048
 
 // Command type values (matching PostgreSQL's CmdType enum)
-typedef enum PschCmdType {
+enum PschCmdType {
   PSCH_CMD_UNKNOWN = 0,
   PSCH_CMD_SELECT = 1,
   PSCH_CMD_UPDATE = 2,
@@ -22,10 +45,10 @@ typedef enum PschCmdType {
   PSCH_CMD_MERGE = 5,
   PSCH_CMD_UTILITY = 6,
   PSCH_CMD_NOTHING = 7
-} PschCmdType;
+};
 
 // Event structure stored in shared memory queue (~2KB fixed size)
-typedef struct PschEvent {
+struct PschEvent {
   // Timing information
   TimestampTz ts_start;    // Query start timestamp (microseconds since epoch)
   uint64 duration_us;      // Execution duration in microseconds
@@ -41,10 +64,35 @@ typedef struct PschEvent {
   // Results
   uint64 rows;             // Number of rows affected/returned
 
+  // Buffer usage
+  int64 shared_blks_hit;
+  int64 shared_blks_read;
+  int64 shared_blks_dirtied;
+  int64 shared_blks_written;
+  int64 local_blks_hit;
+  int64 local_blks_read;
+  int64 local_blks_dirtied;
+  int64 local_blks_written;
+  int64 temp_blks_read;
+  int64 temp_blks_written;
+
+  // I/O timing (microseconds)
+  int64 shared_blk_read_time_us;
+  int64 shared_blk_write_time_us;
+  int64 local_blk_read_time_us;   // PG17+
+  int64 local_blk_write_time_us;  // PG17+
+  int64 temp_blk_read_time_us;    // PG15+
+  int64 temp_blk_write_time_us;   // PG15+
+
+  // WAL usage
+  int64 wal_records;
+  int64 wal_fpi;
+  uint64 wal_bytes;
+
   // Query text (null-terminated, truncated if necessary)
   uint16 query_len;        // Actual length of query text
   char query[PSCH_MAX_QUERY_LEN];
-} PschEvent;
+};
 
 // Ensure the struct has expected size characteristics
 #define PSCH_EVENT_SIZE sizeof(PschEvent)

@@ -21,6 +21,27 @@ int psch_batch_max = 1000;
 
 extern "C" {
 
+// Check hook to ensure queue_capacity is a power of 2
+// NOLINTNEXTLINE(readability-identifier-naming) - PostgreSQL GUC hook naming convention
+static bool check_psch_queue_capacity(int* newval, void** extra, GucSource source) {
+  (void)extra;   // Unused parameter
+  (void)source;  // Unused parameter
+  
+  // Check if value is positive and a power of 2
+  if (*newval <= 0) {
+    GUC_check_errdetail("pg_stat_ch.queue_capacity must be positive.");
+    return false;
+  }
+  
+  // Check if power of 2: value & (value - 1) == 0
+  if ((*newval & (*newval - 1)) != 0) {
+    GUC_check_errdetail("pg_stat_ch.queue_capacity must be a power of 2 (e.g., 1024, 2048, 4096, 8192, 16384, 32768, 65536).");
+    return false;
+  }
+  
+  return true;
+}
+
 void PschInitGuc(void) {
   DefineCustomBoolVariable(
       "pg_stat_ch.enabled",
@@ -98,7 +119,7 @@ void PschInitGuc(void) {
 
   DefineCustomIntVariable(
       "pg_stat_ch.queue_capacity",
-      "Maximum number of events in the shared memory queue.",
+      "Maximum number of events in the shared memory queue (must be a power of 2).",
       nullptr,
       &psch_queue_capacity,
       65536,
@@ -106,7 +127,7 @@ void PschInitGuc(void) {
       1048576,
       PGC_POSTMASTER,
       0,
-      nullptr,
+      check_psch_queue_capacity,
       nullptr,
       nullptr);
 

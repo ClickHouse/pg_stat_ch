@@ -12,15 +12,45 @@ extern "C" {
 #include "queue/event.h"
 
 // Shared state structure in shared memory
+//
+// CACHE-LINE ALIGNMENT STRATEGY (pattern from PostgreSQL's shmem.c):
+// This structure is carefully laid out to avoid "false sharing" - a performance
+// problem where multiple CPU cores unnecessarily bounce cache lines back and forth
+// even though they're accessing different fields. By separating producer-written
+// and consumer-written fields with padding, we ensure they live on different cache
+// lines (typically 64 bytes on modern CPUs).
+//
+// CONCURRENCY MODEL:
+// - Multiple producers (backends) write events via PschEnqueueEvent() using LWLock
+// - Single consumer (bgworker) reads events via PschDequeueEvent() lock-free
+// - head/tail use atomic operations with memory barriers (see shm_mq.c pattern)
+// - capacity must be power-of-2 for fast modulo via bitmask (capacity - 1)
+//
+// MEMORY LAYOUT:
+// [lock, capacity, pad1] → [head, enqueued, dropped, overflow_logged, pad2] → [tail, exported] → [ring buffer]
+//    rarely changed              producer cache line                             consumer cache line
 struct PschSharedState {
-  LWLock* lock;              // Protects writes to the ring buffer
-  pg_atomic_uint64 head;     // Write position (producer)
-  pg_atomic_uint64 tail;     // Read position (consumer)
-  pg_atomic_uint64 enqueued; // Total events enqueued
-  pg_atomic_uint64 dropped;  // Events dropped due to full queue
-  pg_atomic_uint64 exported; // Events successfully exported to ClickHouse
-  uint32 capacity;           // Maximum number of events in queue
-  // Ring buffer follows immediately after this struct
+  // === Rarely-changed fields (initialization only) ===
+  LWLock* lock;              // Protects writes to the ring buffer (multi-producer)
+  uint32 capacity;           // Ring buffer size (must be power of 2 for bitmask)
+  
+  // Padding to separate initialization fields from hot producer fields
+  char pad1[PG_CACHE_LINE_SIZE - (sizeof(LWLock*) + sizeof(uint32))];
+  
+  // === Producer-written atomics (hot, written by many backends) ===
+  pg_atomic_uint64 head;     // Write position (incremented by producers)
+  pg_atomic_uint64 enqueued; // Total events successfully enqueued (stats)
+  pg_atomic_uint64 dropped;  // Total events dropped due to full queue (stats)
+  pg_atomic_flag overflow_logged;  // Set once on first overflow (prevents log spam)
+  
+  // Padding to separate producer fields from consumer fields (critical for perf)
+  char pad2[PG_CACHE_LINE_SIZE - (3 * sizeof(pg_atomic_uint64) + sizeof(pg_atomic_flag))];
+  
+  // === Consumer-written atomics (hot, written only by bgworker) ===
+  pg_atomic_uint64 tail;     // Read position (incremented by single consumer)
+  pg_atomic_uint64 exported; // Total events exported to ClickHouse (stats)
+  
+  // Ring buffer array follows immediately after this struct (flexible array member)
 };
 
 // Global pointer to shared state (set in shmem startup)

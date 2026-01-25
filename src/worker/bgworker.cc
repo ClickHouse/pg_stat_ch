@@ -3,22 +3,17 @@
 extern "C" {
 #include "postgres.h"
 
-#include "access/xact.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
-#include "storage/proc.h"
-#include "tcop/tcopprot.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
+#include "utils/guc.h"
 }
 
 #include "worker/bgworker.h"
 #include "export/clickhouse_exporter.h"
 #include "config/guc.h"
-#include "queue/shmem.h"
 
 // Flag indicating shutdown was requested
 static volatile sig_atomic_t got_sigterm = 0;
@@ -48,7 +43,7 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
   BackgroundWorkerUnblockSignals();
 
   // Connect to the "postgres" database for OID resolution
-  BackgroundWorkerInitializeConnection("postgres", NULL, 0);
+  BackgroundWorkerInitializeConnection("postgres", nullptr, 0);
 
   elog(LOG, "pg_stat_ch: background worker started");
 

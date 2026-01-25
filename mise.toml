@@ -53,7 +53,7 @@ $(pg_config --libdir)/pgxs/src/test/regress/pg_regress \
   --outputdir=test/regression/results \
   --temp-instance=test/regression/tmp_check \
   --temp-config=test/regression/pg_stat_ch.conf \
-  basic version guc stats
+  basic version guc stats utility buffers
 """
 depends = ["build", "install"]
 description = "Run SQL regression tests"
