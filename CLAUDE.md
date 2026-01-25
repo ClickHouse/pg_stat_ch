@@ -27,10 +27,30 @@ mise run clean              # Clean build artifacts
 ```bash
 mise run format             # Format code with clang-format
 mise run lint               # Run clang-tidy linting
-mise run installcheck       # Run regression tests
 mise run compdb             # Copy compile_commands.json to root (for IDE)
 mise run configure          # Configure with CMake (debug)
 ```
+
+## Testing
+
+```bash
+# Via mise (uses PG 18)
+mise run test:all           # Run all tests
+mise run test:regress       # SQL regression tests
+mise run test:tap           # TAP tests (stress, concurrent, overflow)
+mise run test:isolation     # Isolation tests (race conditions)
+
+# Via script (specify PG version)
+./scripts/run-tests.sh 18 all
+./scripts/run-tests.sh 17 regress
+```
+
+**Test types:**
+- `regress` - SQL regression tests in `test/regression/`
+- `tap` - Perl TAP tests in `t/` (stress, concurrent sessions, overflow)
+- `isolation` - Race condition tests in `specs/`
+
+**Note:** TAP tests require PostgreSQL built with `--enable-tap-tests`. Mise-installed versions don't include the Perl test modules; the script skips TAP tests gracefully when unavailable.
 
 ## Code Style
 

@@ -1,0 +1,213 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_write s2_write s1_check s2_check
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s2_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s1_check: SELECT enqueued_events > 0 AS has_events FROM pg_stat_ch_stats();
+has_events
+----------
+t         
+(1 row)
+
+step s2_check: SELECT enqueued_events > 0 AS has_events FROM pg_stat_ch_stats();
+has_events
+----------
+t         
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|capacity_valid
+--------------+-------------+----------+--------------
+t             |t            |t         |t             
+(1 row)
+
+
+starting permutation: s1_write s3_stats s2_write s3_stats s1_check
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s3_stats: SELECT queue_size >= 0 AS valid_size FROM pg_stat_ch_stats();
+valid_size
+----------
+t         
+(1 row)
+
+step s2_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s3_stats: SELECT queue_size >= 0 AS valid_size FROM pg_stat_ch_stats();
+valid_size
+----------
+t         
+(1 row)
+
+step s1_check: SELECT enqueued_events > 0 AS has_events FROM pg_stat_ch_stats();
+has_events
+----------
+t         
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|capacity_valid
+--------------+-------------+----------+--------------
+t             |t            |t         |t             
+(1 row)
+
+
+starting permutation: s1_write s3_reset s2_write s1_check s3_invariants
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s3_reset: SELECT pg_stat_ch_reset();
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s2_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s1_check: SELECT enqueued_events > 0 AS has_events FROM pg_stat_ch_stats();
+has_events
+----------
+t         
+(1 row)
+
+step s3_invariants: 
+    SELECT
+        dropped_events = 0 AS no_drops,
+        queue_capacity = 65536 AS default_capacity
+    FROM pg_stat_ch_stats();
+
+no_drops|default_capacity
+--------+----------------
+t       |t               
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|capacity_valid
+--------------+-------------+----------+--------------
+t             |t            |t         |t             
+(1 row)
+
+
+starting permutation: s1_write s3_invariants s2_write s3_invariants
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s3_invariants: 
+    SELECT
+        dropped_events = 0 AS no_drops,
+        queue_capacity = 65536 AS default_capacity
+    FROM pg_stat_ch_stats();
+
+no_drops|default_capacity
+--------+----------------
+t       |t               
+(1 row)
+
+step s2_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s3_invariants: 
+    SELECT
+        dropped_events = 0 AS no_drops,
+        queue_capacity = 65536 AS default_capacity
+    FROM pg_stat_ch_stats();
+
+no_drops|default_capacity
+--------+----------------
+t       |t               
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|capacity_valid
+--------------+-------------+----------+--------------
+t             |t            |t         |t             
+(1 row)
+
+
+starting permutation: s3_reset s3_reset s1_write s3_invariants
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s3_reset: SELECT pg_stat_ch_reset();
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s3_reset: SELECT pg_stat_ch_reset();
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_write: SELECT count(*) FROM generate_series(1, 50);
+count
+-----
+   50
+(1 row)
+
+step s3_invariants: 
+    SELECT
+        dropped_events = 0 AS no_drops,
+        queue_capacity = 65536 AS default_capacity
+    FROM pg_stat_ch_stats();
+
+no_drops|default_capacity
+--------+----------------
+t       |t               
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|capacity_valid
+--------------+-------------+----------+--------------
+t             |t            |t         |t             
+(1 row)
+

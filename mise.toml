@@ -13,9 +13,10 @@ description = "Configure build with CMake (Debug)"
 run = "cmake -B build --preset release"
 description = "Configure build with CMake (Release)"
 
+# Default build uses PG 18 (required for WaitEventExtensionNew API)
 [tasks.build]
-run = "cmake -B build --preset default && cmake --build build"
-description = "Build the extension (uses current pg_config)"
+run = "cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
+description = "Build the extension for PostgreSQL 18"
 
 [tasks."build:release"]
 run = "cmake -B build --preset release && cmake --build build"
@@ -45,18 +46,32 @@ description = "Run clang-tidy linting"
 run = "make -C $(pg_config --sharedir)/.. installcheck REGRESS_OPTS='--inputdir=$(pwd)' || pg_regress --inputdir=$(pwd) --bindir=$(pg_config --bindir) pg_stat_ch"
 description = "Run regression tests"
 
+# Test tasks using scripts/run-tests.sh
+# Default PG version for tests (requires PG 17+ for WaitEventExtensionNew API)
 [tasks."test:regress"]
-run = """
-$(pg_config --libdir)/pgxs/src/test/regress/pg_regress \
-  --bindir=$(pg_config --bindir) \
-  --inputdir=test/regression \
-  --outputdir=test/regression/results \
-  --temp-instance=test/regression/tmp_check \
-  --temp-config=test/regression/pg_stat_ch.conf \
-  basic version guc stats utility buffers
-"""
+run = "./scripts/run-tests.sh 18 regress"
 depends = ["build", "install"]
-description = "Run SQL regression tests"
+description = "Run SQL regression tests (PG 18)"
+
+[tasks."test:tap"]
+run = "./scripts/run-tests.sh 18 tap"
+depends = ["build", "install"]
+description = "Run TAP tests (PG 18)"
+
+[tasks."test:isolation"]
+run = "./scripts/run-tests.sh 18 isolation"
+depends = ["build", "install"]
+description = "Run isolation tests (PG 18)"
+
+[tasks."test:stress"]
+run = "./scripts/run-tests.sh 18 stress"
+depends = ["build", "install"]
+description = "Run stress test only (PG 18)"
+
+[tasks."test:all"]
+run = "./scripts/run-tests.sh 18 all"
+depends = ["build", "install"]
+description = "Run all tests (PG 18)"
 
 # Per-version build tasks
 [tasks."build:16"]
