@@ -18,6 +18,15 @@ char* psch_clickhouse_database = nullptr;
 int psch_queue_capacity = 65536;
 int psch_flush_interval_ms = 1000;
 int psch_batch_max = 10000;
+int psch_log_min_elevel = WARNING;
+
+// Log level options (matches PostgreSQL's server_message_level_options pattern)
+static const struct config_enum_entry log_elevel_options[] = {
+    {"debug5", DEBUG5, false}, {"debug4", DEBUG4, false}, {"debug3", DEBUG3, false},
+    {"debug2", DEBUG2, false}, {"debug1", DEBUG1, false}, {"log", LOG, false},
+    {"info", INFO, false},     {"notice", NOTICE, false}, {"warning", WARNING, false},
+    {"error", ERROR, false},   {"fatal", FATAL, false},   {"panic", PANIC, false},
+    {NULL, 0, false}};
 
 extern "C" {
 
@@ -83,6 +92,12 @@ void PschInitGuc(void) {
   DefineCustomIntVariable(
       "pg_stat_ch.batch_max", "Maximum number of events per ClickHouse insert batch.", nullptr,
       &psch_batch_max, 10000, 1, 1000000, PGC_SIGHUP, 0, nullptr, nullptr, nullptr);
+
+  DefineCustomEnumVariable(
+      "pg_stat_ch.log_min_elevel", "Minimum error level to capture via emit_log_hook.",
+      "Set to 'warning' (default) to capture warnings and errors, "
+      "'error' for errors only, or 'debug5' for all messages.",
+      &psch_log_min_elevel, WARNING, log_elevel_options, PGC_SUSET, 0, nullptr, nullptr, nullptr);
 
   EmitWarningsOnPlaceholders("pg_stat_ch");
 }

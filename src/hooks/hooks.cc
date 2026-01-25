@@ -694,7 +694,7 @@ static void PschEmitLogHook(ErrorData* edata) {
   bool should_capture =
       (edata != nullptr && psch_enabled && !IsParallelWorker() && MyProc != nullptr);
 
-  if (should_capture && edata->elevel >= WARNING && !disable_error_capture) {
+  if (should_capture && edata->elevel >= psch_log_min_elevel && !disable_error_capture) {
     const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
 
     PschEvent event;

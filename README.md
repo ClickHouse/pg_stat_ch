@@ -6,6 +6,7 @@ A PostgreSQL extension that captures per-query execution telemetry and exports i
 
 - [Overview](#overview)
 - [Architecture](#architecture)
+  - [Hooks](#hooks)
 - [Features](#features)
 - [Supported Versions](#supported-versions)
 - [Building from Source](#building-from-source)
@@ -40,6 +41,26 @@ PostgreSQL Hooks (foreground) → Shared Memory Queue → Background Worker → 
 2. **Shared Memory Ring Buffer** stores events (MPSC: multi-producer, single-consumer)
 3. **Background Worker** dequeues batches and exports to ClickHouse
 4. **ClickHouse** stores raw events in `events_raw` table; views/MVs provide aggregates
+
+### Hooks
+
+pg_stat_ch uses PostgreSQL's executor and utility hooks to capture telemetry:
+
+| Hook | Purpose |
+|------|---------|
+| `ExecutorStart_hook` | Initialize instrumentation, capture start time and CPU baseline |
+| `ExecutorRun/Finish_hook` | Track query nesting level |
+| `ExecutorEnd_hook` | Extract metrics from QueryDesc, enqueue event |
+| `ProcessUtility_hook` | Capture DDL and utility statements (CREATE, COPY, VACUUM, etc.) |
+| `emit_log_hook` | Capture errors and warnings (SQLSTATE, error level) |
+
+**Key design decisions:**
+- Parallel workers are skipped (metrics aggregated by leader)
+- Nesting level tracked to identify top-level vs nested queries
+- Hooks chain to previous values for compatibility with other extensions
+- Error capture uses deadlock prevention to avoid recursive calls
+
+See [docs/hooks.md](docs/hooks.md) for detailed documentation on each hook, captured metrics, and code examples.
 
 ### Source Structure
 
@@ -167,6 +188,7 @@ SELECT * FROM pg_stat_ch_stats();
 | `pg_stat_ch.queue_capacity` | int | `65536` | Restart | Ring buffer size (must be power of 2) |
 | `pg_stat_ch.flush_interval_ms` | int | `1000` | SIGHUP | Export batch interval in milliseconds |
 | `pg_stat_ch.batch_max` | int | `10000` | SIGHUP | Maximum events per ClickHouse insert |
+| `pg_stat_ch.log_min_elevel` | enum | `warning` | Superuser | Minimum error level to capture (debug5..panic) |
 
 ## SQL API
 
