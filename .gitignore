@@ -26,3 +26,6 @@ log/
 # OS files
 .DS_Store
 Thumbs.db
+
+# clangd
+.cache/

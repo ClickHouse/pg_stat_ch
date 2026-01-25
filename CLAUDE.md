@@ -68,6 +68,15 @@ Use `#if PG_VERSION_NUM >= XXXXX` for version-specific code:
 - PG 17+: Unified nesting_level, separate block timing
 - PG 15+: JIT instrumentation, temp_blk timing
 
+## Reference Projects
+
+These projects are available in the workspace as references:
+
+- **`../pg_stat_monitor`** - Primary reference for PostgreSQL hook patterns, shared memory management, and query statistics collection. Our hook implementations are based on patterns from this project.
+- **`../clickhouse-cpp`** - C++ client library for ClickHouse; reference for HTTP transport to ClickHouse
+- **`../pg_duckdb`** - Another PG extension in C++; reference for C++/PostgreSQL integration patterns
+- **`../postgres`** - PostgreSQL source code for understanding internal APIs
+
 ## Useful Skills
 
 - `/cpp-review` - Review C++ code against Google Style Guide
