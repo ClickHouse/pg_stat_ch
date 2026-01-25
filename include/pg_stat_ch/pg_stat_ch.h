@@ -13,9 +13,6 @@ extern "C" {
 #define PG_STAT_CH_VERSION "unknown"
 #endif
 
-// Extension initialization
-void _PG_init(void);
-
 // SQL-callable functions
 PGDLLEXPORT Datum pg_stat_ch_version(PG_FUNCTION_ARGS);
 

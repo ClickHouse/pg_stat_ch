@@ -26,7 +26,11 @@ This spec is written for an implementation in **C++** (using the Postgres extens
 ### 1.3 Compatibility
 - PostgreSQL **16+** (major versions >= 16).
 - Linux/macOS build supported by PGXS toolchain.
-- ClickHouse reachable via HTTP (8123) or alternative transport; v1 uses HTTP.
+- ClickHouse reachable via native protocol (9000) using clickhouse-cpp SDK.
+
+### 1.4 Dependencies
+- **clickhouse-cpp** - C++ client library for ClickHouse (native protocol)
+- Dependencies are vendored as git submodules in `third_party/`
 
 ---
 
@@ -42,7 +46,7 @@ This spec is written for an implementation in **C++** (using the Postgres extens
 3. **Background worker**
    - Pops events in batches.
    - Resolves `dbid/userid` to names (via syscache lookups).
-   - Serializes batch as `JSONEachRow` and POSTs to ClickHouse.
+   - Inserts batch to ClickHouse using clickhouse-cpp native protocol.
 4. **ClickHouse**
    - Stores raw events in `pg_stat_ch.events_raw`.
    - Optional materialized views compute aggregates and notables.
@@ -712,69 +716,112 @@ bool enqueue_event(Event *event) {
   - `dbid` → db name (via `get_database_name()`)
   - `userid` → role name (via `GetUserNameFromId()`)
   - `cmd_type` enum → string ("SELECT", "INSERT", etc.)
-- Serialize batch as `JSONEachRow`.
-- POST to ClickHouse:
-  - URL: `http://ch:8123/?query=INSERT%20INTO%20pg_stat_ch.events_raw%20FORMAT%20JSONEachRow`
+- Insert batch to ClickHouse using clickhouse-cpp native protocol.
 
-### 8.2 Error Handling & Reliability
+### 8.2 clickhouse-cpp Integration
+```cpp
+#include <clickhouse/client.h>
+
+// Connection managed by bgworker, reconnects on failure
+clickhouse::Client client(clickhouse::ClientOptions()
+    .SetHost(config.clickhouse_host)
+    .SetPort(config.clickhouse_port)
+    .SetUser(config.clickhouse_user)
+    .SetPassword(config.clickhouse_password)
+    .SetDefaultDatabase(config.clickhouse_database)
+    .SetSendRetries(3)
+    .SetRetryTimeout(std::chrono::seconds(5))
+    .SetCompressionMethod(clickhouse::CompressionMethod::LZ4));
+
+void insert_batch(Event *events, int count) {
+  clickhouse::Block block;
+
+  // Build columns
+  auto ts_col = std::make_shared<clickhouse::ColumnDateTime64>(6);
+  auto duration_col = std::make_shared<clickhouse::ColumnUInt64>();
+  auto db_col = std::make_shared<clickhouse::ColumnString>();
+  // ... other columns ...
+
+  for (int i = 0; i < count; i++) {
+    Event *e = &events[i];
+    ts_col->Append(e->ts_start);
+    duration_col->Append(e->duration_us);
+    db_col->Append(get_database_name(e->dbid));
+    // ... populate other columns ...
+  }
+
+  block.AppendColumn("ts_start", ts_col);
+  block.AppendColumn("duration_us", duration_col);
+  block.AppendColumn("db", db_col);
+  // ... append other columns ...
+
+  client.Insert("pg_stat_ch.events_raw", block);
+}
+```
+
+### 8.3 Error Handling & Reliability
 - Keep query path independent of exporter health.
 - Exporter handles failures:
-  - Short timeouts (e.g., 2s)
-  - Retry with exponential backoff (1s, 2s, 4s, 8s, max 60s)
+  - clickhouse-cpp provides built-in retry with `SetSendRetries()`
+  - Additional retry with exponential backoff (1s, 2s, 4s, 8s, max 60s)
   - Do **not** block forever
 - When ClickHouse is down:
   - Queue grows until full; then events drop
   - Counters indicate drops and last error
   - Log warning when drops start
-
-### 8.3 Batch serialization
-```c
-void serialize_batch(StringInfo buf, Event *events, int count) {
-  for (int i = 0; i < count; i++) {
-    Event *e = &events[i];
-    appendStringInfo(buf,
-      "{\"ts_start\":\"%s\",\"duration_us\":%lu,\"db\":\"%s\",\"user\":\"%s\","
-      "\"pid\":%u,\"query_id\":%lu,\"top_level\":%d,\"cmd_type\":\"%s\","
-      "\"rows\":%lu,\"err_sqlstate\":\"%s\",\"err_elevel\":%d,"
-      // ... all other fields ...
-      "\"query\":\"%s\"}\n",
-      format_timestamp(e->ts_start), e->duration_us,
-      get_database_name(e->dbid), GetUserNameFromId(e->userid, true),
-      e->pid, e->queryid, e->top_level, cmd_type_string(e->cmd_type),
-      e->rows, e->err_sqlstate, e->err_elevel,
-      escape_json_string(e->query)
-    );
-  }
-}
-```
+- Connection management:
+  - Reconnect on connection loss
+  - Use LZ4 compression for efficient transfer
 
 ---
 
-## 9. Configuration (GUCs)
+## 9. Configuration
 
-### 9.1 Postmaster (restart required)
+### 9.1 GUC (PostgreSQL configuration)
+Only runtime control is exposed as GUC:
 ```
-pg_stat_ch.enabled = on
-pg_stat_ch.clickhouse_url = 'http://localhost:8123'
-pg_stat_ch.queue_capacity_events = 65536
-pg_stat_ch.max_query_len = 2048
-pg_stat_ch.max_err_msg_len = 256
+pg_stat_ch.enabled = on          -- Master on/off switch (SIGHUP reloadable)
 ```
 
-### 9.2 SIGHUP (reloadable)
+### 9.2 Config File (`pg_stat_ch.conf`)
+All ClickHouse connection and operational parameters are read from a config file.
+Location: `$PGDATA/pg_stat_ch.conf` (or specified via `pg_stat_ch.config_file` GUC).
+
+```ini
+# ClickHouse connection
+clickhouse_host = localhost
+clickhouse_port = 9000
+clickhouse_user = default
+clickhouse_password =
+clickhouse_database = pg_stat_ch
+
+# Queue settings
+queue_capacity_events = 65536
+max_query_len = 2048
+max_err_msg_len = 256
+
+# Export settings
+flush_interval_ms = 1000
+batch_max = 1000
+
+# Capture policy
+capture_rate = 1.0
+capture_min_duration_us = 1000
+slow_us = 100000
+rows_threshold = 10000
+capture_query = sampled          # off|sampled|all|errors_only
+top_level_only = true
+track_utility = true
+track_planning = false
+track = top                      # none|top|all
 ```
-pg_stat_ch.flush_interval_ms = 1000
-pg_stat_ch.batch_max = 1000
-pg_stat_ch.capture_rate = 1.0
-pg_stat_ch.capture_min_duration_us = 1000
-pg_stat_ch.slow_us = 100000
-pg_stat_ch.rows_threshold = 10000
-pg_stat_ch.capture_query = 'sampled'   -- off|sampled|all|errors_only
-pg_stat_ch.top_level_only = on
-pg_stat_ch.track_utility = on
-pg_stat_ch.track_planning = off
-pg_stat_ch.track = 'top'               -- none|top|all
-```
+
+### 9.3 Config File Parsing
+- Config file is read at bgworker startup and on SIGHUP.
+- Simple INI-style format (key = value).
+- Comments start with `#`.
+- Missing file or keys use defaults.
+- Invalid values logged as warnings, defaults used.
 
 ---
 
@@ -817,20 +864,41 @@ CREATE FUNCTION pg_stat_ch_reset() RETURNS void;
 
 ## 12. Build & Deploy Notes
 
-### 12.1 Build
-- Use PGXS (`pg_config --pgxs`).
+### 12.1 Dependencies (third_party/)
+Dependencies are vendored as git submodules in `third_party/`:
+```bash
+# Add clickhouse-cpp as submodule
+git submodule add https://github.com/ClickHouse/clickhouse-cpp.git third_party/clickhouse-cpp
+
+# Initialize submodules after clone
+git submodule update --init --recursive
+```
+
+Directory structure:
+```
+third_party/
+└── clickhouse-cpp/     # ClickHouse C++ client library
+```
+
+### 12.2 Build
+- Use CMake with PGXS integration.
 - Export C ABI symbols via `extern "C"` in C++.
 - Avoid STL in shared memory; use Postgres allocators and shmem APIs.
 - Use `#if PG_VERSION_NUM >= XXXXX` for version-specific code.
+- clickhouse-cpp is built as part of the extension build:
+  ```cmake
+  add_subdirectory(third_party/clickhouse-cpp)
+  target_link_libraries(pg_stat_ch PRIVATE clickhouse-cpp-lib)
+  ```
 
-### 12.2 Deploy
+### 12.3 Deploy
 1. `shared_preload_libraries = 'pg_stat_ch'`
-2. Configure ClickHouse URL and other GUCs.
+2. Create config file `$PGDATA/pg_stat_ch.conf` with ClickHouse connection details.
 3. Restart Postgres.
 4. `CREATE EXTENSION pg_stat_ch;`
 5. Create ClickHouse tables and views.
 
-### 12.3 Version compatibility macros
+### 12.4 Version compatibility macros
 ```c
 #if PG_VERSION_NUM >= 180000
   // PG18+ specific code (execute_once removed from ExecutorRun)
@@ -850,11 +918,13 @@ CREATE FUNCTION pg_stat_ch_reset() RETURNS void;
 ## 13. Milestones (Implementation Order)
 
 ### Phase 1: Core Pipeline (MVP)
-1. Hook wiring: `ExecutorStart`, `ExecutorEnd` for basic timing
-2. Shared memory ring buffer initialization
-3. Background worker with ClickHouse HTTP POST
-4. Basic event capture (timing, rows, queryid)
-5. GUC setup (enabled, clickhouse_url)
+1. Add clickhouse-cpp as git submodule in `third_party/`
+2. Config file parser for `pg_stat_ch.conf`
+3. Hook wiring: `ExecutorStart`, `ExecutorEnd` for basic timing
+4. Shared memory ring buffer initialization
+5. Background worker with clickhouse-cpp native protocol insert
+6. Basic event capture (timing, rows, queryid)
+7. GUC setup (`pg_stat_ch.enabled` only)
 
 ### Phase 2: Full Executor Coverage
 6. Add `ExecutorRun` and `ExecutorFinish` for nesting tracking
@@ -904,4 +974,5 @@ CREATE FUNCTION pg_stat_ch_reset() RETURNS void;
 - [pg_stat_monitor source](https://github.com/percona/pg_stat_monitor) - Hook patterns and data structures
 - [pg_stat_statements](https://www.postgresql.org/docs/current/pgstatstatements.html) - Core stat tracking approach
 - [PostgreSQL Hook Documentation](https://wiki.postgresql.org/wiki/Development_Hooks)
-- [ClickHouse HTTP Interface](https://clickhouse.com/docs/en/interfaces/http)
+- [clickhouse-cpp](https://github.com/ClickHouse/clickhouse-cpp) - C++ client library for ClickHouse native protocol
+- [ClickHouse Native Protocol](https://clickhouse.com/docs/en/interfaces/tcp) - Native TCP interface (port 9000)
