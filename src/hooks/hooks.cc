@@ -6,12 +6,15 @@ extern "C" {
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "common/ip.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
 #include "nodes/parsenodes.h"
 #include "tcop/utility.h"
+#include "utils/backend_status.h"
 #include "utils/elog.h"
+#include "utils/guc.h"
 #include "utils/timestamp.h"
 
 #if PG_VERSION_NUM >= 140000
@@ -91,6 +94,81 @@ static void UnpackSqlState(int sql_state, char* buf) {
     sql_state >>= 6;
   }
   buf[5] = '\0';
+}
+
+// Get PgBackendStatus for the current backend (version-compatible)
+static PgBackendStatus* GetBackendStatus(void) {
+#if PG_VERSION_NUM >= 170000
+  return pgstat_get_beentry_by_proc_number(MyProcNumber);
+#else
+  // PG16 and earlier: iterate through all backends
+  LocalPgBackendStatus* local_beentry;
+  int num_backends = pgstat_fetch_stat_numbackends();
+  for (int i = 1; i <= num_backends; i++) {
+    local_beentry = pgstat_fetch_stat_local_beentry(i);
+    if (local_beentry == nullptr) {
+      continue;
+    }
+    PgBackendStatus* beentry = &local_beentry->backendStatus;
+    if (beentry->st_procpid == MyProcPid) {
+      return beentry;
+    }
+  }
+  return nullptr;
+#endif
+}
+
+// Get application name for current backend
+// Returns the length of the string copied to buf
+static int GetApplicationName(char* buf, int buf_size) {
+  // Try application_name GUC first (always up-to-date)
+  if (application_name != nullptr && application_name[0] != '\0') {
+    int len = snprintf(buf, buf_size, "%s", application_name);
+    return (len >= buf_size) ? buf_size - 1 : len;
+  }
+
+  // Fall back to backend status
+  PgBackendStatus* beentry = GetBackendStatus();
+  if (beentry != nullptr && beentry->st_appname != nullptr) {
+    int len = snprintf(buf, buf_size, "%s", beentry->st_appname);
+    return (len >= buf_size) ? buf_size - 1 : len;
+  }
+
+  buf[0] = '\0';
+  return 0;
+}
+
+// Get client address for current backend as a string
+// Returns the length of the string copied to buf
+static int GetClientAddress(char* buf, int buf_size) {
+  buf[0] = '\0';
+
+  PgBackendStatus* beentry = GetBackendStatus();
+  if (beentry == nullptr) {
+    return 0;
+  }
+
+  // Get the client address as a string
+  char remote_host[NI_MAXHOST];
+  remote_host[0] = '\0';
+
+  int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr,
+                               beentry->st_clientaddr.salen, remote_host,
+                               sizeof(remote_host), nullptr, 0,
+                               NI_NUMERICHOST | NI_NUMERICSERV);
+
+  if (ret != 0 || remote_host[0] == '\0') {
+    return 0;
+  }
+
+  // Handle local connections
+  if (strcmp(remote_host, "[local]") == 0) {
+    int len = snprintf(buf, buf_size, "127.0.0.1");
+    return (len >= buf_size) ? buf_size - 1 : len;
+  }
+
+  int len = snprintf(buf, buf_size, "%s", remote_host);
+  return (len >= buf_size) ? buf_size - 1 : len;
 }
 
 // Build a PschEvent from a QueryDesc
@@ -199,6 +277,12 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
         static_cast<int16>(query_desc->estate->es_parallel_workers_launched);
   }
 #endif
+
+  // Client context
+  event->application_name_len = static_cast<uint8>(
+      GetApplicationName(event->application_name, sizeof(event->application_name)));
+  event->client_addr_len = static_cast<uint8>(
+      GetClientAddress(event->client_addr, sizeof(event->client_addr)));
 
   // Query text
   if (query_desc->sourceText != nullptr) {
@@ -435,6 +519,12 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
   event->wal_fpi = walusage->wal_fpi;
   event->wal_bytes = walusage->wal_bytes;
 
+  // Client context
+  event->application_name_len = static_cast<uint8>(
+      GetApplicationName(event->application_name, sizeof(event->application_name)));
+  event->client_addr_len = static_cast<uint8>(
+      GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+
   // Query text
   if (queryString != nullptr) {
     size_t len = strlen(queryString);
@@ -600,7 +690,7 @@ static void PschEmitLogHook(ErrorData* edata) {
                          !IsParallelWorker() && MyProc != nullptr);
 
   if (should_capture && edata->elevel >= WARNING && !disable_error_capture) {
-    const char* query = debug_query_string ? debug_query_string : "";
+    const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
 
     PschEvent event;
     MemSet(&event, 0, sizeof(event));
@@ -625,6 +715,12 @@ static void PschEmitLogHook(ErrorData* edata) {
       event.query[len] = '\0';
       event.query_len = static_cast<uint16>(len);
     }
+
+    // Client context
+    event.application_name_len = static_cast<uint8>(GetApplicationName(
+        event.application_name, sizeof(event.application_name)));
+    event.client_addr_len = static_cast<uint8>(
+        GetClientAddress(event.client_addr, sizeof(event.client_addr)));
 
     // Prevent recursive calls if PschEnqueueEvent triggers an error
     disable_error_capture = true;

@@ -110,6 +110,12 @@ struct PschEvent {
   uint8 err_elevel;               // Error level (0=success, WARNING=19, ERROR=20)
   uint8 _padding3;                // Alignment
 
+  // Client context
+  char application_name[64];      // Application name (NAMEDATALEN=64)
+  uint8 application_name_len;     // Actual length
+  char client_addr[46];           // Client IP address (INET6_ADDRSTRLEN=46)
+  uint8 client_addr_len;          // Actual length
+
   // Query text (null-terminated, truncated if necessary)
   uint16 query_len;        // Actual length of query text
   char query[PSCH_MAX_QUERY_LEN];

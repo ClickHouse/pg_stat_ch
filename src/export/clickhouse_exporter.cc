@@ -5,6 +5,7 @@ extern "C" {
 
 #include "commands/dbcommands.h"
 #include "miscadmin.h"
+#include "utils/lsyscache.h"
 }
 
 #include <memory>
@@ -132,6 +133,30 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   auto col_wal_fpi = std::make_shared<clickhouse::ColumnInt64>();
   auto col_wal_bytes = std::make_shared<clickhouse::ColumnUInt64>();
 
+  // CPU time columns
+  auto col_cpu_user_time_us = std::make_shared<clickhouse::ColumnInt64>();
+  auto col_cpu_sys_time_us = std::make_shared<clickhouse::ColumnInt64>();
+
+  // JIT columns
+  auto col_jit_functions = std::make_shared<clickhouse::ColumnInt32>();
+  auto col_jit_generation_time_us = std::make_shared<clickhouse::ColumnInt32>();
+  auto col_jit_deform_time_us = std::make_shared<clickhouse::ColumnInt32>();
+  auto col_jit_inlining_time_us = std::make_shared<clickhouse::ColumnInt32>();
+  auto col_jit_optimization_time_us = std::make_shared<clickhouse::ColumnInt32>();
+  auto col_jit_emission_time_us = std::make_shared<clickhouse::ColumnInt32>();
+
+  // Parallel worker columns
+  auto col_parallel_workers_planned = std::make_shared<clickhouse::ColumnInt16>();
+  auto col_parallel_workers_launched = std::make_shared<clickhouse::ColumnInt16>();
+
+  // Error columns
+  auto col_err_sqlstate = std::make_shared<clickhouse::ColumnFixedString>(5);
+  auto col_err_elevel = std::make_shared<clickhouse::ColumnUInt8>();
+
+  // Client context columns
+  auto col_app = std::make_shared<clickhouse::ColumnString>();
+  auto col_client_addr = std::make_shared<clickhouse::ColumnString>();
+
   for (const auto& ev : events) {
     int64_t unix_us = ev.ts_start + kPostgresEpochOffsetUs;
     col_ts_start->Append(unix_us);
@@ -169,6 +194,30 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_wal_records->Append(ev.wal_records);
     col_wal_fpi->Append(ev.wal_fpi);
     col_wal_bytes->Append(ev.wal_bytes);
+
+    // CPU time
+    col_cpu_user_time_us->Append(ev.cpu_user_time_us);
+    col_cpu_sys_time_us->Append(ev.cpu_sys_time_us);
+
+    // JIT
+    col_jit_functions->Append(ev.jit_functions);
+    col_jit_generation_time_us->Append(ev.jit_generation_time_us);
+    col_jit_deform_time_us->Append(ev.jit_deform_time_us);
+    col_jit_inlining_time_us->Append(ev.jit_inlining_time_us);
+    col_jit_optimization_time_us->Append(ev.jit_optimization_time_us);
+    col_jit_emission_time_us->Append(ev.jit_emission_time_us);
+
+    // Parallel workers
+    col_parallel_workers_planned->Append(ev.parallel_workers_planned);
+    col_parallel_workers_launched->Append(ev.parallel_workers_launched);
+
+    // Error info (5-char SQLSTATE, trimmed)
+    col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
+    col_err_elevel->Append(ev.err_elevel);
+
+    // Client context
+    col_app->Append(std::string(ev.application_name, ev.application_name_len));
+    col_client_addr->Append(std::string(ev.client_addr, ev.client_addr_len));
   }
 
   // Basic columns
@@ -207,6 +256,30 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   block.AppendColumn("wal_records", col_wal_records);
   block.AppendColumn("wal_fpi", col_wal_fpi);
   block.AppendColumn("wal_bytes", col_wal_bytes);
+
+  // CPU time columns
+  block.AppendColumn("cpu_user_time_us", col_cpu_user_time_us);
+  block.AppendColumn("cpu_sys_time_us", col_cpu_sys_time_us);
+
+  // JIT columns
+  block.AppendColumn("jit_functions", col_jit_functions);
+  block.AppendColumn("jit_generation_time_us", col_jit_generation_time_us);
+  block.AppendColumn("jit_deform_time_us", col_jit_deform_time_us);
+  block.AppendColumn("jit_inlining_time_us", col_jit_inlining_time_us);
+  block.AppendColumn("jit_optimization_time_us", col_jit_optimization_time_us);
+  block.AppendColumn("jit_emission_time_us", col_jit_emission_time_us);
+
+  // Parallel worker columns
+  block.AppendColumn("parallel_workers_planned", col_parallel_workers_planned);
+  block.AppendColumn("parallel_workers_launched", col_parallel_workers_launched);
+
+  // Error columns
+  block.AppendColumn("err_sqlstate", col_err_sqlstate);
+  block.AppendColumn("err_elevel", col_err_elevel);
+
+  // Client context columns
+  block.AppendColumn("app", col_app);
+  block.AppendColumn("client_addr", col_client_addr);
 
   return block;
 }
