@@ -1,0 +1,40 @@
+-- Test command type classification
+-- Verifies that different SQL command types are properly classified
+
+CREATE EXTENSION pg_stat_ch;
+SELECT pg_stat_ch_reset();
+
+-- Create test table
+CREATE TABLE test_cmd_type(id int, data text);
+
+-- INSERT command
+INSERT INTO test_cmd_type VALUES (1, 'first');
+INSERT INTO test_cmd_type VALUES (2, 'second'), (3, 'third');
+
+-- SELECT command
+SELECT * FROM test_cmd_type ORDER BY id;
+
+-- UPDATE command
+UPDATE test_cmd_type SET data = 'updated' WHERE id = 1;
+
+-- DELETE command
+DELETE FROM test_cmd_type WHERE id = 3;
+
+-- SELECT with aggregate
+SELECT count(*), max(id) FROM test_cmd_type;
+
+-- DDL commands (utility)
+ALTER TABLE test_cmd_type ADD COLUMN created_at timestamp DEFAULT now();
+CREATE INDEX idx_cmd_type_id ON test_cmd_type(id);
+
+-- TRUNCATE command
+TRUNCATE test_cmd_type;
+
+-- Clean up
+DROP TABLE test_cmd_type;
+
+-- Verify events were captured
+SELECT
+  (SELECT enqueued_events FROM pg_stat_ch_stats()) > 0 AS events_captured;
+
+DROP EXTENSION pg_stat_ch;

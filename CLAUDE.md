@@ -52,6 +52,12 @@ mise run test:isolation     # Isolation tests (race conditions)
 
 **Note:** TAP tests require PostgreSQL built with `--enable-tap-tests`. Mise-installed versions don't include the Perl test modules; the script skips TAP tests gracefully when unavailable.
 
+```bash
+# we have a local build of PostgreSQL with tap tests enabled
+# so we can run the tap tests against it
+./scripts/run-tests.sh ../postgres/install_tap tap
+```
+
 ## Code Style
 
 - C++17 with Google style guide (`.clang-format`)

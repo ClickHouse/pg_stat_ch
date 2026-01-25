@@ -68,6 +68,23 @@ run = "./scripts/run-tests.sh 18 stress"
 depends = ["build", "install"]
 description = "Run stress test only (PG 18)"
 
+[tasks."test:clickhouse"]
+run = "./scripts/run-tests.sh 18 clickhouse"
+depends = ["build", "install"]
+description = "Run ClickHouse integration tests (requires Docker)"
+
+[tasks."clickhouse:start"]
+run = "docker compose -f docker/docker-compose.test.yml up -d --wait"
+description = "Start ClickHouse test container"
+
+[tasks."clickhouse:stop"]
+run = "docker compose -f docker/docker-compose.test.yml down -v"
+description = "Stop ClickHouse test container"
+
+[tasks."clickhouse:logs"]
+run = "docker compose -f docker/docker-compose.test.yml logs -f"
+description = "View ClickHouse container logs"
+
 [tasks."test:all"]
 run = "./scripts/run-tests.sh 18 all"
 depends = ["build", "install"]

@@ -58,11 +58,6 @@ const char* CmdTypeToString(PschCmdType cmd) {
   }
 }
 
-// Note: We export OIDs directly instead of resolving names because:
-// 1. Catalog access (get_database_name/GetUserNameFromId) requires active transaction
-// 2. OIDs are smaller and faster to export
-// 3. ClickHouse can join with dimension tables if name resolution is needed
-
 // Dequeue events from the shared memory queue
 std::vector<PschEvent> DequeueEvents(int max_events) {
   std::vector<PschEvent> events;
