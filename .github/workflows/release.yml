@@ -42,7 +42,7 @@ jobs:
             postgresql-${{ matrix.pg }} \
             postgresql-server-dev-${{ matrix.pg }} \
             cmake ninja-build g++ \
-            binutils
+            binutils libssl-dev
 
       - name: Get version from git
         id: version
