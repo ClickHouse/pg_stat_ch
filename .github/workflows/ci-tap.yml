@@ -15,6 +15,18 @@ jobs:
     name: TAP Tests (PG 18)
     runs-on: ubuntu-24.04
 
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.3
+        ports:
+          - 19000:9000
+          - 18123:8123
+        options: >-
+          --health-cmd "clickhouse-client -q 'SELECT 1'"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,26 +83,29 @@ jobs:
           cmake --build build --parallel
           cmake --install build
 
+      - name: Wait for ClickHouse HTTP interface
+        run: |
+          for i in {1..30}; do
+            if curl -sf 'http://localhost:18123/' --data 'SELECT 1' >/dev/null 2>&1; then
+              echo "ClickHouse HTTP ready"
+              exit 0
+            fi
+            echo "Waiting for ClickHouse HTTP... ($i/30)"
+            sleep 1
+          done
+          echo "ClickHouse HTTP not ready after 30s"
+          exit 1
+
+      - name: Initialize ClickHouse schema
+        run: |
+          curl -sf 'http://localhost:18123/' --data-binary @docker/init/00-schema.sql
+
       - name: Run TAP tests
         run: |
           export PATH="$HOME/pg-tap/bin:$PATH"
           export PG_REGRESS="$HOME/pg-tap/lib/postgresql/pgxs/src/test/regress/pg_regress"
           export PERL_LIB="$HOME/pg-tap/lib/postgresql/pgxs/src/test/perl"
-          # Exclude ClickHouse tests (010, 011) - those run in ci.yml integration job
-          prove -v --timer -I "$PERL_LIB" -I t \
-            t/001_stress_test.pl \
-            t/002_concurrent_sessions.pl \
-            t/003_buffer_overflow.pl \
-            t/004_basic_lifecycle.pl \
-            t/005_settings.pl \
-            t/006_query_capture.pl \
-            t/007_utility_tracking.pl \
-            t/008_error_capture.pl \
-            t/009_bgworker.pl \
-            t/012_timing_accuracy.pl \
-            t/013_buffer_metrics.pl \
-            t/014_cpu_metrics.pl \
-            t/015_guc_validation.pl
+          prove -v --timer -I "$PERL_LIB" -I t t/*.pl
 
       - name: Upload logs on failure
         if: failure()
