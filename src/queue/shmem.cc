@@ -57,6 +57,45 @@ static inline PschEvent* GetRingBuffer(void) {
       reinterpret_cast<char*>(psch_shared_state) + sizeof(PschSharedState));
 }
 
+// Handle queue overflow: increment dropped counter and log warning once
+static void HandleOverflow() {
+  pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
+
+  // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
+  if (!pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
+    ereport(WARNING,
+            (errmsg("pg_stat_ch: queue overflow, events being dropped"),
+             errhint(
+                 "Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
+  }
+}
+
+// Check queue fullness and enqueue event if space available.
+// Called with lock held. Returns true if event was enqueued.
+static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
+  uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+
+  if (head - tail >= capacity) {
+    HandleOverflow();
+    return false;
+  }
+
+  // Fast modulo via bitmask (requires power-of-2 capacity, enforced by GUC check)
+  uint32 mask = capacity - 1;
+  PschEvent* slot = &GetRingBuffer()[head & mask];
+  memcpy(slot, event, sizeof(PschEvent));
+
+  // CRITICAL: Memory barrier ensures the event data is written to shared memory
+  // before we update head. Without this, the consumer might read stale data on
+  // weakly-ordered architectures (ARM, PowerPC). Pattern from shm_mq.c.
+  pg_memory_barrier();
+  pg_atomic_write_u64(&psch_shared_state->head, head + 1);
+  pg_atomic_fetch_add_u64(&psch_shared_state->enqueued, 1);
+
+  return true;
+}
+
 // Shutdown callback to log final stats
 static void PschShmemShutdown(int code, Datum arg) {
   (void)code;  // Unused parameter
@@ -162,9 +201,17 @@ void PschInstallShmemHooks(void) {
 
 // Enqueue an event to the ring buffer (multi-producer, called from executor hooks)
 //
-// CONCURRENCY: Multiple backends can call this simultaneously. We use an exclusive
-// LWLock to serialize producers. This is acceptable because enqueue is fast (~100ns)
-// and happens at query end, not during query execution.
+// CONCURRENCY: Multiple backends can call this simultaneously. We use a
+// double-checked locking pattern with a lock-free fast path for overflow:
+//
+// 1. LOCK-FREE FAST PATH: Check if queue is full using atomic reads. If full,
+//    handle overflow entirely with atomics - NO LOCK ACQUIRED. This eliminates
+//    lock contention during overflow conditions.
+//
+// 2. SLOW PATH: If not full, acquire lock, re-check (TOCTOU handling), enqueue.
+//
+// This pattern is critical for performance under overflow: without it, every
+// producer contends for an exclusive lock just to increment an atomic counter.
 //
 // ERROR HANDLING: PG_TRY/PG_CATCH ensures the lock is released even if an error
 // occurs (e.g., out of memory during memcpy, or signal interrupt). Without this,
@@ -179,46 +226,29 @@ bool PschEnqueueEvent(const PschEvent* event) {
     return false;
   }
 
+  uint32 capacity = psch_shared_state->capacity;
+
+  // === LOCK-FREE FAST PATH: Check for overflow without acquiring lock ===
+  // This eliminates lock contention during overflow conditions.
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
+  pg_read_barrier();  // Ensure head is read before tail for correct ordering
+  uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+
+  if (head - tail >= capacity) {
+    HandleOverflow();
+    return false;
+  }
+
+  // === SLOW PATH: Acquire lock and enqueue ===
   bool result = false;
 
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   PG_TRY();
   {
-    uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-    uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-    uint32 capacity = psch_shared_state->capacity;
-
-    // Check if queue is full (head - tail handles 64-bit wraparound correctly)
-    if (head - tail >= capacity) {
-      pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
-      
-      // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
-      if (!pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
-        ereport(WARNING,
-                (errmsg("pg_stat_ch: queue overflow, events being dropped"),
-                 errhint("Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
-      }
-      
-      result = false;
-    } else {
-      // Fast modulo via bitmask (requires power-of-2 capacity, enforced by GUC check)
-      uint32 mask = capacity - 1;
-      PschEvent* slot = &GetRingBuffer()[head & mask];
-      memcpy(slot, event, sizeof(PschEvent));
-
-      // CRITICAL: Memory barrier ensures the event data is written to shared memory
-      // before we update head. Without this, the consumer might read stale data on
-      // weakly-ordered architectures (ARM, PowerPC). Pattern from shm_mq.c.
-      pg_memory_barrier();
-      pg_atomic_write_u64(&psch_shared_state->head, head + 1);
-      pg_atomic_fetch_add_u64(&psch_shared_state->enqueued, 1);
-
-      result = true;
-    }
+    result = TryEnqueueLocked(event, capacity);
   }
   PG_CATCH();
   {
-    // Release lock before re-throwing error (prevents deadlock)
     LWLockRelease(psch_shared_state->lock);
     PG_RE_THROW();
   }
