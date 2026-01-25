@@ -45,6 +45,19 @@ description = "Run clang-tidy linting"
 run = "make -C $(pg_config --sharedir)/.. installcheck REGRESS_OPTS='--inputdir=$(pwd)' || pg_regress --inputdir=$(pwd) --bindir=$(pg_config --bindir) pg_stat_ch"
 description = "Run regression tests"
 
+[tasks."test:regress"]
+run = """
+$(pg_config --libdir)/pgxs/src/test/regress/pg_regress \
+  --bindir=$(pg_config --bindir) \
+  --inputdir=test/regression \
+  --outputdir=test/regression/results \
+  --temp-instance=test/regression/tmp_check \
+  --temp-config=test/regression/pg_stat_ch.conf \
+  basic version guc stats
+"""
+depends = ["build", "install"]
+description = "Run SQL regression tests"
+
 # Per-version build tasks
 [tasks."build:16"]
 run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@16)/bin/pg_config && cmake --build build"

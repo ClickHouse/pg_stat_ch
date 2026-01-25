@@ -22,8 +22,9 @@ function(pg_stat_ch_set_warnings target)
     # Code generation
     -fPIC
     -fvisibility=hidden
-    -fno-exceptions
-    -fno-rtti
+    # Note: We need exceptions and RTTI for clickhouse-cpp integration
+    # -fno-exceptions
+    # -fno-rtti
   )
 
   # Optional: treat warnings as errors in CI

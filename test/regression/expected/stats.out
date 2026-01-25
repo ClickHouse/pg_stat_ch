@@ -1,0 +1,15 @@
+-- Stats and reset function test
+CREATE EXTENSION pg_stat_ch;
+SELECT pg_stat_ch_reset();
+ pg_stat_ch_reset 
+------------------
+ 
+(1 row)
+
+SELECT queue_capacity > 0 AS has_capacity FROM pg_stat_ch_stats();
+ has_capacity 
+--------------
+ t
+(1 row)
+
+DROP EXTENSION pg_stat_ch;

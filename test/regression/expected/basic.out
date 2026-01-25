@@ -1,0 +1,9 @@
+-- Basic extension lifecycle
+CREATE EXTENSION pg_stat_ch;
+SELECT extname FROM pg_extension WHERE extname = 'pg_stat_ch';
+  extname   
+------------
+ pg_stat_ch
+(1 row)
+
+DROP EXTENSION pg_stat_ch;

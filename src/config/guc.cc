@@ -1,0 +1,144 @@
+// pg_stat_ch GUC (Grand Unified Configuration) implementation
+
+extern "C" {
+#include "postgres.h"
+
+#include "utils/guc.h"
+}
+
+#include "config/guc.h"
+
+// GUC variable storage
+bool psch_enabled = true;
+char* psch_clickhouse_host = nullptr;
+int psch_clickhouse_port = 9000;
+char* psch_clickhouse_user = nullptr;
+char* psch_clickhouse_password = nullptr;
+char* psch_clickhouse_database = nullptr;
+int psch_queue_capacity = 65536;
+int psch_flush_interval_ms = 1000;
+int psch_batch_max = 1000;
+
+extern "C" {
+
+void PschInitGuc(void) {
+  DefineCustomBoolVariable(
+      "pg_stat_ch.enabled",
+      "Enable or disable pg_stat_ch query telemetry collection.",
+      nullptr,
+      &psch_enabled,
+      true,
+      PGC_SIGHUP,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_host",
+      "ClickHouse server hostname.",
+      nullptr,
+      &psch_clickhouse_host,
+      "localhost",
+      PGC_POSTMASTER,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.clickhouse_port",
+      "ClickHouse server native protocol port.",
+      nullptr,
+      &psch_clickhouse_port,
+      9000,
+      1,
+      65535,
+      PGC_POSTMASTER,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_user",
+      "ClickHouse user name.",
+      nullptr,
+      &psch_clickhouse_user,
+      "default",
+      PGC_POSTMASTER,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_password",
+      "ClickHouse user password.",
+      nullptr,
+      &psch_clickhouse_password,
+      "",
+      PGC_POSTMASTER,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_database",
+      "ClickHouse database name for telemetry storage.",
+      nullptr,
+      &psch_clickhouse_database,
+      "pg_stat_ch",
+      PGC_POSTMASTER,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.queue_capacity",
+      "Maximum number of events in the shared memory queue.",
+      nullptr,
+      &psch_queue_capacity,
+      65536,
+      1024,
+      1048576,
+      PGC_POSTMASTER,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.flush_interval_ms",
+      "Interval in milliseconds between ClickHouse export batches.",
+      nullptr,
+      &psch_flush_interval_ms,
+      1000,
+      100,
+      60000,
+      PGC_SIGHUP,
+      GUC_UNIT_MS,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.batch_max",
+      "Maximum number of events per ClickHouse insert batch.",
+      nullptr,
+      &psch_batch_max,
+      1000,
+      1,
+      100000,
+      PGC_SIGHUP,
+      0,
+      nullptr,
+      nullptr,
+      nullptr);
+
+  EmitWarningsOnPlaceholders("pg_stat_ch");
+}
+
+}  // extern "C"

@@ -1,0 +1,23 @@
+-- GUC configuration test
+CREATE EXTENSION pg_stat_ch;
+SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name;
+              name              
+--------------------------------
+ pg_stat_ch.batch_max
+ pg_stat_ch.clickhouse_database
+ pg_stat_ch.clickhouse_host
+ pg_stat_ch.clickhouse_password
+ pg_stat_ch.clickhouse_port
+ pg_stat_ch.clickhouse_user
+ pg_stat_ch.enabled
+ pg_stat_ch.flush_interval_ms
+ pg_stat_ch.queue_capacity
+(9 rows)
+
+SHOW pg_stat_ch.enabled;
+ pg_stat_ch.enabled 
+--------------------
+ on
+(1 row)
+
+DROP EXTENSION pg_stat_ch;

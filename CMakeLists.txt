@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pg_stat_ch VERSION 0.1.0 LANGUAGES CXX)
+project(pg_stat_ch VERSION 0.1.0 LANGUAGES CXX C)
 
 # Add cmake modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
@@ -16,6 +16,13 @@ message(STATUS "PostgreSQL ${PostgreSQLServer_VERSION} found")
 # Compiler warnings
 include(CompilerWarnings)
 
+# Add clickhouse-cpp library (must be compiled with PIC for shared library linking)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(WITH_OPENSSL OFF CACHE BOOL "Disable OpenSSL in clickhouse-cpp")
+set(BUILD_TESTS OFF CACHE BOOL "Disable clickhouse-cpp tests")
+set(BUILD_BENCHMARK OFF CACHE BOOL "Disable clickhouse-cpp benchmarks")
+add_subdirectory(third_party/clickhouse-cpp EXCLUDE_FROM_ALL)
+
 # Collect source files
 file(GLOB_RECURSE SOURCES src/*.cc)
 
@@ -24,8 +31,15 @@ add_library(pg_stat_ch SHARED ${SOURCES})
 
 target_compile_features(pg_stat_ch PRIVATE cxx_std_17)
 target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
-target_include_directories(pg_stat_ch PRIVATE include)
-target_link_libraries(pg_stat_ch PRIVATE PostgreSQLServer::PostgreSQLServer)
+target_include_directories(pg_stat_ch PRIVATE
+  include
+  src
+  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp
+)
+target_link_libraries(pg_stat_ch PRIVATE
+  PostgreSQLServer::PostgreSQLServer
+  clickhouse-cpp-lib
+)
 pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES
