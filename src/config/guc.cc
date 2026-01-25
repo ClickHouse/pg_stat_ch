@@ -17,12 +17,12 @@ char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
 int psch_queue_capacity = 65536;
 int psch_flush_interval_ms = 1000;
-int psch_batch_max = 1000;
+int psch_batch_max = 10000;
 
 extern "C" {
 
 // Check hook to ensure queue_capacity is a power of 2
-// NOLINTNEXTLINE(readability-identifier-naming) - PostgreSQL GUC hook naming convention
+// NOLINTNEXTLINE(readability-identifier-naming,readability-non-const-parameter)
 static bool check_psch_queue_capacity(int* newval, void** extra, GucSource source) {
   (void)extra;   // Unused parameter
   (void)source;  // Unused parameter
@@ -150,7 +150,7 @@ void PschInitGuc(void) {
       "Maximum number of events per ClickHouse insert batch.",
       nullptr,
       &psch_batch_max,
-      1000,
+      10000,
       1,
       100000,
       PGC_SIGHUP,
