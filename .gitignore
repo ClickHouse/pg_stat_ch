@@ -29,3 +29,6 @@ Thumbs.db
 
 # clangd
 .cache/
+
+# Benchmark credentials
+benchmark/.env

@@ -327,11 +327,22 @@ bool PschExporterInit(void) {
         .SetSendRetries(3)
         .SetRetryTimeout(std::chrono::seconds(5));
 
+    if (psch_clickhouse_use_tls) {
+      clickhouse::ClientOptions::SSLOptions ssl_opts;
+      ssl_opts.SetUseDefaultCALocations(true)
+          .SetUseSNI(true)
+          .SetSkipVerification(psch_clickhouse_skip_tls_verify);
+      options.SetSSLOptions(ssl_opts);
+      elog(LOG, "pg_stat_ch: TLS enabled for ClickHouse connection%s",
+           psch_clickhouse_skip_tls_verify ? " (verification skipped)" : "");
+    }
+
     g_exporter.client = std::make_unique<clickhouse::Client>(options);
     g_exporter.initialized = true;
 
     const char* host = psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost";
-    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d", host, psch_clickhouse_port);
+    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d%s", host, psch_clickhouse_port,
+         psch_clickhouse_use_tls ? " (TLS)" : "");
 
     return true;
   } catch (const std::exception& ex) {
