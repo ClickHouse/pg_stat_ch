@@ -30,11 +30,15 @@ constexpr int kBaseDelayMs = 1000;      // 1 second
 constexpr int kMaxDelayMs = 60000;      // 60 seconds
 constexpr int kMaxConsecutiveFailures = 10;  // Cap for exponential growth
 
-// Retry state (bgworker-local, no locking needed)
-int g_consecutive_failures = 0;
+// Exporter state - encapsulates all bgworker-local state
+struct ExporterState {
+  std::unique_ptr<clickhouse::Client> client;
+  int consecutive_failures = 0;
+  bool initialized = false;
+};
 
-// ClickHouse client instance (lives for the lifetime of the bgworker)
-std::unique_ptr<clickhouse::Client> g_ch_client;
+// Bgworker-local exporter state (no locking needed)
+ExporterState g_exporter;
 
 // Convert PschCmdType to string
 const char* CmdTypeToString(PschCmdType cmd) {
@@ -316,7 +320,8 @@ bool PschExporterInit(void) {
         .SetSendRetries(3)
         .SetRetryTimeout(std::chrono::seconds(5));
 
-    g_ch_client = std::make_unique<clickhouse::Client>(options);
+    g_exporter.client = std::make_unique<clickhouse::Client>(options);
+    g_exporter.initialized = true;
 
     const char* host =
         psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost";
@@ -328,15 +333,15 @@ bool PschExporterInit(void) {
     std::string err_msg = ex.what();
     elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s",
          err_msg.c_str());
-    g_ch_client.reset();
+    g_exporter.client.reset();
     return false;
   }
 }
 
 void PschExportBatch(void) {
-  if (g_ch_client == nullptr) {
+  if (g_exporter.client == nullptr) {
     if (!PschExporterInit()) {
-      g_consecutive_failures++;
+      g_exporter.consecutive_failures++;
       PschRecordExportFailure("Failed to connect to ClickHouse");
       return;
     }
@@ -349,14 +354,14 @@ void PschExportBatch(void) {
 
   try {
     clickhouse::Block block = BuildClickHouseBlock(events);
-    g_ch_client->Insert("events_raw", block);
+    g_exporter.client->Insert("events_raw", block);
 
     if (psch_shared_state != nullptr) {
       pg_atomic_fetch_add_u64(&psch_shared_state->exported, events.size());
     }
 
     // Success: reset retry state and record success timestamp
-    g_consecutive_failures = 0;
+    g_exporter.consecutive_failures = 0;
     PschRecordExportSuccess();
 
     elog(DEBUG1, "pg_stat_ch: exported %zu events to ClickHouse",
@@ -368,34 +373,36 @@ void PschExportBatch(void) {
          err_msg.c_str());
 
     // Failure: increment counter, record error, reset client for reconnect
-    g_consecutive_failures++;
+    g_exporter.consecutive_failures++;
     PschRecordExportFailure(err_msg.c_str());
-    g_ch_client.reset();
+    g_exporter.client.reset();
   }
 }
 
 void PschResetRetryState(void) {
-  g_consecutive_failures = 0;
+  g_exporter.consecutive_failures = 0;
 }
 
 int PschGetRetryDelayMs(void) {
-  if (g_consecutive_failures <= 0) {
+  if (g_exporter.consecutive_failures <= 0) {
     return 0;
   }
   // Exponential backoff: base * 2^(failures-1), capped at max
-  int capped_failures = (g_consecutive_failures > kMaxConsecutiveFailures)
+  int capped_failures = (g_exporter.consecutive_failures > kMaxConsecutiveFailures)
                             ? kMaxConsecutiveFailures
-                            : g_consecutive_failures;
+                            : g_exporter.consecutive_failures;
   int delay = kBaseDelayMs * (1 << (capped_failures - 1));
   return (delay > kMaxDelayMs) ? kMaxDelayMs : delay;
 }
 
 int PschGetConsecutiveFailures(void) {
-  return g_consecutive_failures;
+  return g_exporter.consecutive_failures;
 }
 
 void PschExporterShutdown(void) {
-  g_ch_client.reset();
+  g_exporter.client.reset();
+  g_exporter.consecutive_failures = 0;
+  g_exporter.initialized = false;
   elog(LOG, "pg_stat_ch: ClickHouse exporter shutdown");
 }
 

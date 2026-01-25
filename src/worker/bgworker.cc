@@ -14,6 +14,7 @@ extern "C" {
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
@@ -55,6 +56,12 @@ static void HandleConfigReload() {
   }
 }
 
+// Callback for bgworker process exit (registered via on_proc_exit)
+static void PschBgworkerShutdown([[maybe_unused]] int code,
+                                 [[maybe_unused]] Datum arg) {
+  PschExporterShutdown();
+}
+
 // Export batch with error recovery
 static void ExportBatchWithRecovery() {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
@@ -80,6 +87,9 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
   SetupSignalHandlers();
   BackgroundWorkerUnblockSignals();
   BackgroundWorkerInitializeConnection("postgres", nullptr, 0);
+
+  // Register cleanup callback for graceful shutdown
+  on_proc_exit(PschBgworkerShutdown, 0);
 
   // Store our PID for signaling
   PschSetBgworkerPid(MyProcPid);
