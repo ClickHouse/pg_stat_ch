@@ -7,6 +7,7 @@ extern "C" {
 
 #include "access/parallel.h"
 #include "access/xact.h"
+#include "commands/dbcommands.h"
 #include "common/ip.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -103,7 +104,7 @@ static PgBackendStatus* GetBackendStatus(void) {
   LocalPgBackendStatus* local_beentry;
   int num_backends = pgstat_fetch_stat_numbackends();
   for (int i = 1; i <= num_backends; i++) {
-    local_beentry = pgstat_fetch_stat_local_beentry(i);
+    local_beentry = pgstat_get_local_beentry_by_index(i);
     if (local_beentry == nullptr) {
       continue;
     }
