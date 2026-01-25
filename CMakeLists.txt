@@ -16,9 +16,14 @@ message(STATUS "PostgreSQL ${PostgreSQLServer_VERSION} found")
 # Compiler warnings
 include(CompilerWarnings)
 
+# OpenSSL support (enables TLS connections to ClickHouse)
+option(WITH_OPENSSL "Enable OpenSSL for TLS connections" ON)
+include(OpenSSL)
+pg_stat_ch_setup_openssl()
+
 # Add clickhouse-cpp library (must be compiled with PIC for shared library linking)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(WITH_OPENSSL OFF CACHE BOOL "Disable OpenSSL in clickhouse-cpp")
+set(WITH_OPENSSL ${WITH_OPENSSL} CACHE BOOL "Pass OpenSSL setting to clickhouse-cpp" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "Disable clickhouse-cpp tests")
 set(BUILD_BENCHMARK OFF CACHE BOOL "Disable clickhouse-cpp benchmarks")
 add_subdirectory(third_party/clickhouse-cpp EXCLUDE_FROM_ALL)
@@ -45,6 +50,9 @@ target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
   clickhouse-cpp-lib
 )
+if(WITH_OPENSSL)
+  target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES

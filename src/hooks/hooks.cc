@@ -151,10 +151,9 @@ static int GetClientAddress(char* buf, int buf_size) {
   // Get the client address as a string
   std::array<char, NI_MAXHOST> remote_host{};
 
-  int ret =
-      pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
-                         remote_host.data(), remote_host.size(), nullptr, 0,
-                         NI_NUMERICHOST | NI_NUMERICSERV);
+  int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
+                               remote_host.data(), remote_host.size(), nullptr, 0,
+                               NI_NUMERICHOST | NI_NUMERICSERV);
 
   if (ret != 0 || remote_host[0] == '\0') {
     return 0;

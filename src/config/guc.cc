@@ -45,8 +45,7 @@ extern "C" {
 
 // Check hook to ensure queue_capacity is a power of 2.
 // Parameters follow PostgreSQL GUC check hook signature.
-static bool check_psch_queue_capacity(int* newval,
-                                      void** extra [[maybe_unused]],
+static bool check_psch_queue_capacity(int* newval, void** extra [[maybe_unused]],
                                       GucSource source [[maybe_unused]]) {
   // Check if value is positive and a power of 2
   if (*newval <= 0) {

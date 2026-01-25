@@ -39,7 +39,7 @@ jobs:
             postgresql-server-dev-${{ matrix.pg_version }}
 
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++
+        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
