@@ -22,6 +22,7 @@ function(pg_stat_ch_set_warnings target)
     # Code generation
     -fPIC
     -fvisibility=hidden
+    -fno-omit-frame-pointer  # Enable frame pointers for perf profiling
     # Note: We need exceptions and RTTI for clickhouse-cpp integration
     # -fno-exceptions
     # -fno-rtti
