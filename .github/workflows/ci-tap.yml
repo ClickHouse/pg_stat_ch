@@ -16,18 +16,6 @@ jobs:
     name: TAP Tests (PG 18)
     runs-on: [self-hosted, Linux, X64, amd-large]
 
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:24.3
-        ports:
-          - 19000:9000
-          - 18123:8123
-        options: >-
-          --health-cmd "clickhouse-client -q 'SELECT 1'"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,22 +73,28 @@ jobs:
           cmake --build build --parallel
           cmake --install build
 
-      - name: Wait for ClickHouse HTTP interface
+      - name: Start ClickHouse
         run: |
+          docker rm -f clickhouse-test 2>/dev/null || true
+          docker run -d --name clickhouse-test \
+            --network host \
+            clickhouse/clickhouse-server:24.3
+          # Wait for ClickHouse to be ready
           for i in {1..30}; do
-            if curl -sf 'http://localhost:18123/' --data 'SELECT 1' >/dev/null 2>&1; then
-              echo "ClickHouse HTTP ready"
+            if curl -sf 'http://localhost:8123/' --data 'SELECT 1' >/dev/null 2>&1; then
+              echo "ClickHouse ready"
               exit 0
             fi
-            echo "Waiting for ClickHouse HTTP... ($i/30)"
+            echo "Waiting for ClickHouse... ($i/30)"
             sleep 1
           done
-          echo "ClickHouse HTTP not ready after 30s"
+          echo "ClickHouse not ready after 30s"
+          docker logs clickhouse-test
           exit 1
 
       - name: Initialize ClickHouse schema
         run: |
-          curl -sf 'http://localhost:18123/' --data-binary @docker/init/00-schema.sql
+          curl -sf 'http://localhost:8123/' --data-binary @docker/init/00-schema.sql
 
       - name: Run TAP tests
         run: |
@@ -115,3 +109,7 @@ jobs:
         with:
           name: tap-test-logs
           path: t/tmp_check/
+
+      - name: Cleanup ClickHouse
+        if: always()
+        run: docker rm -f clickhouse-test 2>/dev/null || true
