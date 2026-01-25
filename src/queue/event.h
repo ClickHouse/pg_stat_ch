@@ -111,7 +111,7 @@ struct PschEvent {
 
   // Error info (from emit_log_hook)
   char err_sqlstate[6];  // SQLSTATE code (e.g., "42P01")
-  uint8 err_elevel;      // Error level (0=success, WARNING=19, ERROR=20)
+  uint8 err_elevel;      // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
   uint8 _padding3;       // Alignment
 
   // Client context

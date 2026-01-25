@@ -209,7 +209,26 @@ JIT compilation is triggered for expensive queries when `jit = on`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `err_sqlstate` | FixedString(5) | SQLSTATE error code (e.g., "42P01" for undefined table) |
-| `err_elevel` | UInt8 | Error level: 0=success, 19=WARNING, 20=ERROR, 21=FATAL |
+| `err_elevel` | UInt8 | Error level (0 for successful queries, see table below) |
+
+The `pg_stat_ch.log_min_elevel` GUC controls the minimum level captured (default: `warning`).
+
+**Error level values** (from PostgreSQL's `elog.h`):
+
+| Level | Value | Captured by default |
+|-------|-------|---------------------|
+| DEBUG5 | 10 | No |
+| DEBUG4 | 11 | No |
+| DEBUG3 | 12 | No |
+| DEBUG2 | 13 | No |
+| DEBUG1 | 14 | No |
+| LOG | 15 | No |
+| INFO | 17 | No |
+| NOTICE | 18 | No |
+| WARNING | 19 | Yes |
+| ERROR | 21 | Yes |
+| FATAL | 22 | Yes |
+| PANIC | 23 | Yes |
 
 ### Client Context Fields
 
