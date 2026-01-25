@@ -1,0 +1,100 @@
+name: TAP Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CI: true
+  PG_VERSION: REL_18_STABLE
+
+jobs:
+  tap-tests:
+    name: TAP Tests (PG 18)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install PostgreSQL build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libreadline-dev \
+            zlib1g-dev \
+            flex \
+            bison \
+            libxml2-dev \
+            libxslt1-dev \
+            libssl-dev \
+            libicu-dev \
+            pkg-config \
+            libipc-run-perl \
+            cmake \
+            ninja-build
+
+      - name: Cache PostgreSQL build
+        id: cache-pg
+        uses: actions/cache@v4
+        with:
+          path: ~/pg-tap
+          key: pg-tap-${{ env.PG_VERSION }}-v1
+
+      - name: Build PostgreSQL with TAP support
+        if: steps.cache-pg.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch=${{ env.PG_VERSION }} https://github.com/postgres/postgres.git ~/postgres-src
+          cd ~/postgres-src
+          ./configure --enable-tap-tests --prefix=$HOME/pg-tap
+          make -j$(nproc)
+          make install
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: tap-tests
+          max-size: 500M
+
+      - name: Build extension
+        run: |
+          export PATH="$HOME/pg-tap/bin:$PATH"
+          cmake --preset default \
+            -DPG_CONFIG=$HOME/pg-tap/bin/pg_config \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Run TAP tests
+        run: |
+          export PATH="$HOME/pg-tap/bin:$PATH"
+          export PG_REGRESS="$HOME/pg-tap/lib/postgresql/pgxs/src/test/regress/pg_regress"
+          export PERL_LIB="$HOME/pg-tap/lib/postgresql/pgxs/src/test/perl"
+          # Exclude ClickHouse tests (010, 011) - those run in ci.yml integration job
+          prove -v --timer -I "$PERL_LIB" -I t \
+            t/001_stress_test.pl \
+            t/002_concurrent_sessions.pl \
+            t/003_buffer_overflow.pl \
+            t/004_basic_lifecycle.pl \
+            t/005_settings.pl \
+            t/006_query_capture.pl \
+            t/007_utility_tracking.pl \
+            t/008_error_capture.pl \
+            t/009_bgworker.pl \
+            t/012_timing_accuracy.pl \
+            t/013_buffer_metrics.pl \
+            t/014_cpu_metrics.pl \
+            t/015_guc_validation.pl
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-test-logs
+          path: t/tmp_check/
