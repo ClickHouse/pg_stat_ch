@@ -41,7 +41,8 @@ jobs:
           sudo apt-get install -y \
             postgresql-${{ matrix.pg }} \
             postgresql-server-dev-${{ matrix.pg }} \
-            cmake ninja-build g++
+            cmake ninja-build g++ \
+            binutils
 
       - name: Get version from git
         id: version
@@ -58,6 +59,17 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Extract debug symbols
+        run: |
+          # Extract debug symbols to separate file
+          objcopy --only-keep-debug build/pg_stat_ch.so build/pg_stat_ch.so.debug
+
+          # Strip debug symbols from the binary
+          strip --strip-debug build/pg_stat_ch.so
+
+          # Add debug link to stripped binary (helps debuggers find symbols)
+          objcopy --add-gnu-debuglink=build/pg_stat_ch.so.debug build/pg_stat_ch.so
 
       - name: Package
         id: package
@@ -81,11 +93,24 @@ jobs:
           tar -czvf "$RELEASE_NAME.tar.gz" "$RELEASE_NAME"
           echo "artifact=$RELEASE_NAME.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - name: Upload artifact
+          # Create debug symbols tarball
+          DEBUG_NAME="pg_stat_ch-${VERSION}-pg${{ matrix.pg }}-linux-${{ matrix.arch }}-debuginfo"
+          mkdir -p "$DEBUG_NAME"
+          cp build/pg_stat_ch.so.debug "$DEBUG_NAME/"
+          tar -czvf "$DEBUG_NAME.tar.gz" "$DEBUG_NAME"
+          echo "debug_artifact=$DEBUG_NAME.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: pg_stat_ch-pg${{ matrix.pg }}-${{ matrix.arch }}
-          path: "*.tar.gz"
+          path: pg_stat_ch-*-pg${{ matrix.pg }}-linux-${{ matrix.arch }}.tar.gz
+
+      - name: Upload debug symbols artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg_stat_ch-pg${{ matrix.pg }}-${{ matrix.arch }}-debuginfo
+          path: pg_stat_ch-*-pg${{ matrix.pg }}-linux-${{ matrix.arch }}-debuginfo.tar.gz
 
   release:
     name: Create GitHub Release
@@ -119,3 +144,13 @@ jobs:
             ```
 
             See INSTALL.md in the tarball for full instructions.
+
+            ## Debug Symbols
+
+            Debug symbol packages (`*-debuginfo.tar.gz`) are provided for crash analysis.
+            To use them with a core dump:
+
+            ```bash
+            tar -xzf pg_stat_ch-*-debuginfo.tar.gz
+            gdb -ex "set debug-file-directory $(pwd)" -ex "bt" pg_stat_ch.so core
+            ```
