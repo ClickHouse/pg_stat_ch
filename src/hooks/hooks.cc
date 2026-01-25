@@ -1,5 +1,6 @@
 // pg_stat_ch executor hooks implementation
 
+#include <array>
 #include <sys/resource.h>
 
 extern "C" {
@@ -148,25 +149,85 @@ static int GetClientAddress(char* buf, int buf_size) {
   }
 
   // Get the client address as a string
-  char remote_host[NI_MAXHOST];
-  remote_host[0] = '\0';
+  std::array<char, NI_MAXHOST> remote_host{};
 
   int ret =
-      pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen, remote_host,
-                         sizeof(remote_host), nullptr, 0, NI_NUMERICHOST | NI_NUMERICSERV);
+      pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
+                         remote_host.data(), remote_host.size(), nullptr, 0,
+                         NI_NUMERICHOST | NI_NUMERICSERV);
 
   if (ret != 0 || remote_host[0] == '\0') {
     return 0;
   }
 
   // Handle local connections
-  if (strcmp(remote_host, "[local]") == 0) {
+  if (strcmp(remote_host.data(), "[local]") == 0) {
     int len = snprintf(buf, buf_size, "127.0.0.1");
     return (len >= buf_size) ? buf_size - 1 : len;
   }
 
-  int len = snprintf(buf, buf_size, "%s", remote_host);
+  int len = snprintf(buf, buf_size, "%s", remote_host.data());
   return (len >= buf_size) ? buf_size - 1 : len;
+}
+
+// Copy buffer usage counters to event
+static void CopyBufferUsage(PschEvent* event, const BufferUsage* buf) {
+  event->shared_blks_hit = buf->shared_blks_hit;
+  event->shared_blks_read = buf->shared_blks_read;
+  event->shared_blks_dirtied = buf->shared_blks_dirtied;
+  event->shared_blks_written = buf->shared_blks_written;
+  event->local_blks_hit = buf->local_blks_hit;
+  event->local_blks_read = buf->local_blks_read;
+  event->local_blks_dirtied = buf->local_blks_dirtied;
+  event->local_blks_written = buf->local_blks_written;
+  event->temp_blks_read = buf->temp_blks_read;
+  event->temp_blks_written = buf->temp_blks_written;
+}
+
+// Copy I/O timing to event (version-aware)
+static void CopyIoTiming(PschEvent* event, const BufferUsage* buf) {
+#if PG_VERSION_NUM >= 170000
+  event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->shared_blk_read_time);
+  event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->shared_blk_write_time);
+  event->local_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->local_blk_read_time);
+  event->local_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->local_blk_write_time);
+#else
+  // PG16 and earlier: blk_read_time/blk_write_time (no local block timing)
+  event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_read_time);
+  event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_write_time);
+#endif
+#if PG_VERSION_NUM >= 150000
+  event->temp_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_read_time);
+  event->temp_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_write_time);
+#endif
+}
+
+// Copy WAL usage to event
+static void CopyWalUsage(PschEvent* event, const WalUsage* wal) {
+  event->wal_records = wal->wal_records;
+  event->wal_fpi = wal->wal_fpi;
+  event->wal_bytes = wal->wal_bytes;
+}
+
+// Copy client context (application name, client address) to event
+static void CopyClientContext(PschEvent* event) {
+  event->application_name_len = static_cast<uint8>(
+      GetApplicationName(event->application_name, sizeof(event->application_name)));
+  event->client_addr_len =
+      static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+}
+
+// Copy query text to event with truncation
+static void CopyQueryText(PschEvent* event, const char* query_text) {
+  if (query_text != nullptr) {
+    size_t len = strlen(query_text);
+    if (len >= PSCH_MAX_QUERY_LEN) {
+      len = PSCH_MAX_QUERY_LEN - 1;
+    }
+    memcpy(event->query, query_text, len);
+    event->query[len] = '\0';
+    event->query_len = static_cast<uint16>(len);
+  }
 }
 
 // Resolve database and user names from OIDs (pg_stat_monitor pattern)
@@ -212,76 +273,8 @@ static void ResolveNames(PschEvent* event) {
   // immediately.
 }
 
-// Build a PschEvent from a QueryDesc
-static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
-                                    int64 cpu_sys_us) {
-  MemSet(event, 0, sizeof(*event));
-
-  event->ts_start = query_start_ts;
-  event->dbid = MyDatabaseId;
-  event->userid = GetUserId();
-  ResolveNames(event);  // Resolve db/user names while in transaction context
-  event->pid = MyProcPid;
-  event->queryid = query_desc->plannedstmt->queryId;
-  event->top_level = current_query_is_top_level;
-  event->cmd_type = ConvertCmdType(query_desc->operation);
-  event->rows = query_desc->estate->es_processed;
-
-  // CPU time from getrusage delta
-  event->cpu_user_time_us = cpu_user_us;
-  event->cpu_sys_time_us = cpu_sys_us;
-
-  if (query_desc->totaltime != nullptr) {
-    // Duration from instrumentation
-#if PG_VERSION_NUM >= 190000
-    // PG19+: total is instr_time
-    event->duration_us = static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
-#else
-    // PG18 and earlier: total is double (seconds)
-    event->duration_us = static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
-#endif
-
-    // Buffer usage from instrumentation
-    BufferUsage* buf = &query_desc->totaltime->bufusage;
-    event->shared_blks_hit = buf->shared_blks_hit;
-    event->shared_blks_read = buf->shared_blks_read;
-    event->shared_blks_dirtied = buf->shared_blks_dirtied;
-    event->shared_blks_written = buf->shared_blks_written;
-    event->local_blks_hit = buf->local_blks_hit;
-    event->local_blks_read = buf->local_blks_read;
-    event->local_blks_dirtied = buf->local_blks_dirtied;
-    event->local_blks_written = buf->local_blks_written;
-    event->temp_blks_read = buf->temp_blks_read;
-    event->temp_blks_written = buf->temp_blks_written;
-
-    // I/O timing - field names changed in PG17
-#if PG_VERSION_NUM >= 170000
-    event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->shared_blk_read_time);
-    event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->shared_blk_write_time);
-    event->local_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->local_blk_read_time);
-    event->local_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->local_blk_write_time);
-#else
-    // PG16 and earlier: blk_read_time/blk_write_time (no local block timing)
-    event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_read_time);
-    event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_write_time);
-#endif
-#if PG_VERSION_NUM >= 150000
-    event->temp_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_read_time);
-    event->temp_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_write_time);
-#endif
-
-    // WAL usage from instrumentation
-    WalUsage* wal = &query_desc->totaltime->walusage;
-    event->wal_records = wal->wal_records;
-    event->wal_fpi = wal->wal_fpi;
-    event->wal_bytes = wal->wal_bytes;
-  } else {
-    // Fallback: calculate duration from wall clock
-    TimestampTz now = GetCurrentTimestamp();
-    event->duration_us = static_cast<uint64>(now - query_start_ts);
-  }
-
-  // JIT instrumentation (PG15+)
+// Copy JIT instrumentation to event (PG15+)
+static void CopyJitInstrumentation(PschEvent* event, QueryDesc* query_desc) {
 #if PG_VERSION_NUM >= 150000
   if (query_desc->estate->es_jit != nullptr) {
     JitInstrumentation* jit = &query_desc->estate->es_jit->instr;
@@ -298,9 +291,14 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
     event->jit_deform_time_us = static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
 #endif
   }
+#else
+  (void)event;
+  (void)query_desc;
 #endif
+}
 
-  // Parallel workers (PG18+)
+// Copy parallel worker info to event (PG18+)
+static void CopyParallelWorkerInfo(PschEvent* event, QueryDesc* query_desc) {
 #if PG_VERSION_NUM >= 180000
   if (query_desc->estate != nullptr) {
     event->parallel_workers_planned =
@@ -308,24 +306,48 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
     event->parallel_workers_launched =
         static_cast<int16>(query_desc->estate->es_parallel_workers_launched);
   }
+#else
+  (void)event;
+  (void)query_desc;
 #endif
+}
 
-  // Client context
-  event->application_name_len = static_cast<uint8>(
-      GetApplicationName(event->application_name, sizeof(event->application_name)));
-  event->client_addr_len =
-      static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+// Build a PschEvent from a QueryDesc
+static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
+                                    int64 cpu_sys_us) {
+  MemSet(event, 0, sizeof(*event));
 
-  // Query text
-  if (query_desc->sourceText != nullptr) {
-    size_t len = strlen(query_desc->sourceText);
-    if (len >= PSCH_MAX_QUERY_LEN) {
-      len = PSCH_MAX_QUERY_LEN - 1;
-    }
-    memcpy(event->query, query_desc->sourceText, len);
-    event->query[len] = '\0';
-    event->query_len = static_cast<uint16>(len);
+  // Basic identification
+  event->ts_start = query_start_ts;
+  event->dbid = MyDatabaseId;
+  event->userid = GetUserId();
+  ResolveNames(event);
+  event->pid = MyProcPid;
+  event->queryid = query_desc->plannedstmt->queryId;
+  event->top_level = current_query_is_top_level;
+  event->cmd_type = ConvertCmdType(query_desc->operation);
+  event->rows = query_desc->estate->es_processed;
+  event->cpu_user_time_us = cpu_user_us;
+  event->cpu_sys_time_us = cpu_sys_us;
+
+  // Instrumentation data (duration, buffer, WAL)
+  if (query_desc->totaltime != nullptr) {
+#if PG_VERSION_NUM >= 190000
+    event->duration_us = static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
+#else
+    event->duration_us = static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
+#endif
+    CopyBufferUsage(event, &query_desc->totaltime->bufusage);
+    CopyIoTiming(event, &query_desc->totaltime->bufusage);
+    CopyWalUsage(event, &query_desc->totaltime->walusage);
+  } else {
+    event->duration_us = static_cast<uint64>(GetCurrentTimestamp() - query_start_ts);
   }
+
+  CopyJitInstrumentation(event, query_desc);
+  CopyParallelWorkerInfo(event, query_desc);
+  CopyClientContext(event);
+  CopyQueryText(event, query_desc->sourceText);
 }
 
 extern "C" {
@@ -490,69 +512,25 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
                                  int64 cpu_sys_us) {
   MemSet(event, 0, sizeof(*event));
 
+  // Basic identification
   event->ts_start = start_ts;
   event->duration_us = duration_us;
   event->dbid = MyDatabaseId;
   event->userid = GetUserId();
-  ResolveNames(event);  // Resolve db/user names while in transaction context
+  ResolveNames(event);
   event->pid = MyProcPid;
   event->queryid = 0;  // Utility statements don't have queryId
   event->top_level = is_top_level;
   event->cmd_type = PSCH_CMD_UTILITY;
   event->rows = rows;
-
-  // CPU time from getrusage delta
   event->cpu_user_time_us = cpu_user_us;
   event->cpu_sys_time_us = cpu_sys_us;
 
-  // Buffer usage from computed delta
-  event->shared_blks_hit = bufusage->shared_blks_hit;
-  event->shared_blks_read = bufusage->shared_blks_read;
-  event->shared_blks_dirtied = bufusage->shared_blks_dirtied;
-  event->shared_blks_written = bufusage->shared_blks_written;
-  event->local_blks_hit = bufusage->local_blks_hit;
-  event->local_blks_read = bufusage->local_blks_read;
-  event->local_blks_dirtied = bufusage->local_blks_dirtied;
-  event->local_blks_written = bufusage->local_blks_written;
-  event->temp_blks_read = bufusage->temp_blks_read;
-  event->temp_blks_written = bufusage->temp_blks_written;
-
-  // I/O timing - field names changed in PG17
-#if PG_VERSION_NUM >= 170000
-  event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->shared_blk_read_time);
-  event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->shared_blk_write_time);
-  event->local_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->local_blk_read_time);
-  event->local_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->local_blk_write_time);
-#else
-  event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->blk_read_time);
-  event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->blk_write_time);
-#endif
-#if PG_VERSION_NUM >= 150000
-  event->temp_blk_read_time_us = INSTR_TIME_GET_MICROSEC(bufusage->temp_blk_read_time);
-  event->temp_blk_write_time_us = INSTR_TIME_GET_MICROSEC(bufusage->temp_blk_write_time);
-#endif
-
-  // WAL usage
-  event->wal_records = walusage->wal_records;
-  event->wal_fpi = walusage->wal_fpi;
-  event->wal_bytes = walusage->wal_bytes;
-
-  // Client context
-  event->application_name_len = static_cast<uint8>(
-      GetApplicationName(event->application_name, sizeof(event->application_name)));
-  event->client_addr_len =
-      static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
-
-  // Query text
-  if (queryString != nullptr) {
-    size_t len = strlen(queryString);
-    if (len >= PSCH_MAX_QUERY_LEN) {
-      len = PSCH_MAX_QUERY_LEN - 1;
-    }
-    memcpy(event->query, queryString, len);
-    event->query[len] = '\0';
-    event->query_len = static_cast<uint16>(len);
-  }
+  CopyBufferUsage(event, bufusage);
+  CopyIoTiming(event, bufusage);
+  CopyWalUsage(event, walusage);
+  CopyClientContext(event);
+  CopyQueryText(event, queryString);
 }
 
 // Helper macro to call ProcessUtility (previous hook or standard)

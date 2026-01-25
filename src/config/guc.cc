@@ -6,6 +6,8 @@ extern "C" {
 #include "utils/guc.h"
 }
 
+#include <array>
+
 #include "config/guc.h"
 
 // GUC variable storage
@@ -21,21 +23,31 @@ int psch_batch_max = 10000;
 int psch_log_min_elevel = WARNING;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
-static const struct config_enum_entry log_elevel_options[] = {
-    {"debug5", DEBUG5, false}, {"debug4", DEBUG4, false}, {"debug3", DEBUG3, false},
-    {"debug2", DEBUG2, false}, {"debug1", DEBUG1, false}, {"log", LOG, false},
-    {"info", INFO, false},     {"notice", NOTICE, false}, {"warning", WARNING, false},
-    {"error", ERROR, false},   {"fatal", FATAL, false},   {"panic", PANIC, false},
-    {NULL, 0, false}};
+// clang-format off
+static const std::array<config_enum_entry, 13> log_elevel_options = {{
+    {"debug5",  DEBUG5,  false},
+    {"debug4",  DEBUG4,  false},
+    {"debug3",  DEBUG3,  false},
+    {"debug2",  DEBUG2,  false},
+    {"debug1",  DEBUG1,  false},
+    {"log",     LOG,     false},
+    {"info",    INFO,    false},
+    {"notice",  NOTICE,  false},
+    {"warning", WARNING, false},
+    {"error",   ERROR,   false},
+    {"fatal",   FATAL,   false},
+    {"panic",   PANIC,   false},
+    {nullptr,   0,       false},
+}};
+// clang-format on
 
 extern "C" {
 
-// Check hook to ensure queue_capacity is a power of 2
-// NOLINTNEXTLINE(readability-identifier-naming,readability-non-const-parameter)
-static bool check_psch_queue_capacity(int* newval, void** extra, GucSource source) {
-  (void)extra;   // Unused parameter
-  (void)source;  // Unused parameter
-
+// Check hook to ensure queue_capacity is a power of 2.
+// Parameters follow PostgreSQL GUC check hook signature.
+static bool check_psch_queue_capacity(int* newval,
+                                      void** extra [[maybe_unused]],
+                                      GucSource source [[maybe_unused]]) {
   // Check if value is positive and a power of 2
   if (*newval <= 0) {
     GUC_check_errdetail("pg_stat_ch.queue_capacity must be positive.");
@@ -45,8 +57,8 @@ static bool check_psch_queue_capacity(int* newval, void** extra, GucSource sourc
   // Check if power of 2: value & (value - 1) == 0
   if ((*newval & (*newval - 1)) != 0) {
     GUC_check_errdetail(
-        "pg_stat_ch.queue_capacity must be a power of 2 (e.g., 1024, 2048, 4096, 8192, 16384, "
-        "32768, 65536).");
+        "pg_stat_ch.queue_capacity must be a power of 2 "
+        "(e.g., 1024, 2048, 4096, 8192, 16384, 32768, 65536).");
     return false;
   }
 
@@ -54,50 +66,113 @@ static bool check_psch_queue_capacity(int* newval, void** extra, GucSource sourc
 }
 
 void PschInitGuc(void) {
-  DefineCustomBoolVariable("pg_stat_ch.enabled",
-                           "Enable or disable pg_stat_ch query telemetry collection.", nullptr,
-                           &psch_enabled, true, PGC_SIGHUP, 0, nullptr, nullptr, nullptr);
-
-  DefineCustomStringVariable("pg_stat_ch.clickhouse_host", "ClickHouse server hostname.", nullptr,
-                             &psch_clickhouse_host, "localhost", PGC_POSTMASTER, 0, nullptr,
-                             nullptr, nullptr);
-
-  DefineCustomIntVariable("pg_stat_ch.clickhouse_port", "ClickHouse server native protocol port.",
-                          nullptr, &psch_clickhouse_port, 9000, 1, 65535, PGC_POSTMASTER, 0,
-                          nullptr, nullptr, nullptr);
-
-  DefineCustomStringVariable("pg_stat_ch.clickhouse_user", "ClickHouse user name.", nullptr,
-                             &psch_clickhouse_user, "default", PGC_POSTMASTER, 0, nullptr, nullptr,
-                             nullptr);
-
-  DefineCustomStringVariable("pg_stat_ch.clickhouse_password", "ClickHouse user password.", nullptr,
-                             &psch_clickhouse_password, "", PGC_POSTMASTER, 0, nullptr, nullptr,
-                             nullptr);
+  // clang-format off
+  DefineCustomBoolVariable(
+      "pg_stat_ch.enabled",                                   // name
+      "Enable or disable pg_stat_ch query telemetry collection.",  // short_desc
+      nullptr,                                                // long_desc
+      &psch_enabled,                                          // valueAddr
+      true,                                                   // bootValue
+      PGC_SIGHUP,                                             // context
+      0,                                                      // flags
+      nullptr, nullptr, nullptr);                             // hooks
 
   DefineCustomStringVariable(
-      "pg_stat_ch.clickhouse_database", "ClickHouse database name for telemetry storage.", nullptr,
-      &psch_clickhouse_database, "pg_stat_ch", PGC_POSTMASTER, 0, nullptr, nullptr, nullptr);
+      "pg_stat_ch.clickhouse_host",
+      "ClickHouse server hostname.",
+      nullptr,
+      &psch_clickhouse_host,
+      "localhost",
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.clickhouse_port",
+      "ClickHouse server native protocol port.",
+      nullptr,
+      &psch_clickhouse_port,
+      9000,           // bootValue
+      1, 65535,       // min, max
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_user",
+      "ClickHouse user name.",
+      nullptr,
+      &psch_clickhouse_user,
+      "default",
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_password",
+      "ClickHouse user password.",
+      nullptr,
+      &psch_clickhouse_password,
+      "",
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.clickhouse_database",
+      "ClickHouse database name for telemetry storage.",
+      nullptr,
+      &psch_clickhouse_database,
+      "pg_stat_ch",
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
 
   DefineCustomIntVariable(
       "pg_stat_ch.queue_capacity",
-      "Maximum number of events in the shared memory queue (must be a power of 2).", nullptr,
-      &psch_queue_capacity, 65536, 1024, 4194304, PGC_POSTMASTER, 0, check_psch_queue_capacity,
-      nullptr, nullptr);
-
-  DefineCustomIntVariable("pg_stat_ch.flush_interval_ms",
-                          "Interval in milliseconds between ClickHouse export batches.", nullptr,
-                          &psch_flush_interval_ms, 1000, 100, 60000, PGC_SIGHUP, GUC_UNIT_MS,
-                          nullptr, nullptr, nullptr);
+      "Maximum number of events in the shared memory queue (must be a power of 2).",
+      nullptr,
+      &psch_queue_capacity,
+      65536,              // bootValue
+      1024, 4194304,      // min, max
+      PGC_POSTMASTER,
+      0,
+      check_psch_queue_capacity, nullptr, nullptr);
 
   DefineCustomIntVariable(
-      "pg_stat_ch.batch_max", "Maximum number of events per ClickHouse insert batch.", nullptr,
-      &psch_batch_max, 10000, 1, 1000000, PGC_SIGHUP, 0, nullptr, nullptr, nullptr);
+      "pg_stat_ch.flush_interval_ms",
+      "Interval in milliseconds between ClickHouse export batches.",
+      nullptr,
+      &psch_flush_interval_ms,
+      1000,           // bootValue
+      100, 60000,     // min, max
+      PGC_SIGHUP,
+      GUC_UNIT_MS,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.batch_max",
+      "Maximum number of events per ClickHouse insert batch.",
+      nullptr,
+      &psch_batch_max,
+      10000,            // bootValue
+      1, 1000000,       // min, max
+      PGC_SIGHUP,
+      0,
+      nullptr, nullptr, nullptr);
 
   DefineCustomEnumVariable(
-      "pg_stat_ch.log_min_elevel", "Minimum error level to capture via emit_log_hook.",
+      "pg_stat_ch.log_min_elevel",
+      "Minimum error level to capture via emit_log_hook.",
       "Set to 'warning' (default) to capture warnings and errors, "
       "'error' for errors only, or 'debug5' for all messages.",
-      &psch_log_min_elevel, WARNING, log_elevel_options, PGC_SUSET, 0, nullptr, nullptr, nullptr);
+      &psch_log_min_elevel,
+      WARNING,
+      log_elevel_options.data(),
+      PGC_SUSET,
+      0,
+      nullptr, nullptr, nullptr);
+  // clang-format on
 
   EmitWarningsOnPlaceholders("pg_stat_ch");
 }
