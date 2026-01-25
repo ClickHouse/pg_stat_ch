@@ -22,7 +22,7 @@
 //    Critical for correctness on weakly-ordered architectures (ARM, PowerPC)
 //
 // 4. ERROR-SAFE LOCKING (pattern from pg_stat_monitor):
-//    PG_TRY/PG_CATCH blocks ensure locks are released even if an error occurs
+//    PG_TRY/PG_FINALLY blocks ensure locks are released even if an error occurs
 //    during enqueue or stats reset, preventing deadlocks.
 //
 // 5. GRACEFUL OVERFLOW (pattern from pg_stat_monitor):
@@ -253,14 +253,9 @@ bool PschEnqueueEvent(const PschEvent* event) {
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   PG_TRY();
   { result = TryEnqueueLocked(event, capacity); }
-  PG_CATCH();
-  {
-    LWLockRelease(psch_shared_state->lock);
-    PG_RE_THROW();
-  }
+  PG_FINALLY();
+  { LWLockRelease(psch_shared_state->lock); }
   PG_END_TRY();
-
-  LWLockRelease(psch_shared_state->lock);
   return result;
 }
 
@@ -382,13 +377,9 @@ void PschResetStats(void) {
     psch_shared_state->last_error_ts = 0;
     MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
   }
-  PG_CATCH();
-  {
-    LWLockRelease(psch_shared_state->lock);
-    PG_RE_THROW();
-  }
+  PG_FINALLY();
+  { LWLockRelease(psch_shared_state->lock); }
   PG_END_TRY();
-  LWLockRelease(psch_shared_state->lock);
 }
 
 // Record a successful export (updates timestamp)

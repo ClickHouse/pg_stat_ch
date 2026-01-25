@@ -55,7 +55,17 @@ Datum pg_stat_ch_version(PG_FUNCTION_ARGS) {
 }
 
 // SQL function: pg_stat_ch_stats()
-// Returns queue statistics as a single row with 10 columns
+// Returns queue statistics as a single row with 10 columns:
+//   1. enqueued        - Total events enqueued
+//   2. dropped         - Total events dropped due to overflow
+//   3. exported        - Total events exported to ClickHouse
+//   4. send_failures   - Total ClickHouse send failures
+//   5. last_success_ts - Timestamp of last successful export
+//   6. last_error_text - Last export error message
+//   7. last_error_ts   - Timestamp of last export error
+//   8. queue_size      - Current number of events in queue
+//   9. queue_capacity  - Maximum queue capacity
+//  10. queue_pct       - Queue usage percentage
 PG_FUNCTION_INFO_V1(pg_stat_ch_stats);
 Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   TupleDesc tupdesc;
