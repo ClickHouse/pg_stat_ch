@@ -70,14 +70,28 @@ jobs:
             --temp-config=test/regression/pg_stat_ch.conf \
             basic version guc stats utility buffers cmd_type client_info error_capture
 
+      - name: Run isolation tests
+        run: |
+          mkdir -p specs/results
+          /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/test/isolation/pg_isolation_regress \
+            --bindir=/usr/lib/postgresql/${{ matrix.pg_version }}/bin \
+            --inputdir=specs \
+            --outputdir=specs/results \
+            --temp-instance=specs/tmp_check \
+            --temp-config=test/regression/pg_stat_ch.conf \
+            --load-extension=pg_stat_ch \
+            ring_buffer_concurrent ring_buffer_boundary overflow_race
+
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: regress-results-pg${{ matrix.pg_version }}
+          name: test-results-pg${{ matrix.pg_version }}
           path: |
             test/regression/results/
             test/regression/tmp_check/log/
+            specs/results/
+            specs/tmp_check/log/
 
   lint:
     name: Code Style
