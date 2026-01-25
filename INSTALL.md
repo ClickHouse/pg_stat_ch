@@ -1,5 +1,7 @@
 # Installing pg_stat_ch
 
+The extension is self-contained with all dependencies (including clickhouse-cpp) statically linked. No additional shared libraries are required at runtime.
+
 1. Copy files to PostgreSQL directories:
    ```bash
    sudo cp pg_stat_ch.so $(pg_config --pkglibdir)/
