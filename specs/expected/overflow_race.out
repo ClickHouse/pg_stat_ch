@@ -1,0 +1,363 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_overflow s2_overflow s3_check_overflow
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s2_overflow: 
+    -- Generate events concurrently with s1
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_check_overflow: 
+    -- Check if overflow has occurred
+    SELECT
+        dropped_events >= 0 AS drops_valid,
+        enqueued_events > 0 AS has_enqueued,
+        queue_size <= queue_capacity AS bounded
+    FROM pg_stat_ch_stats();
+
+drops_valid|has_enqueued|bounded
+-----------+------------+-------
+t          |t           |t      
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|size_bounded|conservation_valid
+--------------+-------------+----------+------------+------------------
+t             |t            |t         |t           |f                 
+(1 row)
+
+
+starting permutation: s1_overflow s3_sample_during s2_overflow s3_check_overflow
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_sample_during: 
+    -- Quick sample during potential overflow
+    SELECT
+        queue_size <= queue_capacity AS bounded,
+        enqueued_events >= 0 AS enqueued_valid
+    FROM pg_stat_ch_stats();
+
+bounded|enqueued_valid
+-------+--------------
+t      |t             
+(1 row)
+
+step s2_overflow: 
+    -- Generate events concurrently with s1
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_check_overflow: 
+    -- Check if overflow has occurred
+    SELECT
+        dropped_events >= 0 AS drops_valid,
+        enqueued_events > 0 AS has_enqueued,
+        queue_size <= queue_capacity AS bounded
+    FROM pg_stat_ch_stats();
+
+drops_valid|has_enqueued|bounded
+-----------+------------+-------
+t          |t           |t      
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|size_bounded|conservation_valid
+--------------+-------------+----------+------------+------------------
+t             |t            |t         |t           |f                 
+(1 row)
+
+
+starting permutation: s1_overflow s2_overflow s1_more_events s2_more_events s3_check_overflow
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s2_overflow: 
+    -- Generate events concurrently with s1
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s1_more_events: 
+    -- Generate more events after potential overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..100 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s2_more_events: 
+    -- Generate more events after potential overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..100 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_check_overflow: 
+    -- Check if overflow has occurred
+    SELECT
+        dropped_events >= 0 AS drops_valid,
+        enqueued_events > 0 AS has_enqueued,
+        queue_size <= queue_capacity AS bounded
+    FROM pg_stat_ch_stats();
+
+drops_valid|has_enqueued|bounded
+-----------+------------+-------
+t          |t           |t      
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|size_bounded|conservation_valid
+--------------+-------------+----------+------------+------------------
+t             |t            |t         |t           |f                 
+(1 row)
+
+
+starting permutation: s1_overflow s3_check_overflow s3_reset s3_check_post_reset s2_overflow s3_check_overflow
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_check_overflow: 
+    -- Check if overflow has occurred
+    SELECT
+        dropped_events >= 0 AS drops_valid,
+        enqueued_events > 0 AS has_enqueued,
+        queue_size <= queue_capacity AS bounded
+    FROM pg_stat_ch_stats();
+
+drops_valid|has_enqueued|bounded
+-----------+------------+-------
+t          |t           |t      
+(1 row)
+
+step s3_reset: 
+    SELECT pg_stat_ch_reset();
+
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s3_check_post_reset: 
+    -- After reset, dropped counter should be cleared
+    SELECT
+        dropped_events = 0 AS drops_cleared,
+        queue_size >= 0 AS size_valid
+    FROM pg_stat_ch_stats();
+
+drops_cleared|size_valid
+-------------+----------
+t            |t         
+(1 row)
+
+step s2_overflow: 
+    -- Generate events concurrently with s1
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_check_overflow: 
+    -- Check if overflow has occurred
+    SELECT
+        dropped_events >= 0 AS drops_valid,
+        enqueued_events > 0 AS has_enqueued,
+        queue_size <= queue_capacity AS bounded
+    FROM pg_stat_ch_stats();
+
+drops_valid|has_enqueued|bounded
+-----------+------------+-------
+t          |t           |t      
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|size_bounded|conservation_valid
+--------------+-------------+----------+------------+------------------
+t             |t            |t         |t           |f                 
+(1 row)
+
+
+starting permutation: s1_overflow s2_overflow s1_more_events s2_more_events s3_sample_during
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s2_overflow: 
+    -- Generate events concurrently with s1
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s1_more_events: 
+    -- Generate more events after potential overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..100 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s2_more_events: 
+    -- Generate more events after potential overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..100 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_sample_during: 
+    -- Quick sample during potential overflow
+    SELECT
+        queue_size <= queue_capacity AS bounded,
+        enqueued_events >= 0 AS enqueued_valid
+    FROM pg_stat_ch_stats();
+
+bounded|enqueued_valid
+-------+--------------
+t      |t             
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|size_bounded|conservation_valid
+--------------+-------------+----------+------------+------------------
+t             |t            |t         |t           |f                 
+(1 row)
+
+
+starting permutation: s1_overflow s3_reset s1_overflow s3_check_overflow
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_reset: 
+    SELECT pg_stat_ch_reset();
+
+pg_stat_ch_reset
+----------------
+                
+(1 row)
+
+step s1_overflow: 
+    -- Generate events to push toward overflow
+    DO $$
+    BEGIN
+        FOR i IN 1..500 LOOP
+            PERFORM i;
+        END LOOP;
+    END
+    $$;
+
+step s3_check_overflow: 
+    -- Check if overflow has occurred
+    SELECT
+        dropped_events >= 0 AS drops_valid,
+        enqueued_events > 0 AS has_enqueued,
+        queue_size <= queue_capacity AS bounded
+    FROM pg_stat_ch_stats();
+
+drops_valid|has_enqueued|bounded
+-----------+------------+-------
+t          |t           |t      
+(1 row)
+
+enqueued_valid|dropped_valid|size_valid|size_bounded|conservation_valid
+--------------+-------------+----------+------------+------------------
+t             |t            |t         |t           |f                 
+(1 row)
+

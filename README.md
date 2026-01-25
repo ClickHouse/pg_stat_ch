@@ -190,6 +190,8 @@ SELECT * FROM pg_stat_ch_stats();
 | `pg_stat_ch.batch_max` | int | `10000` | SIGHUP | Maximum events per ClickHouse insert |
 | `pg_stat_ch.log_min_elevel` | enum | `warning` | Superuser | Minimum error level to capture (debug5..panic) |
 
+See [Error Level Values](docs/version-compatibility.md#error-fields) for the complete list of error levels and their numeric values in ClickHouse.
+
 ## SQL API
 
 ### `pg_stat_ch_version()`
@@ -356,7 +358,7 @@ SELECT
     count() AS errors,
     any(query) AS sample_query
 FROM pg_stat_ch.events_raw
-WHERE err_elevel >= 20  -- ERROR level
+WHERE err_elevel >= 21  -- ERROR level and above
 GROUP BY err_sqlstate
 ORDER BY errors DESC;
 ```
