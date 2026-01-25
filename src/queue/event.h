@@ -50,23 +50,23 @@ enum PschCmdType {
 // Event structure stored in shared memory queue (~2KB fixed size)
 struct PschEvent {
   // Timing information
-  TimestampTz ts_start;    // Query start timestamp (microseconds since epoch)
-  uint64 duration_us;      // Execution duration in microseconds
+  TimestampTz ts_start;  // Query start timestamp (microseconds since epoch)
+  uint64 duration_us;    // Execution duration in microseconds
 
   // Identity
-  Oid dbid;                // Database OID
-  Oid userid;              // User OID
-  char datname[64];        // Database name (NAMEDATALEN=64, resolved at capture)
-  uint8 datname_len;       // Actual length
-  char username[64];       // User name (NAMEDATALEN=64, resolved at capture)
-  uint8 username_len;      // Actual length
-  int32 pid;               // Backend process ID
-  uint64 queryid;          // Query ID (from pg_stat_statements)
-  bool top_level;          // True if this is a top-level query
-  PschCmdType cmd_type;    // Command type (SELECT, UPDATE, etc.)
+  Oid dbid;              // Database OID
+  Oid userid;            // User OID
+  char datname[64];      // Database name (NAMEDATALEN=64, resolved at capture)
+  uint8 datname_len;     // Actual length
+  char username[64];     // User name (NAMEDATALEN=64, resolved at capture)
+  uint8 username_len;    // Actual length
+  int32 pid;             // Backend process ID
+  uint64 queryid;        // Query ID (from pg_stat_statements)
+  bool top_level;        // True if this is a top-level query
+  PschCmdType cmd_type;  // Command type (SELECT, UPDATE, etc.)
 
   // Results
-  uint64 rows;             // Number of rows affected/returned
+  uint64 rows;  // Number of rows affected/returned
 
   // Buffer usage
   int64 shared_blks_hit;
@@ -100,7 +100,7 @@ struct PschEvent {
   // JIT instrumentation (PG15+, 0 if not available)
   int32 jit_functions;
   int32 jit_generation_time_us;
-  int32 jit_deform_time_us;       // PG17+ only
+  int32 jit_deform_time_us;  // PG17+ only
   int32 jit_inlining_time_us;
   int32 jit_optimization_time_us;
   int32 jit_emission_time_us;
@@ -110,18 +110,18 @@ struct PschEvent {
   int16 parallel_workers_launched;
 
   // Error info (from emit_log_hook)
-  char err_sqlstate[6];           // SQLSTATE code (e.g., "42P01")
-  uint8 err_elevel;               // Error level (0=success, WARNING=19, ERROR=20)
-  uint8 _padding3;                // Alignment
+  char err_sqlstate[6];  // SQLSTATE code (e.g., "42P01")
+  uint8 err_elevel;      // Error level (0=success, WARNING=19, ERROR=20)
+  uint8 _padding3;       // Alignment
 
   // Client context
-  char application_name[64];      // Application name (NAMEDATALEN=64)
-  uint8 application_name_len;     // Actual length
-  char client_addr[46];           // Client IP address (INET6_ADDRSTRLEN=46)
-  uint8 client_addr_len;          // Actual length
+  char application_name[64];   // Application name (NAMEDATALEN=64)
+  uint8 application_name_len;  // Actual length
+  char client_addr[46];        // Client IP address (INET6_ADDRSTRLEN=46)
+  uint8 client_addr_len;       // Actual length
 
   // Query text (null-terminated, truncated if necessary)
-  uint16 query_len;        // Actual length of query text
+  uint16 query_len;  // Actual length of query text
   char query[PSCH_MAX_QUERY_LEN];
 };
 

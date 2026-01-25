@@ -25,9 +25,9 @@ extern "C" {
 
 #include <csignal>
 
-#include "worker/bgworker.h"
-#include "export/clickhouse_exporter.h"
 #include "config/guc.h"
+#include "export/clickhouse_exporter.h"
+#include "worker/bgworker.h"
 
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
@@ -57,8 +57,7 @@ static void HandleConfigReload() {
 }
 
 // Callback for bgworker process exit (registered via on_proc_exit)
-static void PschBgworkerShutdown([[maybe_unused]] int code,
-                                 [[maybe_unused]] Datum arg) {
+static void PschBgworkerShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
   PschExporterShutdown();
 }
 
@@ -67,9 +66,7 @@ static void ExportBatchWithRecovery() {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
   PG_TRY();
-  {
-    PschExportBatch();
-  }
+  { PschExportBatch(); }
   PG_CATCH();
   {
     EmitErrorReport();
@@ -79,6 +76,42 @@ static void ExportBatchWithRecovery() {
   PG_END_TRY();
 
   pgstat_report_activity(STATE_IDLE, nullptr);
+}
+
+// Initialize wait event for pg_stat_activity visibility
+static uint32 InitializeWaitEvent() {
+#if PG_VERSION_NUM >= 170000
+  return WaitEventExtensionNew("PgStatChExporter");
+#else
+  return PG_WAIT_EXTENSION;
+#endif
+}
+
+// Calculate sleep time with exponential backoff on failures
+static int CalculateSleepMs() {
+  int sleep_ms = psch_flush_interval_ms;
+  int failures = PschGetConsecutiveFailures();
+  if (failures > 0) {
+    int backoff_ms = PschGetRetryDelayMs();
+    sleep_ms = (backoff_ms > sleep_ms) ? backoff_ms : sleep_ms;
+    elog(DEBUG1, "pg_stat_ch: %d consecutive failures, sleeping %d ms", failures, sleep_ms);
+  }
+  return sleep_ms;
+}
+
+// Run one export cycle: wait, check signals, and export if enabled
+static void RunExportCycle(uint32 wait_event) {
+  int sleep_ms = CalculateSleepMs();
+
+  (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
+  ResetLatch(MyLatch);
+
+  CHECK_FOR_INTERRUPTS();
+  HandleConfigReload();
+
+  if (psch_enabled) {
+    ExportBatchWithRecovery();
+  }
 }
 
 extern "C" {
@@ -98,12 +131,7 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
 
   // Register custom wait event for pg_stat_activity visibility
   if (psch_wait_event_main == 0) {
-#if PG_VERSION_NUM >= 170000
-    psch_wait_event_main = WaitEventExtensionNew("PgStatChExporter");
-#else
-    // PG16: Use generic extension wait event (custom names not supported)
-    psch_wait_event_main = PG_WAIT_EXTENSION;
-#endif
+    psch_wait_event_main = InitializeWaitEvent();
   }
 
   // Initialize ClickHouse exporter
@@ -115,43 +143,20 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
 
   // Main loop (pattern from worker_spi.c:206-290)
   for (;;) {
-    // Use exponential backoff sleep if we have consecutive failures
-    int sleep_ms = psch_flush_interval_ms;
-    int failures = PschGetConsecutiveFailures();
-    if (failures > 0) {
-      int backoff_ms = PschGetRetryDelayMs();
-      sleep_ms = (backoff_ms > sleep_ms) ? backoff_ms : sleep_ms;
-      elog(DEBUG1, "pg_stat_ch: %d consecutive failures, sleeping %d ms",
-           failures, sleep_ms);
-    }
-
-    (void)WaitLatch(MyLatch,
-                    WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-                    sleep_ms,
-                    psch_wait_event_main);
-    ResetLatch(MyLatch);
-
-    CHECK_FOR_INTERRUPTS();  // Handles SIGTERM via die()
-    HandleConfigReload();
-
-    if (psch_enabled) {
-      ExportBatchWithRecovery();
-    }
+    RunExportCycle(psch_wait_event_main);
   }
 }
 
 void PschSignalFlush(void) {
   int bgworker_pid = PschGetBgworkerPid();
   if (bgworker_pid == 0) {
-    ereport(WARNING,
-            (errmsg("pg_stat_ch: background worker not running")));
+    ereport(WARNING, (errmsg("pg_stat_ch: background worker not running")));
     return;
   }
 
   // Send SIGUSR1 to wake up the bgworker
   if (kill(bgworker_pid, SIGUSR1) != 0) {
-    ereport(WARNING,
-            (errmsg("pg_stat_ch: failed to signal background worker")));
+    ereport(WARNING, (errmsg("pg_stat_ch: failed to signal background worker")));
   }
 }
 
