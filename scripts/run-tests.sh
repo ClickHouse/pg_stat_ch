@@ -14,17 +14,19 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Usage: $0 <PG_VERSION|PG_PATH> [test_type]"
-    echo "  PG_VERSION: PostgreSQL version (16, 17, 18) - uses mise"
-    echo "  PG_PATH:    Path to local PostgreSQL installation"
-    echo "  test_type:  regress, tap, isolation, stress, clickhouse, or all (default: all)"
+    echo "Usage: $0 <PG_VERSION|PG_PATH> [test_type] [test_filter]"
+    echo "  PG_VERSION:  PostgreSQL version (16, 17, 18) - uses mise"
+    echo "  PG_PATH:     Path to local PostgreSQL installation"
+    echo "  test_type:   regress, tap, isolation, stress, clickhouse, or all (default: all)"
+    echo "  test_filter: (tap only) pattern to match test files, e.g., '021' for t/*021*.pl"
     echo ""
     echo "Examples:"
-    echo "  $0 18                      # Run all tests against mise PG 18"
-    echo "  $0 17 regress              # Run only regression tests against mise PG 17"
+    echo "  $0 18                           # Run all tests against mise PG 18"
+    echo "  $0 17 regress                   # Run only regression tests against mise PG 17"
     echo "  $0 ../postgres/install_tap tap  # Run TAP tests against local build"
-    echo "  $0 18 stress               # Run only stress test against PG 18"
-    echo "  $0 18 clickhouse           # Run ClickHouse integration tests (requires Docker)"
+    echo "  $0 ../postgres/install_tap tap 021  # Run only t/*021*.pl test"
+    echo "  $0 18 stress                    # Run only stress test against PG 18"
+    echo "  $0 18 clickhouse                # Run ClickHouse integration tests (requires Docker)"
     exit 1
 }
 
@@ -47,6 +49,7 @@ fi
 
 PG_ARG="$1"
 TEST_TYPE="${2:-all}"
+TEST_FILTER="${3:-}"
 
 # Determine if PG_ARG is a version number or a path
 if [[ "$PG_ARG" =~ ^[0-9]+$ ]]; then
@@ -105,8 +108,15 @@ run_regress() {
 }
 
 # Run TAP tests
+# Optional argument: specific test file pattern (e.g., "021" to run t/021*.pl)
 run_tap() {
-    log_info "Running TAP tests..."
+    local test_pattern="${1:-}"
+
+    if [[ -n "$test_pattern" ]]; then
+        log_info "Running TAP test: t/*${test_pattern}*.pl"
+    else
+        log_info "Running TAP tests..."
+    fi
 
     local perl_lib="${PG_LIB}/pgxs/src/test/perl"
     if [[ ! -d "${perl_lib}" ]]; then
@@ -127,11 +137,22 @@ run_tap() {
     # Clean up stale test data directories
     rm -rf tmp_check
 
+    # Determine which tests to run
+    local test_files
+    if [[ -n "$test_pattern" ]]; then
+        test_files=$(ls t/*${test_pattern}*.pl 2>/dev/null) || {
+            log_error "No test files matching: t/*${test_pattern}*.pl"
+            return 1
+        }
+    else
+        test_files="t/*.pl"
+    fi
+
     # PG_REGRESS is required by PostgreSQL::Test::Cluster for auth configuration
     PG_REGRESS="${pg_regress}" prove -v --timer \
         -I "${perl_lib}" \
         -I t \
-        t/*.pl
+        $test_files
 }
 
 # Run only stress test
@@ -235,7 +256,7 @@ case "${TEST_TYPE}" in
         run_regress
         ;;
     tap)
-        run_tap
+        run_tap "${TEST_FILTER}"
         ;;
     stress)
         run_stress
