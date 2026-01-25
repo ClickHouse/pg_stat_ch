@@ -2,10 +2,6 @@
 
 extern "C" {
 #include "postgres.h"
-
-#include "commands/dbcommands.h"
-#include "miscadmin.h"
-#include "utils/lsyscache.h"
 }
 
 #include <memory>
@@ -62,33 +58,10 @@ const char* CmdTypeToString(PschCmdType cmd) {
   }
 }
 
-// Resolve database OID to name
-std::string ResolveDatabaseName(Oid dbid) {
-  if (dbid == InvalidOid) {
-    return "unknown";
-  }
-
-  char* name = get_database_name(dbid);
-  if (name != nullptr) {
-    std::string result(name);
-    pfree(name);
-    return result;
-  }
-  return "unknown";
-}
-
-// Resolve user OID to name
-std::string ResolveUserName(Oid userid) {
-  if (userid == InvalidOid) {
-    return "unknown";
-  }
-
-  char* name = GetUserNameFromId(userid, true);
-  if (name != nullptr) {
-    return std::string(name);
-  }
-  return "unknown";
-}
+// Note: We export OIDs directly instead of resolving names because:
+// 1. Catalog access (get_database_name/GetUserNameFromId) requires active transaction
+// 2. OIDs are smaller and faster to export
+// 3. ClickHouse can join with dimension tables if name resolution is needed
 
 // Dequeue events from the shared memory queue
 std::vector<PschEvent> DequeueEvents(int max_events) {
@@ -105,19 +78,27 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
 
 // Build a ClickHouse block from events
 clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
+  elog(DEBUG1, "pg_stat_ch: BuildClickHouseBlock() called with %zu events",
+       events.size());
+
+  elog(DEBUG2, "pg_stat_ch: creating column objects");
   clickhouse::Block block;
 
   // Basic columns
+  elog(DEBUG3, "pg_stat_ch: creating col_ts_start");
   auto col_ts_start = std::make_shared<clickhouse::ColumnDateTime64>(6);
+  elog(DEBUG3, "pg_stat_ch: col_ts_start created");
   auto col_duration_us = std::make_shared<clickhouse::ColumnUInt64>();
+  // Use pre-resolved names from event (resolved at capture time in hooks)
   auto col_db = std::make_shared<clickhouse::ColumnString>();
-  auto col_user = std::make_shared<clickhouse::ColumnString>();
-  auto col_pid = std::make_shared<clickhouse::ColumnUInt32>();
-  auto col_query_id = std::make_shared<clickhouse::ColumnUInt64>();
-  auto col_top_level = std::make_shared<clickhouse::ColumnUInt8>();
+  auto col_username = std::make_shared<clickhouse::ColumnString>();
+  elog(DEBUG3, "pg_stat_ch: basic columns created");
+  auto col_pid = std::make_shared<clickhouse::ColumnInt32>();
+  auto col_query_id = std::make_shared<clickhouse::ColumnInt64>();
   auto col_cmd_type = std::make_shared<clickhouse::ColumnString>();
   auto col_rows = std::make_shared<clickhouse::ColumnUInt64>();
   auto col_query = std::make_shared<clickhouse::ColumnString>();
+  elog(DEBUG3, "pg_stat_ch: all basic columns created");
 
   // Buffer usage columns
   auto col_shared_blks_hit = std::make_shared<clickhouse::ColumnInt64>();
@@ -161,27 +142,45 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   auto col_parallel_workers_planned = std::make_shared<clickhouse::ColumnInt16>();
   auto col_parallel_workers_launched = std::make_shared<clickhouse::ColumnInt16>();
 
+  elog(DEBUG3, "pg_stat_ch: creating error columns");
   // Error columns
   auto col_err_sqlstate = std::make_shared<clickhouse::ColumnFixedString>(5);
   auto col_err_elevel = std::make_shared<clickhouse::ColumnUInt8>();
+  elog(DEBUG3, "pg_stat_ch: error columns created");
 
   // Client context columns
   auto col_app = std::make_shared<clickhouse::ColumnString>();
   auto col_client_addr = std::make_shared<clickhouse::ColumnString>();
 
+  elog(DEBUG2, "pg_stat_ch: all columns created, starting event loop");
+  size_t event_idx = 0;
   for (const auto& ev : events) {
+    elog(DEBUG2, "pg_stat_ch: processing event %zu: pid=%d, query_len=%u",
+         event_idx, ev.pid, ev.query_len);
+
     int64_t unix_us = ev.ts_start + kPostgresEpochOffsetUs;
     col_ts_start->Append(unix_us);
     col_duration_us->Append(ev.duration_us);
-    col_db->Append(ResolveDatabaseName(ev.dbid));
-    col_user->Append(ResolveUserName(ev.userid));
-    col_pid->Append(static_cast<uint32_t>(ev.pid));
-    col_query_id->Append(ev.queryid);
-    col_top_level->Append(ev.top_level ? 1 : 0);
+
+    // Use pre-resolved names from event (resolved at capture time in hooks)
+    col_db->Append(std::string(ev.datname, ev.datname_len));
+    col_username->Append(std::string(ev.username, ev.username_len));
+
+    col_pid->Append(ev.pid);
+    col_query_id->Append(static_cast<int64_t>(ev.queryid));
     col_cmd_type->Append(CmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
-    col_query->Append(std::string(ev.query, ev.query_len));
 
+    // Validate query_len before using it
+    uint16 safe_query_len = ev.query_len;
+    if (safe_query_len > PSCH_MAX_QUERY_LEN) {
+      elog(WARNING, "pg_stat_ch: event %zu has invalid query_len %u, clamping",
+           event_idx, safe_query_len);
+      safe_query_len = PSCH_MAX_QUERY_LEN;
+    }
+    col_query->Append(std::string(ev.query, safe_query_len));
+
+    elog(DEBUG3, "pg_stat_ch: event %zu - buffer usage", event_idx);
     // Buffer usage
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);
@@ -194,6 +193,7 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_temp_blks_read->Append(ev.temp_blks_read);
     col_temp_blks_written->Append(ev.temp_blks_written);
 
+    elog(DEBUG3, "pg_stat_ch: event %zu - I/O timing", event_idx);
     // I/O timing
     col_shared_blk_read_time_us->Append(ev.shared_blk_read_time_us);
     col_shared_blk_write_time_us->Append(ev.shared_blk_write_time_us);
@@ -202,15 +202,18 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_temp_blk_read_time_us->Append(ev.temp_blk_read_time_us);
     col_temp_blk_write_time_us->Append(ev.temp_blk_write_time_us);
 
+    elog(DEBUG3, "pg_stat_ch: event %zu - WAL usage", event_idx);
     // WAL usage
     col_wal_records->Append(ev.wal_records);
     col_wal_fpi->Append(ev.wal_fpi);
     col_wal_bytes->Append(ev.wal_bytes);
 
+    elog(DEBUG3, "pg_stat_ch: event %zu - CPU time", event_idx);
     // CPU time
     col_cpu_user_time_us->Append(ev.cpu_user_time_us);
     col_cpu_sys_time_us->Append(ev.cpu_sys_time_us);
 
+    elog(DEBUG3, "pg_stat_ch: event %zu - JIT", event_idx);
     // JIT
     col_jit_functions->Append(ev.jit_functions);
     col_jit_generation_time_us->Append(ev.jit_generation_time_us);
@@ -219,27 +222,45 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_jit_optimization_time_us->Append(ev.jit_optimization_time_us);
     col_jit_emission_time_us->Append(ev.jit_emission_time_us);
 
+    elog(DEBUG3, "pg_stat_ch: event %zu - parallel workers", event_idx);
     // Parallel workers
     col_parallel_workers_planned->Append(ev.parallel_workers_planned);
     col_parallel_workers_launched->Append(ev.parallel_workers_launched);
 
+    elog(DEBUG3, "pg_stat_ch: event %zu - error info", event_idx);
     // Error info (5-char SQLSTATE, trimmed)
     col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
     col_err_elevel->Append(ev.err_elevel);
 
-    // Client context
-    col_app->Append(std::string(ev.application_name, ev.application_name_len));
-    col_client_addr->Append(std::string(ev.client_addr, ev.client_addr_len));
+    elog(DEBUG3, "pg_stat_ch: event %zu - client context (app_len=%u, addr_len=%u)",
+         event_idx, ev.application_name_len, ev.client_addr_len);
+    // Client context - validate lengths
+    uint8 safe_app_len = ev.application_name_len;
+    if (safe_app_len > 63) {
+      elog(WARNING, "pg_stat_ch: event %zu has invalid app_name_len %u, clamping",
+           event_idx, safe_app_len);
+      safe_app_len = 63;
+    }
+    uint8 safe_addr_len = ev.client_addr_len;
+    if (safe_addr_len > 45) {
+      elog(WARNING, "pg_stat_ch: event %zu has invalid client_addr_len %u, clamping",
+           event_idx, safe_addr_len);
+      safe_addr_len = 45;
+    }
+    col_app->Append(std::string(ev.application_name, safe_app_len));
+    col_client_addr->Append(std::string(ev.client_addr, safe_addr_len));
+
+    event_idx++;
   }
+  elog(DEBUG1, "pg_stat_ch: finished processing %zu events", event_idx);
 
   // Basic columns
   block.AppendColumn("ts_start", col_ts_start);
   block.AppendColumn("duration_us", col_duration_us);
   block.AppendColumn("db", col_db);
-  block.AppendColumn("user", col_user);
+  block.AppendColumn("username", col_username);
   block.AppendColumn("pid", col_pid);
   block.AppendColumn("query_id", col_query_id);
-  block.AppendColumn("top_level", col_top_level);
   block.AppendColumn("cmd_type", col_cmd_type);
   block.AppendColumn("rows", col_rows);
   block.AppendColumn("query", col_query);
@@ -339,7 +360,10 @@ bool PschExporterInit(void) {
 }
 
 void PschExportBatch(void) {
+  elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
+
   if (g_exporter.client == nullptr) {
+    elog(DEBUG1, "pg_stat_ch: client is null, initializing");
     if (!PschExporterInit()) {
       g_exporter.consecutive_failures++;
       PschRecordExportFailure("Failed to connect to ClickHouse");
@@ -347,14 +371,21 @@ void PschExportBatch(void) {
     }
   }
 
+  elog(DEBUG1, "pg_stat_ch: dequeuing events (max=%d)", psch_batch_max);
   std::vector<PschEvent> events = DequeueEvents(psch_batch_max);
   if (events.empty()) {
+    elog(DEBUG1, "pg_stat_ch: no events to export");
     return;
   }
 
+  elog(DEBUG1, "pg_stat_ch: building ClickHouse block with %zu events",
+       events.size());
+
   try {
     clickhouse::Block block = BuildClickHouseBlock(events);
+    elog(DEBUG1, "pg_stat_ch: block built, inserting to ClickHouse");
     g_exporter.client->Insert("events_raw", block);
+    elog(DEBUG1, "pg_stat_ch: insert completed");
 
     if (psch_shared_state != nullptr) {
       pg_atomic_fetch_add_u64(&psch_shared_state->exported, events.size());

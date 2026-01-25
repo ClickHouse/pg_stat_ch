@@ -17,13 +17,14 @@ usage() {
     echo "Usage: $0 <PG_VERSION|PG_PATH> [test_type]"
     echo "  PG_VERSION: PostgreSQL version (16, 17, 18) - uses mise"
     echo "  PG_PATH:    Path to local PostgreSQL installation"
-    echo "  test_type:  regress, tap, isolation, stress, or all (default: all)"
+    echo "  test_type:  regress, tap, isolation, stress, clickhouse, or all (default: all)"
     echo ""
     echo "Examples:"
     echo "  $0 18                      # Run all tests against mise PG 18"
     echo "  $0 17 regress              # Run only regression tests against mise PG 17"
     echo "  $0 ../postgres/install_tap tap  # Run TAP tests against local build"
     echo "  $0 18 stress               # Run only stress test against PG 18"
+    echo "  $0 18 clickhouse           # Run ClickHouse integration tests (requires Docker)"
     exit 1
 }
 
@@ -100,7 +101,7 @@ run_regress() {
         --outputdir=test/regression/results \
         --temp-instance=test/regression/tmp_check \
         --temp-config=test/regression/pg_stat_ch.conf \
-        basic version guc stats utility buffers
+        basic version guc stats utility buffers cmd_type client_info error_capture
 }
 
 # Run TAP tests
@@ -183,6 +184,51 @@ run_isolation() {
         ring_buffer_concurrent
 }
 
+# Run ClickHouse integration tests
+run_clickhouse() {
+    log_info "Running ClickHouse integration tests..."
+
+    # Check if Docker is available
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker is required for ClickHouse tests"
+        return 1
+    fi
+
+    # Check if ClickHouse container is running
+    if ! curl -s 'http://localhost:18123/' --data 'SELECT 1' 2>/dev/null | grep -q '^1'; then
+        log_info "Starting ClickHouse container..."
+        docker compose -f docker/docker-compose.test.yml up -d --wait
+        sleep 5  # Extra wait for healthcheck
+    fi
+
+    local perl_lib="${PG_LIB}/pgxs/src/test/perl"
+    if [[ ! -d "${perl_lib}" ]]; then
+        log_warn "PostgreSQL TAP test modules not found at ${perl_lib}"
+        log_warn "ClickHouse tests require PostgreSQL built with --enable-tap-tests"
+        log_warn "Skipping ClickHouse tests."
+        return 0
+    fi
+
+    local pg_regress="${PG_LIB}/pgxs/src/test/regress/pg_regress"
+    if [[ ! -x "${pg_regress}" ]]; then
+        log_warn "pg_regress not found at ${pg_regress}"
+        log_warn "Skipping ClickHouse tests."
+        return 0
+    fi
+
+    # Clean up stale test data directories
+    rm -rf tmp_check
+
+    # Set PROJECT_DIR for the test helper module
+    export PROJECT_DIR="${PROJECT_DIR}"
+
+    # Run only ClickHouse-related tests
+    PG_REGRESS="${pg_regress}" prove -v --timer \
+        -I "${perl_lib}" \
+        -I t \
+        t/010_clickhouse_export.pl t/011_clickhouse_reconnect.pl
+}
+
 # Main execution
 case "${TEST_TYPE}" in
     regress)
@@ -196,6 +242,9 @@ case "${TEST_TYPE}" in
         ;;
     isolation)
         run_isolation
+        ;;
+    clickhouse)
+        run_clickhouse
         ;;
     all)
         run_regress

@@ -6,6 +6,8 @@ extern "C" {
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "access/xact.h"
+#include "utils/lsyscache.h"
 #include "common/ip.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -168,6 +170,49 @@ static int GetClientAddress(char* buf, int buf_size) {
   return (len >= buf_size) ? buf_size - 1 : len;
 }
 
+// Resolve database and user names from OIDs (pg_stat_monitor pattern)
+// Must be called from a transaction context (foreground hooks)
+static void ResolveNames(PschEvent* event) {
+  const char* datname = nullptr;
+  const char* username = nullptr;
+
+  // Only resolve names if we're in a transaction state (catalog access is safe)
+  if (IsTransactionState()) {
+    datname = get_database_name(event->dbid);
+    username = GetUserNameFromId(event->userid, true);
+  }
+
+  // Fall back to placeholder if name resolution fails
+  if (datname == nullptr) {
+    datname = "<unknown>";
+  }
+  if (username == nullptr) {
+    username = "<unknown>";
+  }
+
+  // Copy names to event with length tracking
+  size_t dlen = strlen(datname);
+  if (dlen >= sizeof(event->datname)) {
+    dlen = sizeof(event->datname) - 1;
+  }
+  memcpy(event->datname, datname, dlen);
+  event->datname[dlen] = '\0';
+  event->datname_len = static_cast<uint8>(dlen);
+
+  size_t ulen = strlen(username);
+  if (ulen >= sizeof(event->username)) {
+    ulen = sizeof(event->username) - 1;
+  }
+  memcpy(event->username, username, ulen);
+  event->username[ulen] = '\0';
+  event->username_len = static_cast<uint8>(ulen);
+
+  // Note: get_database_name returns palloc'd memory that will be freed at end of
+  // transaction, GetUserNameFromId also returns palloc'd memory. We don't need to
+  // explicitly pfree since we're in a transaction context and using the memory
+  // immediately.
+}
+
 // Build a PschEvent from a QueryDesc
 static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
                                     int64 cpu_user_us, int64 cpu_sys_us) {
@@ -176,6 +221,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
   event->ts_start = query_start_ts;
   event->dbid = MyDatabaseId;
   event->userid = GetUserId();
+  ResolveNames(event);  // Resolve db/user names while in transaction context
   event->pid = MyProcPid;
   event->queryid = query_desc->plannedstmt->queryId;
   event->top_level = current_query_is_top_level;
@@ -467,6 +513,7 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
   event->duration_us = duration_us;
   event->dbid = MyDatabaseId;
   event->userid = GetUserId();
+  ResolveNames(event);  // Resolve db/user names while in transaction context
   event->pid = MyProcPid;
   event->queryid = 0;  // Utility statements don't have queryId
   event->top_level = is_top_level;
@@ -696,6 +743,7 @@ static void PschEmitLogHook(ErrorData* edata) {
     event.ts_start = GetCurrentTimestamp();
     event.dbid = MyDatabaseId;
     event.userid = GetUserId();
+    ResolveNames(&event);  // Resolve db/user names (safe if not in transaction)
     event.pid = MyProcPid;
     event.top_level = (nesting_level == 0);
     event.cmd_type = PSCH_CMD_UNKNOWN;

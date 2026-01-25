@@ -56,6 +56,10 @@ struct PschEvent {
   // Identity
   Oid dbid;                // Database OID
   Oid userid;              // User OID
+  char datname[64];        // Database name (NAMEDATALEN=64, resolved at capture)
+  uint8 datname_len;       // Actual length
+  char username[64];       // User name (NAMEDATALEN=64, resolved at capture)
+  uint8 username_len;      // Actual length
   int32 pid;               // Backend process ID
   uint64 queryid;          // Query ID (from pg_stat_statements)
   bool top_level;          // True if this is a top-level query

@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: psch-clickhouse
+    ports:
+      - "19000:9000"   # Native protocol
+      - "18123:8123"   # HTTP interface
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "-q", "SELECT 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    environment:
+      CLICKHOUSE_DB: pg_stat_ch
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
