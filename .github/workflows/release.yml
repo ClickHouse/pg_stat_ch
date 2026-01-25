@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build PG${{ matrix.pg }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [16, 17, 18]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
+          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg }} \
+            postgresql-server-dev-${{ matrix.pg }} \
+            cmake ninja-build g++
+
+      - name: Get version from git
+        id: version
+        run: |
+          # Uses same logic as cmake/GitVersion.cmake
+          VERSION=$(git describe --tags --always --dirty)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION (matches PG_STAT_CH_VERSION)"
+
+      - name: Configure
+        run: |
+          cmake --preset release \
+            -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package
+        id: package
+        run: |
+          DESTDIR=$(pwd)/pkg cmake --install build
+
+          # Find installed files
+          PKGLIB=$(find pkg -name "pg_stat_ch.so" -printf "%h\n")
+          SHAREDIR=$(find pkg -name "pg_stat_ch.control" -printf "%h\n")
+
+          # Create release tarball structure (version matches PG_STAT_CH_VERSION)
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_NAME="pg_stat_ch-${VERSION}-pg${{ matrix.pg }}-linux-${{ matrix.arch }}"
+          mkdir -p "$RELEASE_NAME"
+          cp "$PKGLIB/pg_stat_ch.so" "$RELEASE_NAME/"
+          cp "$SHAREDIR/pg_stat_ch.control" "$RELEASE_NAME/"
+          cp "$SHAREDIR"/pg_stat_ch--*.sql "$RELEASE_NAME/"
+
+          cp INSTALL.md "$RELEASE_NAME/"
+
+          tar -czvf "$RELEASE_NAME.tar.gz" "$RELEASE_NAME"
+          echo "artifact=$RELEASE_NAME.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg_stat_ch-pg${{ matrix.pg }}-${{ matrix.arch }}
+          path: "*.tar.gz"
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            Download the tarball for your PostgreSQL version and architecture, then:
+
+            ```bash
+            tar -xzf pg_stat_ch-*.tar.gz
+            cd pg_stat_ch-*/
+            sudo cp pg_stat_ch.so $(pg_config --pkglibdir)/
+            sudo cp pg_stat_ch.control pg_stat_ch--*.sql $(pg_config --sharedir)/extension/
+            ```
+
+            See INSTALL.md in the tarball for full instructions.
