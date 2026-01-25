@@ -10,7 +10,6 @@ extern "C" {
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
-#include "nodes/parsenodes.h"
 #include "tcop/utility.h"
 #include "utils/backend_status.h"
 #include "utils/elog.h"
@@ -25,8 +24,6 @@ extern "C" {
 #include "jit/jit.h"
 #endif
 
-// debug_query_string is declared in tcop/dest.h, but we need it for error capture
-extern PGDLLIMPORT const char* debug_query_string;
 }
 
 #include "hooks/hooks.h"
@@ -83,8 +80,8 @@ static PschCmdType ConvertCmdType(CmdType cmd) {
 
 // Calculate time difference in microseconds
 static int64 TimeDiffMicrosec(struct timeval end, struct timeval start) {
-  return ((int64)(end.tv_sec - start.tv_sec) * 1000000LL) +
-         ((int64)(end.tv_usec - start.tv_usec));
+  return (static_cast<int64>(end.tv_sec - start.tv_sec) * 1000000LL) +
+         static_cast<int64>(end.tv_usec - start.tv_usec);
 }
 
 // Unpack SQLSTATE code from PostgreSQL's packed format to string
@@ -437,7 +434,8 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 
   // Compute CPU time delta from getrusage
-  int64 cpu_user_us = 0, cpu_sys_us = 0;
+  int64 cpu_user_us = 0;
+  int64 cpu_sys_us = 0;
   struct rusage rusage_end;
   if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
     cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, rusage_start.ru_utime);
@@ -663,7 +661,8 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   WalUsageAccumDiff(&walusage_delta, &pgWalUsage, &walusage_start);
 
   // Calculate CPU time delta
-  int64 cpu_user_us = 0, cpu_sys_us = 0;
+  int64 cpu_user_us = 0;
+  int64 cpu_sys_us = 0;
   struct rusage rusage_util_end;
   if (getrusage(RUSAGE_SELF, &rusage_util_end) == 0) {
     cpu_user_us =
@@ -734,7 +733,7 @@ static void PschEmitLogHook(ErrorData* edata) {
   }
 
   // Call previous hook in chain
-  if (prev_emit_log_hook) {
+  if (prev_emit_log_hook != nullptr) {
     prev_emit_log_hook(edata);
   }
 }
