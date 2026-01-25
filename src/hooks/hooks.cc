@@ -28,11 +28,6 @@ static ExecutorFinish_hook_type prev_executor_finish = nullptr;
 static ExecutorEnd_hook_type prev_executor_end = nullptr;
 static ProcessUtility_hook_type prev_process_utility = nullptr;
 
-// For ProcessUtility - manual buffer/WAL snapshots (no totaltime available)
-static BufferUsage utility_bufusage_start;
-static WalUsage utility_walusage_start;
-static instr_time utility_start_time;
-
 // Track nesting level to identify top-level queries
 static int nesting_level = 0;
 
@@ -228,13 +223,11 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction,
     }
 #endif
   }
-  PG_CATCH();
+  PG_FINALLY();
   {
     nesting_level--;
-    PG_RE_THROW();
   }
   PG_END_TRY();
-  nesting_level--;
 }
 
 static void PschExecutorFinish(QueryDesc* query_desc) {
@@ -257,13 +250,11 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
       standard_ExecutorFinish(query_desc);
     }
   }
-  PG_CATCH();
+  PG_FINALLY();
   {
     nesting_level--;
-    PG_RE_THROW();
   }
   PG_END_TRY();
-  nesting_level--;
 }
 
 static void PschExecutorEnd(QueryDesc* query_desc) {
@@ -365,6 +356,82 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
   }
 }
 
+// Helper macro to call ProcessUtility (previous hook or standard)
+#if PG_VERSION_NUM >= 140000
+#define CALL_PROCESS_UTILITY()                                              \
+  do {                                                                      \
+    if (prev_process_utility) {                                             \
+      prev_process_utility(pstmt, queryString, readOnlyTree, context,       \
+                           params, queryEnv, dest, qc);                     \
+    } else {                                                                \
+      standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,    \
+                              params, queryEnv, dest, qc);                  \
+    }                                                                       \
+  } while (0)
+#else
+#define CALL_PROCESS_UTILITY()                                              \
+  do {                                                                      \
+    if (prev_process_utility) {                                             \
+      prev_process_utility(pstmt, queryString, context, params, queryEnv,   \
+                           dest, qc);                                       \
+    } else {                                                                \
+      standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,\
+                              dest, qc);                                    \
+    }                                                                       \
+  } while (0)
+#endif
+
+// Check if we should track this utility statement
+static bool ShouldTrackUtility(Node* parsetree) {
+  if (!psch_enabled || IsParallelWorker()) {
+    return false;
+  }
+  // Skip EXECUTE/PREPARE/DEALLOCATE to avoid double-counting
+  if (IsA(parsetree, ExecuteStmt) || IsA(parsetree, PrepareStmt) ||
+      IsA(parsetree, DeallocateStmt)) {
+    return false;
+  }
+  return true;
+}
+
+// Get row count from QueryCompletion for utility statements
+static uint64 GetUtilityRowCount(QueryCompletion* qc) {
+  if (qc == nullptr) {
+    return 0;
+  }
+  switch (qc->commandTag) {
+    case CMDTAG_COPY:
+    case CMDTAG_FETCH:
+    case CMDTAG_SELECT:
+    case CMDTAG_REFRESH_MATERIALIZED_VIEW:
+      return qc->nprocessed;
+    default:
+      return 0;
+  }
+}
+
+// Execute utility with nesting level tracking
+static void ExecuteUtilityWithNesting(PlannedStmt* pstmt,
+                                      const char* queryString,
+#if PG_VERSION_NUM >= 140000
+                                      bool readOnlyTree,
+#endif
+                                      ProcessUtilityContext context,
+                                      ParamListInfo params,
+                                      QueryEnvironment* queryEnv,
+                                      DestReceiver* dest, QueryCompletion* qc) {
+  nesting_level++;
+  PG_TRY();
+  {
+    CALL_PROCESS_UTILITY();
+  }
+  PG_FINALLY();
+  {
+    nesting_level--;
+  }
+  PG_END_TRY();
+}
+
 // ProcessUtility hook - captures DDL and utility statements
 #if PG_VERSION_NUM >= 140000
 static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
@@ -377,104 +444,50 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
                                ParamListInfo params, QueryEnvironment* queryEnv,
                                DestReceiver* dest, QueryCompletion* qc) {
 #endif
-  Node* parsetree = pstmt->utilityStmt;
-  bool should_track = psch_enabled && !IsParallelWorker();
-
-  // Skip EXECUTE/PREPARE/DEALLOCATE to avoid double-counting
-  // (per pg_stat_monitor pattern)
-  if (should_track && (IsA(parsetree, ExecuteStmt) ||
-                       IsA(parsetree, PrepareStmt) ||
-                       IsA(parsetree, DeallocateStmt))) {
-    should_track = false;
+  if (!ShouldTrackUtility(pstmt->utilityStmt)) {
+    CALL_PROCESS_UTILITY();
+    return;
   }
 
-  if (should_track) {
-    // Snapshot before execution (ProcessUtility has no totaltime)
-    utility_bufusage_start = pgBufferUsage;
-    utility_walusage_start = pgWalUsage;
-    INSTR_TIME_SET_CURRENT(utility_start_time);
+  // Capture state before execution
+  bool is_top_level = (nesting_level == 0);
+  TimestampTz start_ts = GetCurrentTimestamp();
+  BufferUsage bufusage_start = pgBufferUsage;
+  WalUsage walusage_start = pgWalUsage;
+  instr_time start_time;
+  INSTR_TIME_SET_CURRENT(start_time);
 
-    bool is_top_level = (nesting_level == 0);
-    TimestampTz start_ts = GetCurrentTimestamp();
-
-    nesting_level++;
-    PG_TRY();
-    {
+  // Execute the utility
 #if PG_VERSION_NUM >= 140000
-      if (prev_process_utility) {
-        prev_process_utility(pstmt, queryString, readOnlyTree, context, params,
-                             queryEnv, dest, qc);
-      } else {
-        standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
-                                params, queryEnv, dest, qc);
-      }
+  ExecuteUtilityWithNesting(pstmt, queryString, readOnlyTree, context, params,
+                            queryEnv, dest, qc);
 #else
-      if (prev_process_utility) {
-        prev_process_utility(pstmt, queryString, context, params, queryEnv,
-                             dest, qc);
-      } else {
-        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,
-                                dest, qc);
-      }
+  ExecuteUtilityWithNesting(pstmt, queryString, context, params, queryEnv, dest,
+                            qc);
 #endif
-    }
-    PG_CATCH();
-    {
-      nesting_level--;
-      PG_RE_THROW();
-    }
-    PG_END_TRY();
-    nesting_level--;
 
-    // Calculate timing delta
-    instr_time duration;
-    INSTR_TIME_SET_CURRENT(duration);
-    INSTR_TIME_SUBTRACT(duration, utility_start_time);
+  // Calculate duration
+  instr_time duration;
+  INSTR_TIME_SET_CURRENT(duration);
+  INSTR_TIME_SUBTRACT(duration, start_time);
 
-    // Calculate buffer/WAL deltas
-    BufferUsage bufusage_delta;
-    WalUsage walusage_delta;
-    memset(&bufusage_delta, 0, sizeof(BufferUsage));
-    memset(&walusage_delta, 0, sizeof(WalUsage));
-    BufferUsageAccumDiff(&bufusage_delta, &pgBufferUsage,
-                         &utility_bufusage_start);
-    WalUsageAccumDiff(&walusage_delta, &pgWalUsage, &utility_walusage_start);
+  // Calculate buffer/WAL deltas
+  BufferUsage bufusage_delta;
+  WalUsage walusage_delta;
+  memset(&bufusage_delta, 0, sizeof(BufferUsage));
+  memset(&walusage_delta, 0, sizeof(WalUsage));
+  BufferUsageAccumDiff(&bufusage_delta, &pgBufferUsage, &bufusage_start);
+  WalUsageAccumDiff(&walusage_delta, &pgWalUsage, &walusage_start);
 
-    // Row count for COPY/FETCH/SELECT/REFRESH
-    uint64 rows = 0;
-    if (qc && (qc->commandTag == CMDTAG_COPY || qc->commandTag == CMDTAG_FETCH ||
-               qc->commandTag == CMDTAG_SELECT ||
-               qc->commandTag == CMDTAG_REFRESH_MATERIALIZED_VIEW)) {
-      rows = qc->nprocessed;
-    }
-
-    // Build and enqueue event
-    PschEvent event;
-    BuildEventForUtility(&event, queryString, start_ts,
-                         INSTR_TIME_GET_MICROSEC(duration), is_top_level, rows,
-                         &bufusage_delta, &walusage_delta);
-    PschEnqueueEvent(&event);
-  } else {
-    // Not tracking - still call the utility
-#if PG_VERSION_NUM >= 140000
-    if (prev_process_utility) {
-      prev_process_utility(pstmt, queryString, readOnlyTree, context, params,
-                           queryEnv, dest, qc);
-    } else {
-      standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
-                              queryEnv, dest, qc);
-    }
-#else
-    if (prev_process_utility) {
-      prev_process_utility(pstmt, queryString, context, params, queryEnv, dest,
-                           qc);
-    } else {
-      standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,
-                              dest, qc);
-    }
-#endif
-  }
+  // Build and enqueue event
+  PschEvent event;
+  BuildEventForUtility(&event, queryString, start_ts,
+                       INSTR_TIME_GET_MICROSEC(duration), is_top_level,
+                       GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta);
+  PschEnqueueEvent(&event);
 }
+
+#undef CALL_PROCESS_UTILITY
 
 void PschInstallHooks(void) {
 #if PG_VERSION_NUM >= 140000
