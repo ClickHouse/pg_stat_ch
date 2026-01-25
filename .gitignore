@@ -1,0 +1,28 @@
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.a
+.deps/
+build/
+
+# Compile database
+compile_commands.json
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PostgreSQL regression test output
+regression.diffs
+regression.out
+results/
+tmp_check/
+log/
+
+# OS files
+.DS_Store
+Thumbs.db

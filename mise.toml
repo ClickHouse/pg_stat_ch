@@ -1,0 +1,63 @@
+[env]
+# Force C17 standard to avoid C23 'bool' keyword conflict when building older PostgreSQL versions
+CFLAGS = "-std=gnu17"
+
+[tools]
+postgres = ["16", "17", "18"]
+
+[tasks.configure]
+run = "cmake -B build --preset default"
+description = "Configure build with CMake (Debug)"
+
+[tasks."configure:release"]
+run = "cmake -B build --preset release"
+description = "Configure build with CMake (Release)"
+
+[tasks.build]
+run = "cmake -B build --preset default && cmake --build build"
+description = "Build the extension (uses current pg_config)"
+
+[tasks."build:release"]
+run = "cmake -B build --preset release && cmake --build build"
+description = "Build the extension in release mode"
+
+[tasks.install]
+run = "cmake --install build"
+description = "Install the extension"
+
+[tasks.clean]
+run = "rm -rf build"
+description = "Clean build artifacts"
+
+[tasks.compdb]
+run = "cp build/compile_commands.json ."
+description = "Copy compile_commands.json to project root"
+
+[tasks.format]
+run = "fd -e cc -e h . src include | xargs clang-format -i"
+description = "Format code with clang-format"
+
+[tasks.lint]
+run = "fd -e cc . src | xargs clang-tidy"
+description = "Run clang-tidy linting"
+
+[tasks.installcheck]
+run = "make -C $(pg_config --sharedir)/.. installcheck REGRESS_OPTS='--inputdir=$(pwd)' || pg_regress --inputdir=$(pwd) --bindir=$(pg_config --bindir) pg_stat_ch"
+description = "Run regression tests"
+
+# Per-version build tasks
+[tasks."build:16"]
+run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@16)/bin/pg_config && cmake --build build"
+description = "Build for PostgreSQL 16"
+
+[tasks."build:17"]
+run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@17)/bin/pg_config && cmake --build build"
+description = "Build for PostgreSQL 17"
+
+[tasks."build:18"]
+run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
+description = "Build for PostgreSQL 18"
+
+[tasks."build:all"]
+depends = ["build:16", "build:17", "build:18"]
+description = "Build for all PostgreSQL versions"
