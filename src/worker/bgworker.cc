@@ -75,7 +75,12 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
 
   // Register custom wait event for pg_stat_activity visibility
   if (psch_wait_event_main == 0) {
+#if PG_VERSION_NUM >= 170000
     psch_wait_event_main = WaitEventExtensionNew("PgStatChExporter");
+#else
+    // PG16: Use generic extension wait event (custom names not supported)
+    psch_wait_event_main = PG_WAIT_EXTENSION;
+#endif
   }
 
   // Initialize ClickHouse exporter

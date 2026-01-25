@@ -1,5 +1,7 @@
 // pg_stat_ch executor hooks implementation
 
+#include <sys/resource.h>
+
 extern "C" {
 #include "postgres.h"
 
@@ -9,11 +11,19 @@ extern "C" {
 #include "miscadmin.h"
 #include "nodes/parsenodes.h"
 #include "tcop/utility.h"
+#include "utils/elog.h"
 #include "utils/timestamp.h"
 
 #if PG_VERSION_NUM >= 140000
 #include "nodes/queryjumble.h"
 #endif
+
+#if PG_VERSION_NUM >= 150000
+#include "jit/jit.h"
+#endif
+
+// debug_query_string is declared in tcop/dest.h, but we need it for error capture
+extern PGDLLIMPORT const char* debug_query_string;
 }
 
 #include "hooks/hooks.h"
@@ -27,9 +37,16 @@ static ExecutorRun_hook_type prev_executor_run = nullptr;
 static ExecutorFinish_hook_type prev_executor_finish = nullptr;
 static ExecutorEnd_hook_type prev_executor_end = nullptr;
 static ProcessUtility_hook_type prev_process_utility = nullptr;
+static emit_log_hook_type prev_emit_log_hook = nullptr;
 
 // Track nesting level to identify top-level queries
 static int nesting_level = 0;
+
+// CPU time tracking via getrusage
+static struct rusage rusage_start;
+
+// Deadlock prevention for emit_log_hook
+static bool disable_error_capture = false;
 
 // Track whether the current query started at top level
 static bool current_query_is_top_level = false;
@@ -61,8 +78,24 @@ static PschCmdType ConvertCmdType(CmdType cmd) {
   }
 }
 
+// Calculate time difference in microseconds
+static int64 TimeDiffMicrosec(struct timeval end, struct timeval start) {
+  return ((int64)(end.tv_sec - start.tv_sec) * 1000000LL) +
+         ((int64)(end.tv_usec - start.tv_usec));
+}
+
+// Unpack SQLSTATE code from PostgreSQL's packed format to string
+static void UnpackSqlState(int sql_state, char* buf) {
+  for (int i = 0; i < 5; i++) {
+    buf[i] = PGUNSIXBIT(sql_state);
+    sql_state >>= 6;
+  }
+  buf[5] = '\0';
+}
+
 // Build a PschEvent from a QueryDesc
-static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event) {
+static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
+                                    int64 cpu_user_us, int64 cpu_sys_us) {
   MemSet(event, 0, sizeof(*event));
 
   event->ts_start = query_start_ts;
@@ -74,10 +107,21 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event) {
   event->cmd_type = ConvertCmdType(query_desc->operation);
   event->rows = query_desc->estate->es_processed;
 
+  // CPU time from getrusage delta
+  event->cpu_user_time_us = cpu_user_us;
+  event->cpu_sys_time_us = cpu_sys_us;
+
   if (query_desc->totaltime != nullptr) {
-    // Duration from instrumentation (seconds -> microseconds)
+    // Duration from instrumentation
+#if PG_VERSION_NUM >= 190000
+    // PG19+: total is instr_time
+    event->duration_us =
+        static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
+#else
+    // PG18 and earlier: total is double (seconds)
     event->duration_us =
         static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
+#endif
 
     // Buffer usage from instrumentation
     BufferUsage* buf = &query_desc->totaltime->bufusage;
@@ -126,6 +170,36 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event) {
     event->duration_us = static_cast<uint64>(now - query_start_ts);
   }
 
+  // JIT instrumentation (PG15+)
+#if PG_VERSION_NUM >= 150000
+  if (query_desc->estate->es_jit != nullptr) {
+    JitInstrumentation* jit = &query_desc->estate->es_jit->instr;
+    event->jit_functions = static_cast<int32>(jit->created_functions);
+    event->jit_generation_time_us =
+        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->generation_counter));
+    event->jit_inlining_time_us =
+        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->inlining_counter));
+    event->jit_optimization_time_us =
+        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->optimization_counter));
+    event->jit_emission_time_us =
+        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->emission_counter));
+#if PG_VERSION_NUM >= 170000
+    event->jit_deform_time_us =
+        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
+#endif
+  }
+#endif
+
+  // Parallel workers (PG18+)
+#if PG_VERSION_NUM >= 180000
+  if (query_desc->estate != nullptr) {
+    event->parallel_workers_planned =
+        static_cast<int16>(query_desc->estate->es_parallel_workers_to_launch);
+    event->parallel_workers_launched =
+        static_cast<int16>(query_desc->estate->es_parallel_workers_launched);
+  }
+#endif
+
   // Query text
   if (query_desc->sourceText != nullptr) {
     size_t len = strlen(query_desc->sourceText);
@@ -155,6 +229,10 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   if (nesting_level == 0) {
     current_query_is_top_level = true;
     query_start_ts = GetCurrentTimestamp();
+    // Capture CPU time baseline for top-level queries
+    if (psch_enabled) {
+      getrusage(RUSAGE_SELF, &rusage_start);
+    }
   } else {
     current_query_is_top_level = false;
   }
@@ -274,9 +352,17 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     InstrEndLoop(query_desc->totaltime);
   }
 
+  // Compute CPU time delta from getrusage
+  int64 cpu_user_us = 0, cpu_sys_us = 0;
+  struct rusage rusage_end;
+  if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, rusage_start.ru_stime);
+  }
+
   // Build and enqueue the event
   PschEvent event;
-  BuildEventFromQueryDesc(query_desc, &event);
+  BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
 
   // Call previous hook or standard function
@@ -291,7 +377,8 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
 static void BuildEventForUtility(PschEvent* event, const char* queryString,
                                  TimestampTz start_ts, uint64 duration_us,
                                  bool is_top_level, uint64 rows,
-                                 BufferUsage* bufusage, WalUsage* walusage) {
+                                 BufferUsage* bufusage, WalUsage* walusage,
+                                 int64 cpu_user_us, int64 cpu_sys_us) {
   MemSet(event, 0, sizeof(*event));
 
   event->ts_start = start_ts;
@@ -303,6 +390,10 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString,
   event->top_level = is_top_level;
   event->cmd_type = PSCH_CMD_UTILITY;
   event->rows = rows;
+
+  // CPU time from getrusage delta
+  event->cpu_user_time_us = cpu_user_us;
+  event->cpu_sys_time_us = cpu_sys_us;
 
   // Buffer usage from computed delta
   event->shared_blks_hit = bufusage->shared_blks_hit;
@@ -454,6 +545,8 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   TimestampTz start_ts = GetCurrentTimestamp();
   BufferUsage bufusage_start = pgBufferUsage;
   WalUsage walusage_start = pgWalUsage;
+  struct rusage rusage_util_start;
+  getrusage(RUSAGE_SELF, &rusage_util_start);
   instr_time start_time;
   INSTR_TIME_SET_CURRENT(start_time);
 
@@ -479,15 +572,76 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   BufferUsageAccumDiff(&bufusage_delta, &pgBufferUsage, &bufusage_start);
   WalUsageAccumDiff(&walusage_delta, &pgWalUsage, &walusage_start);
 
+  // Calculate CPU time delta
+  int64 cpu_user_us = 0, cpu_sys_us = 0;
+  struct rusage rusage_util_end;
+  if (getrusage(RUSAGE_SELF, &rusage_util_end) == 0) {
+    cpu_user_us =
+        TimeDiffMicrosec(rusage_util_end.ru_utime, rusage_util_start.ru_utime);
+    cpu_sys_us =
+        TimeDiffMicrosec(rusage_util_end.ru_stime, rusage_util_start.ru_stime);
+  }
+
   // Build and enqueue event
   PschEvent event;
   BuildEventForUtility(&event, queryString, start_ts,
                        INSTR_TIME_GET_MICROSEC(duration), is_top_level,
-                       GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta);
+                       GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta,
+                       cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
 }
 
 #undef CALL_PROCESS_UTILITY
+
+// emit_log_hook - captures errors (WARNING and above)
+static void PschEmitLogHook(ErrorData* edata) {
+  // Capture error if conditions are met
+  bool should_capture = (edata != nullptr && psch_enabled &&
+                         !IsParallelWorker() && MyProc != nullptr);
+
+  if (should_capture && edata->elevel >= WARNING && !disable_error_capture) {
+    const char* query = debug_query_string ? debug_query_string : "";
+
+    PschEvent event;
+    MemSet(&event, 0, sizeof(event));
+    event.ts_start = GetCurrentTimestamp();
+    event.dbid = MyDatabaseId;
+    event.userid = GetUserId();
+    event.pid = MyProcPid;
+    event.top_level = (nesting_level == 0);
+    event.cmd_type = PSCH_CMD_UNKNOWN;
+
+    // Unpack SQLSTATE and error level
+    UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
+    event.err_elevel = static_cast<uint8>(edata->elevel);
+
+    // Copy query text if available
+    if (query[0] != '\0') {
+      size_t len = strlen(query);
+      if (len >= PSCH_MAX_QUERY_LEN) {
+        len = PSCH_MAX_QUERY_LEN - 1;
+      }
+      memcpy(event.query, query, len);
+      event.query[len] = '\0';
+      event.query_len = static_cast<uint16>(len);
+    }
+
+    // Prevent recursive calls if PschEnqueueEvent triggers an error
+    disable_error_capture = true;
+    PschEnqueueEvent(&event);
+    disable_error_capture = false;
+  }
+
+  // Reset flag on ERROR or above (transaction will abort)
+  if (edata != nullptr && edata->elevel >= ERROR) {
+    disable_error_capture = false;
+  }
+
+  // Call previous hook in chain
+  if (prev_emit_log_hook) {
+    prev_emit_log_hook(edata);
+  }
+}
 
 void PschInstallHooks(void) {
 #if PG_VERSION_NUM >= 140000
@@ -509,6 +663,9 @@ void PschInstallHooks(void) {
 
   prev_process_utility = ProcessUtility_hook;
   ProcessUtility_hook = PschProcessUtility;
+
+  prev_emit_log_hook = emit_log_hook;
+  emit_log_hook = PschEmitLogHook;
 }
 
 }  // extern "C"

@@ -89,6 +89,27 @@ struct PschEvent {
   int64 wal_fpi;
   uint64 wal_bytes;
 
+  // CPU time (microseconds, from getrusage delta)
+  int64 cpu_user_time_us;
+  int64 cpu_sys_time_us;
+
+  // JIT instrumentation (PG15+, 0 if not available)
+  int32 jit_functions;
+  int32 jit_generation_time_us;
+  int32 jit_deform_time_us;       // PG17+ only
+  int32 jit_inlining_time_us;
+  int32 jit_optimization_time_us;
+  int32 jit_emission_time_us;
+
+  // Parallel workers (PG18+, 0 if not available)
+  int16 parallel_workers_planned;
+  int16 parallel_workers_launched;
+
+  // Error info (from emit_log_hook)
+  char err_sqlstate[6];           // SQLSTATE code (e.g., "42P01")
+  uint8 err_elevel;               // Error level (0=success, WARNING=19, ERROR=20)
+  uint8 _padding3;                // Alignment
+
   // Query text (null-terminated, truncated if necessary)
   uint16 query_len;        // Actual length of query text
   char query[PSCH_MAX_QUERY_LEN];
