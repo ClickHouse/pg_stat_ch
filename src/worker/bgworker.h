@@ -14,6 +14,9 @@ void PschRegisterBgworker(void);
 // Background worker entry point (called by PostgreSQL)
 PGDLLEXPORT void PschBgworkerMain(Datum main_arg);
 
+// Signal bgworker to flush immediately
+void PschSignalFlush(void);
+
 #ifdef __cplusplus
 }
 #endif

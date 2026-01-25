@@ -37,6 +37,7 @@ extern "C" {
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 }
 
 #include "queue/shmem.h"
@@ -132,6 +133,32 @@ static void PschShmemRequestHook(void) {
 }
 #endif
 
+// Initialize shared state fields on first-time setup.
+// Called with AddinShmemInitLock held.
+static void InitializeSharedState(void) {
+  psch_shared_state->lock = &(GetNamedLWLockTranche("pg_stat_ch"))->lock;
+  psch_shared_state->capacity = psch_queue_capacity;
+  pg_atomic_init_u64(&psch_shared_state->head, 0);
+  pg_atomic_init_u64(&psch_shared_state->enqueued, 0);
+  pg_atomic_init_u64(&psch_shared_state->dropped, 0);
+  pg_atomic_init_flag(&psch_shared_state->overflow_logged);
+  pg_atomic_init_u64(&psch_shared_state->tail, 0);
+  pg_atomic_init_u64(&psch_shared_state->exported, 0);
+
+  // Initialize exporter stats
+  pg_atomic_init_u64(&psch_shared_state->send_failures, 0);
+  psch_shared_state->last_success_ts = 0;
+  psch_shared_state->last_error_ts = 0;
+  MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
+  psch_shared_state->bgworker_pid = 0;
+
+  // Zero-initialize the ring buffer
+  MemSet(GetRingBuffer(), 0, psch_queue_capacity * sizeof(PschEvent));
+
+  elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, size=%zu)",
+       psch_queue_capacity, PschShmemSize());
+}
+
 static void PschShmemStartupHook(void) {
   bool found;
 
@@ -152,27 +179,11 @@ static void PschShmemStartupHook(void) {
   }
 
   if (!found) {
-    // First time initialization
-    psch_shared_state->lock = &(GetNamedLWLockTranche("pg_stat_ch"))->lock;
-    psch_shared_state->capacity = psch_queue_capacity;
-    pg_atomic_init_u64(&psch_shared_state->head, 0);
-    pg_atomic_init_u64(&psch_shared_state->enqueued, 0);
-    pg_atomic_init_u64(&psch_shared_state->dropped, 0);
-    pg_atomic_init_flag(&psch_shared_state->overflow_logged);
-    pg_atomic_init_u64(&psch_shared_state->tail, 0);
-    pg_atomic_init_u64(&psch_shared_state->exported, 0);
-
-    // Zero-initialize the ring buffer
-    MemSet(GetRingBuffer(), 0, psch_queue_capacity * sizeof(PschEvent));
-
-    elog(LOG,
-         "pg_stat_ch: initialized shared memory (capacity=%d, size=%zu)",
-         psch_queue_capacity, PschShmemSize());
+    InitializeSharedState();
   }
 
   LWLockRelease(AddinShmemInitLock);
 
-  // Register shutdown callback
   on_shmem_exit(PschShmemShutdown, 0);
 }
 
@@ -311,13 +322,19 @@ bool PschDequeueEvent(PschEvent* event) {
 // - new counter values with old positions
 // causing temporary inconsistencies in the reported queue_size vs counters.
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported,
-                  uint32* queue_size, uint32* queue_capacity) {
+                  uint32* queue_size, uint32* queue_capacity,
+                  uint64* send_failures, TimestampTz* last_success_ts,
+                  const char** last_error_text, TimestampTz* last_error_ts) {
   if (psch_shared_state == nullptr) {
     *enqueued = 0;
     *dropped = 0;
     *exported = 0;
     *queue_size = 0;
     *queue_capacity = 0;
+    *send_failures = 0;
+    *last_success_ts = 0;
+    *last_error_text = "";
+    *last_error_ts = 0;
     return;
   }
 
@@ -325,6 +342,7 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported,
   *enqueued = pg_atomic_read_u64(&psch_shared_state->enqueued);
   *dropped = pg_atomic_read_u64(&psch_shared_state->dropped);
   *exported = pg_atomic_read_u64(&psch_shared_state->exported);
+  *send_failures = pg_atomic_read_u64(&psch_shared_state->send_failures);
 
   // Full barrier for consistent snapshot (counters before positions)
   pg_memory_barrier();
@@ -334,6 +352,11 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported,
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
   *queue_size = static_cast<uint32>(head - tail);
   *queue_capacity = psch_shared_state->capacity;
+
+  // Read exporter timestamps and error text
+  *last_success_ts = psch_shared_state->last_success_ts;
+  *last_error_ts = psch_shared_state->last_error_ts;
+  *last_error_text = psch_shared_state->last_error_text;
 }
 
 // Reset statistics counters (called by SQL function pg_stat_ch_reset())
@@ -359,7 +382,11 @@ void PschResetStats(void) {
     pg_atomic_write_u64(&psch_shared_state->enqueued, 0);
     pg_atomic_write_u64(&psch_shared_state->dropped, 0);
     pg_atomic_write_u64(&psch_shared_state->exported, 0);
+    pg_atomic_write_u64(&psch_shared_state->send_failures, 0);
     pg_atomic_clear_flag(&psch_shared_state->overflow_logged);  // Allow warning again
+    psch_shared_state->last_success_ts = 0;
+    psch_shared_state->last_error_ts = 0;
+    MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
   }
   PG_CATCH();
   {
@@ -368,6 +395,49 @@ void PschResetStats(void) {
   }
   PG_END_TRY();
   LWLockRelease(psch_shared_state->lock);
+}
+
+// Record a successful export (updates timestamp)
+void PschRecordExportSuccess(void) {
+  if (psch_shared_state == nullptr) {
+    return;
+  }
+  psch_shared_state->last_success_ts = GetCurrentTimestamp();
+}
+
+// Record an export failure (updates counter, timestamp, and error text)
+void PschRecordExportFailure(const char* error_msg) {
+  if (psch_shared_state == nullptr) {
+    return;
+  }
+  pg_atomic_fetch_add_u64(&psch_shared_state->send_failures, 1);
+  psch_shared_state->last_error_ts = GetCurrentTimestamp();
+
+  // Copy error message, truncating if necessary
+  if (error_msg != nullptr) {
+    size_t len = strlen(error_msg);
+    if (len >= sizeof(psch_shared_state->last_error_text)) {
+      len = sizeof(psch_shared_state->last_error_text) - 1;
+    }
+    memcpy(psch_shared_state->last_error_text, error_msg, len);
+    psch_shared_state->last_error_text[len] = '\0';
+  }
+}
+
+// Get the background worker PID
+int PschGetBgworkerPid(void) {
+  if (psch_shared_state == nullptr) {
+    return 0;
+  }
+  return psch_shared_state->bgworker_pid;
+}
+
+// Set the background worker PID
+void PschSetBgworkerPid(int pid) {
+  if (psch_shared_state == nullptr) {
+    return;
+  }
+  psch_shared_state->bgworker_pid = pid;
 }
 
 }  // extern "C"

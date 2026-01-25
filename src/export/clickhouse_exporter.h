@@ -17,6 +17,11 @@ void PschExportBatch(void);
 // Shutdown the exporter and close connection
 void PschExporterShutdown(void);
 
+// Retry state management for exponential backoff
+void PschResetRetryState(void);
+int PschGetRetryDelayMs(void);
+int PschGetConsecutiveFailures(void);
+
 #ifdef __cplusplus
 }
 #endif

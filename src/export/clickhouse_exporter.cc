@@ -25,6 +25,14 @@ namespace {
 // Difference is 946684800 seconds = 946684800000000 microseconds
 constexpr int64_t kPostgresEpochOffsetUs = 946684800000000LL;
 
+// Exponential backoff constants
+constexpr int kBaseDelayMs = 1000;      // 1 second
+constexpr int kMaxDelayMs = 60000;      // 60 seconds
+constexpr int kMaxConsecutiveFailures = 10;  // Cap for exponential growth
+
+// Retry state (bgworker-local, no locking needed)
+int g_consecutive_failures = 0;
+
 // ClickHouse client instance (lives for the lifetime of the bgworker)
 std::unique_ptr<clickhouse::Client> g_ch_client;
 
@@ -328,6 +336,8 @@ bool PschExporterInit(void) {
 void PschExportBatch(void) {
   if (g_ch_client == nullptr) {
     if (!PschExporterInit()) {
+      g_consecutive_failures++;
+      PschRecordExportFailure("Failed to connect to ClickHouse");
       return;
     }
   }
@@ -345,6 +355,10 @@ void PschExportBatch(void) {
       pg_atomic_fetch_add_u64(&psch_shared_state->exported, events.size());
     }
 
+    // Success: reset retry state and record success timestamp
+    g_consecutive_failures = 0;
+    PschRecordExportSuccess();
+
     elog(DEBUG1, "pg_stat_ch: exported %zu events to ClickHouse",
          events.size());
 
@@ -352,8 +366,32 @@ void PschExportBatch(void) {
     std::string err_msg = ex.what();
     elog(WARNING, "pg_stat_ch: failed to insert to ClickHouse: %s",
          err_msg.c_str());
+
+    // Failure: increment counter, record error, reset client for reconnect
+    g_consecutive_failures++;
+    PschRecordExportFailure(err_msg.c_str());
     g_ch_client.reset();
   }
+}
+
+void PschResetRetryState(void) {
+  g_consecutive_failures = 0;
+}
+
+int PschGetRetryDelayMs(void) {
+  if (g_consecutive_failures <= 0) {
+    return 0;
+  }
+  // Exponential backoff: base * 2^(failures-1), capped at max
+  int capped_failures = (g_consecutive_failures > kMaxConsecutiveFailures)
+                            ? kMaxConsecutiveFailures
+                            : g_consecutive_failures;
+  int delay = kBaseDelayMs * (1 << (capped_failures - 1));
+  return (delay > kMaxDelayMs) ? kMaxDelayMs : delay;
+}
+
+int PschGetConsecutiveFailures(void) {
+  return g_consecutive_failures;
 }
 
 void PschExporterShutdown(void) {

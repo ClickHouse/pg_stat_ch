@@ -20,6 +20,8 @@ extern "C" {
 #include "utils/wait_event.h"
 }
 
+#include "queue/shmem.h"
+
 #include <csignal>
 
 #include "worker/bgworker.h"
@@ -29,10 +31,18 @@ extern "C" {
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
 
+// SIGUSR1 handler to wake up the latch for immediate flush
+static void HandleFlushSignal(SIGNAL_ARGS) {
+  int save_errno = errno;
+  SetLatch(MyLatch);
+  errno = save_errno;
+}
+
 // Set up signal handlers before unblocking (per worker_spi.c:158-163)
 static void SetupSignalHandlers() {
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   pqsignal(SIGTERM, die);
+  pqsignal(SIGUSR1, HandleFlushSignal);
   pqsignal(SIGPIPE, SIG_IGN);
 }
 
@@ -71,7 +81,10 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
   BackgroundWorkerUnblockSignals();
   BackgroundWorkerInitializeConnection("postgres", nullptr, 0);
 
-  elog(LOG, "pg_stat_ch: background worker started");
+  // Store our PID for signaling
+  PschSetBgworkerPid(MyProcPid);
+
+  elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
 
   // Register custom wait event for pg_stat_activity visibility
   if (psch_wait_event_main == 0) {
@@ -92,9 +105,19 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
 
   // Main loop (pattern from worker_spi.c:206-290)
   for (;;) {
+    // Use exponential backoff sleep if we have consecutive failures
+    int sleep_ms = psch_flush_interval_ms;
+    int failures = PschGetConsecutiveFailures();
+    if (failures > 0) {
+      int backoff_ms = PschGetRetryDelayMs();
+      sleep_ms = (backoff_ms > sleep_ms) ? backoff_ms : sleep_ms;
+      elog(DEBUG1, "pg_stat_ch: %d consecutive failures, sleeping %d ms",
+           failures, sleep_ms);
+    }
+
     (void)WaitLatch(MyLatch,
                     WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-                    psch_flush_interval_ms,
+                    sleep_ms,
                     psch_wait_event_main);
     ResetLatch(MyLatch);
 
@@ -104,6 +127,21 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
     if (psch_enabled) {
       ExportBatchWithRecovery();
     }
+  }
+}
+
+void PschSignalFlush(void) {
+  int bgworker_pid = PschGetBgworkerPid();
+  if (bgworker_pid == 0) {
+    ereport(WARNING,
+            (errmsg("pg_stat_ch: background worker not running")));
+    return;
+  }
+
+  // Send SIGUSR1 to wake up the bgworker
+  if (kill(bgworker_pid, SIGUSR1) != 0) {
+    ereport(WARNING,
+            (errmsg("pg_stat_ch: failed to signal background worker")));
   }
 }
 

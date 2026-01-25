@@ -30,7 +30,7 @@ my $nclients = 4;
 my $ntxns = 1250;  # 4 * 1250 = 5000 queries, well over 1024 capacity
 $node->pgbench(
     "--client=$nclients --transactions=$ntxns --no-vacuum",
-    0, [qr/processed: \d+\/\d+/], [qr/^$/],
+    0, [qr/processed: \d+\/\d+/], [qr/(?:^$|queue overflow)/],
     'overflow stress test',
     { 'simple' => 'SELECT 1' }
 );

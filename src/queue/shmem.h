@@ -7,6 +7,7 @@ extern "C" {
 #endif
 
 #include "postgres.h"
+#include "datatype/timestamp.h"
 #include "storage/lwlock.h"
 
 #include "queue/event.h"
@@ -49,7 +50,17 @@ struct PschSharedState {
   // === Consumer-written atomics (hot, written only by bgworker) ===
   pg_atomic_uint64 tail;     // Read position (incremented by single consumer)
   pg_atomic_uint64 exported; // Total events exported to ClickHouse (stats)
-  
+
+  // Padding to separate consumer fields from exporter stats
+  char pad3[PG_CACHE_LINE_SIZE - (2 * sizeof(pg_atomic_uint64))];
+
+  // === Exporter stats (written by bgworker, read by stats function) ===
+  pg_atomic_uint64 send_failures;   // Total failed send attempts
+  TimestampTz last_success_ts;      // Last successful export timestamp
+  TimestampTz last_error_ts;        // Last error timestamp
+  char last_error_text[256];        // Last error message (truncated)
+  int bgworker_pid;                 // Background worker PID for signaling
+
   // Ring buffer array follows immediately after this struct (flexible array member)
 };
 
@@ -76,10 +87,24 @@ bool PschDequeueEvent(PschEvent* event);
 
 // Get current queue statistics
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported,
-                  uint32* queue_size, uint32* queue_capacity);
+                  uint32* queue_size, uint32* queue_capacity,
+                  uint64* send_failures, TimestampTz* last_success_ts,
+                  const char** last_error_text, TimestampTz* last_error_ts);
 
 // Reset all queue statistics to zero
 void PschResetStats(void);
+
+// Record export success (called by bgworker after successful export)
+void PschRecordExportSuccess(void);
+
+// Record export failure (called by bgworker on export error)
+void PschRecordExportFailure(const char* error_msg);
+
+// Get the background worker PID (for signaling)
+int PschGetBgworkerPid(void);
+
+// Set the background worker PID (called at bgworker startup)
+void PschSetBgworkerPid(int pid);
 
 #ifdef __cplusplus
 }

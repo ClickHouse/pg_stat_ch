@@ -26,11 +26,12 @@ my $stats_result = $node->safe_psql('postgres', q{
         enqueued_events IS NOT NULL AND enqueued_events >= 0 AS enq_ok,
         dropped_events IS NOT NULL AND dropped_events >= 0 AS drop_ok,
         exported_events IS NOT NULL AND exported_events >= 0 AS exp_ok,
+        send_failures IS NOT NULL AND send_failures >= 0 AS fail_ok,
         queue_size IS NOT NULL AND queue_size >= 0 AS size_ok,
         queue_capacity IS NOT NULL AND queue_capacity > 0 AS cap_ok
     FROM pg_stat_ch_stats()
 });
-is($stats_result, 't|t|t|t|t', 'pg_stat_ch_stats() returns valid data');
+is($stats_result, 't|t|t|t|t|t', 'pg_stat_ch_stats() returns valid data');
 
 # Test 3: Generate some queries and verify enqueued count increases
 my $stats_before = psch_get_stats($node);
