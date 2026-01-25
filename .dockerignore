@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.dylib
+*.a
+
+# Git
+.git/
+
+# IDE/Editor
+.vscode/
+.idea/
+.cache/
+*.swp
+*.swo
+
+# Test output
+regression.diffs
+regression.out
+results/
+tmp_check/
+log/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Benchmark credentials
+benchmark/.env
