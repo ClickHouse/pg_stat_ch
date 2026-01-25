@@ -76,7 +76,8 @@ jobs:
       - name: Build extension
         run: |
           export PATH="$HOME/pg-tap/bin:$PATH"
-          cmake --preset default \
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DPG_CONFIG=$HOME/pg-tap/bin/pg_config \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
