@@ -242,6 +242,16 @@ SELECT pg_stat_ch_flush();
 
 ## ClickHouse Setup
 
+### Schema Reference
+
+For a production-ready ClickHouse schema with comprehensive documentation, see [`docker/init/00-schema.sql`](docker/init/00-schema.sql).
+
+This schema includes:
+- Full `events_raw` table with all columns documented (what metrics mean, when values are HIGH/LOW)
+- 4 materialized views for common analytics patterns (recent events, query stats, load by app/user, errors)
+- Column comments explaining how to interpret each metric
+- Example queries for dashboards and debugging
+
 ### Start ClickHouse (Docker)
 
 For testing, a Docker Compose setup is provided:
@@ -256,11 +266,17 @@ mise run clickhouse:start
 
 This creates:
 - ClickHouse server on ports 19000 (native) and 18123 (HTTP)
-- Database `pg_stat_ch` with `events_raw` table
+- Database `pg_stat_ch` with `events_raw` table and materialized views
 
 ### Manual Schema Setup
 
-If running your own ClickHouse instance:
+For production deployments, use the full documented schema:
+
+```bash
+clickhouse-client < docker/init/00-schema.sql
+```
+
+Or if running your own ClickHouse instance with a minimal schema:
 
 ```sql
 CREATE DATABASE IF NOT EXISTS pg_stat_ch;
