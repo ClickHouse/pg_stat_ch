@@ -32,18 +32,11 @@ extern "C" {
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
 
-// SIGUSR1 handler to wake up the latch for immediate flush
-static void HandleFlushSignal(SIGNAL_ARGS) {
-  int save_errno = errno;
-  SetLatch(MyLatch);
-  errno = save_errno;
-}
-
 // Set up signal handlers before unblocking (per worker_spi.c:158-163)
 static void SetupSignalHandlers() {
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   pqsignal(SIGTERM, die);
-  pqsignal(SIGUSR1, HandleFlushSignal);
+  pqsignal(SIGUSR1, procsignal_sigusr1_handler);
   pqsignal(SIGPIPE, SIG_IGN);
 }
 
