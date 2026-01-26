@@ -23,7 +23,7 @@
 //
 // 4. ERROR-SAFE LOCKING (pattern from pg_stat_monitor):
 //    PG_TRY/PG_FINALLY blocks ensure locks are released even if an error occurs
-//    during enqueue or stats reset, preventing deadlocks.
+//    during enqueue, preventing deadlocks.
 //
 // 5. GRACEFUL OVERFLOW (pattern from pg_stat_monitor):
 //    When queue is full, we log a warning once (overflow_logged flag) and drop
@@ -112,7 +112,6 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
 
 // Shutdown callback to log final stats
 static void PschShmemShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
-
   if (psch_shared_state != nullptr) {
     elog(LOG, "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
          pg_atomic_read_u64(&psch_shared_state->enqueued),
@@ -365,17 +364,9 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
 
 // Reset statistics counters (called by SQL function pg_stat_ch_reset())
 //
-// LOCKING: We use the same lock as enqueue to prevent race conditions. Without this,
-// a concurrent enqueue could increment a counter after we zero it but before we return,
-// losing that count permanently.
-//
-// ERROR HANDLING: PG_TRY/PG_FINALLY ensures lock release on error. This is critical
-// because stats reset might be called interactively by a DBA, and we don't want a
-// keyboard interrupt (Ctrl-C) to leave the lock held.
-//
-// NOTE: We don't need CHECK_FOR_INTERRUPTS inside the critical section because atomic
-// writes complete in nanoseconds - too fast to warrant interrupt checking. PG_FINALLY
-// handles any signal interrupts that arrive by ensuring lock release.
+// LOCKING: We use the same lock as enqueue to prevent race conditions. Without
+// this, a concurrent enqueue could increment a counter after we zero it but
+// before we return, losing that count permanently.
 //
 // OVERFLOW FLAG RESET: Clearing overflow_logged allows the warning to be logged
 // again on the next overflow, which is useful after capacity has been increased.
@@ -385,20 +376,15 @@ void PschResetStats(void) {
   }
 
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
-  PG_TRY();
-  {
-    pg_atomic_write_u64(&psch_shared_state->enqueued, 0);
-    pg_atomic_write_u64(&psch_shared_state->dropped, 0);
-    pg_atomic_write_u64(&psch_shared_state->exported, 0);
-    pg_atomic_write_u64(&psch_shared_state->send_failures, 0);
-    pg_atomic_clear_flag(&psch_shared_state->overflow_logged);  // Allow warning again
-    psch_shared_state->last_success_ts = 0;
-    psch_shared_state->last_error_ts = 0;
-    MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
-  }
-  PG_FINALLY();
-  { LWLockRelease(psch_shared_state->lock); }
-  PG_END_TRY();
+  pg_atomic_write_u64(&psch_shared_state->enqueued, 0);
+  pg_atomic_write_u64(&psch_shared_state->dropped, 0);
+  pg_atomic_write_u64(&psch_shared_state->exported, 0);
+  pg_atomic_write_u64(&psch_shared_state->send_failures, 0);
+  pg_atomic_clear_flag(&psch_shared_state->overflow_logged);
+  psch_shared_state->last_success_ts = 0;
+  psch_shared_state->last_error_ts = 0;
+  MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
+  LWLockRelease(psch_shared_state->lock);
 }
 
 // Record a successful export (updates timestamp)

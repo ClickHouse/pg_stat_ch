@@ -114,11 +114,13 @@ static size_t TrimTrailing(char* str, size_t len) {
 // Returns the final length of the trimmed string in dst.
 static size_t CopyTrimmed(char* dst, size_t dst_size, const char* src) {
   if (src == nullptr || dst_size == 0) {
-    if (dst_size > 0) dst[0] = '\0';
+    if (dst_size > 0)
+      dst[0] = '\0';
     return 0;
   }
   // Skip leading whitespace in source
-  while (*src != '\0' && isspace(static_cast<unsigned char>(*src))) src++;
+  while (*src != '\0' && isspace(static_cast<unsigned char>(*src)))
+    src++;
   // Copy using strlcpy (returns src length, not bytes copied)
   size_t src_len = strlcpy(dst, src, dst_size);
   size_t len = Min(src_len, dst_size - 1);
@@ -247,7 +249,8 @@ static void CopyClientContext(PschEvent* event) {
 // Copy query text to event with truncation and whitespace trimming
 static void CopyQueryText(PschEvent* event, const char* query_text) {
   if (query_text != nullptr) {
-    event->query_len = static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
+    event->query_len =
+        static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
   }
 }
 
