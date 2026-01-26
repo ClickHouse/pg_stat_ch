@@ -88,7 +88,7 @@ src/
 - **JIT Instrumentation** (PG15+): Function count, generation/inlining/optimization/emission time
 - **Parallel Worker Stats** (PG18+): Planned vs launched workers
 - **Client Context**: Application name, client IP address
-- **Query Text**: Captured with configurable truncation (default 2KB)
+- **Query Text**: Captured with truncation (2KB max)
 - **Graceful Degradation**: Queue overflow drops events with counters; ClickHouse unavailability doesn't block PostgreSQL
 
 ## Supported Versions
