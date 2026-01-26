@@ -35,7 +35,7 @@ Create and push a new semantic version release tag.
 
 6. **Create and push the tag**:
    ```bash
-   git tag <new_version>
+   git tag -a <new_version> -m "Release <new_version>"
    git push origin <new_version>
    ```
 
