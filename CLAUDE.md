@@ -94,6 +94,20 @@ Use `#if PG_VERSION_NUM >= XXXXX` for version-specific code:
 - PG 17+: Unified nesting_level, separate block timing
 - PG 15+: JIT instrumentation, temp_blk timing
 
+## Versioning
+
+Two independent versions exist:
+
+| Version | Location | Purpose |
+|---------|----------|---------|
+| Git tag (e.g., `v0.1.5`) | Release workflow | Build/release artifacts |
+| `default_version` | `pg_stat_ch.control` | PostgreSQL extension schema |
+
+- **Release workflow** uses `git describe --tags` for artifact naming
+- **Extension version** in `.control` must match SQL filename (e.g., `0.1.0` → `pg_stat_ch--0.1.0.sql`)
+- Only bump `default_version` when SQL interface changes (new functions, types, etc.)
+- Schema changes require a migration script: `pg_stat_ch--OLD--NEW.sql`
+
 ## Reference Projects
 
 These projects are available in the workspace as references:
