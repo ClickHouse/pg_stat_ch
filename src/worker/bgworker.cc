@@ -167,13 +167,13 @@ void PschRegisterBgworker(void) {
   BackgroundWorker worker;
 
   MemSet(&worker, 0, sizeof(worker));
-  snprintf(worker.bgw_name, BGW_MAXLEN, "pg_stat_ch exporter");
-  snprintf(worker.bgw_type, BGW_MAXLEN, "pg_stat_ch exporter");
+  strlcpy(worker.bgw_name, "pg_stat_ch exporter", BGW_MAXLEN);
+  strlcpy(worker.bgw_type, "pg_stat_ch exporter", BGW_MAXLEN);
   worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
   worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
   worker.bgw_restart_time = 10;  // Restart after 10 seconds on crash
-  snprintf(worker.bgw_library_name, BGW_MAXLEN, "pg_stat_ch");
-  snprintf(worker.bgw_function_name, BGW_MAXLEN, "PschBgworkerMain");
+  strlcpy(worker.bgw_library_name, "pg_stat_ch", BGW_MAXLEN);
+  strlcpy(worker.bgw_function_name, "PschBgworkerMain", BGW_MAXLEN);
   worker.bgw_main_arg = static_cast<Datum>(0);
   worker.bgw_notify_pid = 0;
 
