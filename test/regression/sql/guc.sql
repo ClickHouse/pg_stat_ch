@@ -1,6 +1,6 @@
 -- GUC configuration test
 CREATE EXTENSION pg_stat_ch;
-SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name;
+SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLATE "C";
 SHOW pg_stat_ch.enabled;
 -- Test log_min_elevel GUC
 SHOW pg_stat_ch.log_min_elevel;

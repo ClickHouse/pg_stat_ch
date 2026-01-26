@@ -339,9 +339,8 @@ bool PschExporterInit(void) {
 
     if (psch_clickhouse_use_tls) {
       clickhouse::ClientOptions::SSLOptions ssl_opts;
-      ssl_opts.SetUseDefaultCALocations(true)
-          .SetUseSNI(true)
-          .SetSkipVerification(psch_clickhouse_skip_tls_verify);
+      ssl_opts.SetUseDefaultCALocations(true).SetUseSNI(true).SetSkipVerification(
+          psch_clickhouse_skip_tls_verify);
       options.SetSSLOptions(ssl_opts);
       elog(LOG, "pg_stat_ch: TLS enabled for ClickHouse connection%s",
            psch_clickhouse_skip_tls_verify ? " (verification skipped)" : "");

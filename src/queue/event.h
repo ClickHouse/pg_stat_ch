@@ -113,11 +113,11 @@ struct PschEvent {
   int16 parallel_workers_launched;
 
   // Error info (from emit_log_hook)
-  char err_sqlstate[6];  // SQLSTATE code (e.g., "42P01")
-  uint8 err_elevel;      // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
-  uint8 _padding3;       // Alignment
-  uint16 err_message_len;                   // Actual length of error message
-  char err_message[PSCH_MAX_ERR_MSG_LEN];   // Error message text (truncated if necessary)
+  char err_sqlstate[6];    // SQLSTATE code (e.g., "42P01")
+  uint8 err_elevel;        // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
+  uint8 _padding3;         // Alignment
+  uint16 err_message_len;  // Actual length of error message
+  char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
 
   // Client context
   char application_name[64];   // Application name (NAMEDATALEN=64)
