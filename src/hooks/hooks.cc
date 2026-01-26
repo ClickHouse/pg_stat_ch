@@ -688,6 +688,17 @@ static void PschEmitLogHook(ErrorData* edata) {
     UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
     event.err_elevel = static_cast<uint8>(edata->elevel);
 
+    // Copy error message if available
+    if (edata->message != nullptr) {
+      size_t len = strlen(edata->message);
+      if (len >= PSCH_MAX_ERR_MSG_LEN) {
+        len = PSCH_MAX_ERR_MSG_LEN - 1;
+      }
+      memcpy(event.err_message, edata->message, len);
+      event.err_message[len] = '\0';
+      event.err_message_len = static_cast<uint16>(len);
+    }
+
     // Copy query text if available
     if (query[0] != '\0') {
       size_t len = strlen(query);

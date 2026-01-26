@@ -12,7 +12,7 @@ CREATE TABLE pg_stat_ch.events_raw
     db LowCardinality(String),
     username LowCardinality(String),
     pid Int32,
-    query_id Int64,
+    query_id UInt64,
     cmd_type LowCardinality(String),
     rows UInt64,
     query String CODEC(ZSTD(3)),
@@ -54,6 +54,7 @@ CREATE TABLE pg_stat_ch.events_raw
 
     err_sqlstate FixedString(5),
     err_elevel UInt8,
+    err_message String CODEC(ZSTD(3)),
 
     app LowCardinality(String),
     client_addr String
@@ -85,7 +86,7 @@ CREATE MATERIALIZED VIEW pg_stat_ch.query_stats_5m
 (
     bucket DateTime,
     db LowCardinality(String),
-    query_id Int64,
+    query_id UInt64,
     cmd_type LowCardinality(String),
 
     calls_state AggregateFunction(count),
@@ -155,6 +156,48 @@ SELECT
     sumState(toUInt64(err_elevel > 0)) AS errors_sum_state
 FROM pg_stat_ch.events_raw
 GROUP BY bucket, db, app, username, cmd_type;
+
+-- MV4: errors with messages (for error investigation)
+-- Stores recent errors with full context for debugging
+
+DROP TABLE IF EXISTS pg_stat_ch.errors_recent;
+
+CREATE MATERIALIZED VIEW pg_stat_ch.errors_recent
+ENGINE = MergeTree
+PARTITION BY toDate(ts_start)
+ORDER BY (ts_start, db, err_sqlstate)
+TTL toDateTime(ts_start) + INTERVAL 7 DAY DELETE
+AS
+SELECT
+    ts_start,
+    db,
+    username,
+    app,
+    client_addr,
+    pid,
+    query_id,
+    err_sqlstate,
+    err_elevel,
+    err_message,
+    query
+FROM pg_stat_ch.events_raw
+WHERE err_elevel > 0;
+
+-- Example query to view recent errors:
+--
+-- SELECT
+--     ts_start,
+--     db,
+--     username,
+--     app,
+--     err_sqlstate,
+--     err_elevel,
+--     err_message,
+--     substring(query, 1, 200) AS query_preview
+-- FROM pg_stat_ch.errors_recent
+-- WHERE ts_start > now() - INTERVAL 1 HOUR
+-- ORDER BY ts_start DESC
+-- LIMIT 100;
 
 -- Example "finalize" query for query_stats_5m:
 --

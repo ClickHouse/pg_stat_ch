@@ -32,7 +32,9 @@ Docker-based benchmark environment for testing pg_stat_ch with ClickHouse Cloud.
 4. **Run benchmark workload:**
 
    ```bash
-   ./scripts/generate_load.sh -c 128 -d 60
+   cd loadgen
+   uv sync
+   uv run loadgen -c 128 -d 60
    ```
 
 5. **Verify events in ClickHouse:**
@@ -75,14 +77,20 @@ The benchmark database includes:
 
 ## Load Generator
 
-The `scripts/generate_load.sh` script uses pgbench with custom SQL scripts:
+Python-based load generator using psycopg with concurrent workers:
 
 ```bash
+cd loadgen
+uv sync  # First time only
+
 # Run with 128 connections for 60 seconds
-./scripts/generate_load.sh -c 128 -d 60
+uv run loadgen -c 128 -d 60
 
 # Run with 64 connections for 5 minutes
-./scripts/generate_load.sh -c 64 -d 300
+uv run loadgen -c 64 -d 300
+
+# See all options
+uv run loadgen --help
 ```
 
 ### Workload Distribution
@@ -91,6 +99,8 @@ The `scripts/generate_load.sh` script uses pgbench with custom SQL scripts:
 - 25% INSERT (orders, transactions)
 - 25% UPDATE (balances, statuses)
 - 10% DELETE (cleanup)
+
+The tool provides live progress, QPS metrics, and pg_stat_ch stats before/after.
 
 ## Useful Commands
 
