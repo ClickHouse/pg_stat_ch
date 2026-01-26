@@ -59,6 +59,20 @@ static inline PschEvent* GetRingBuffer(void) {
 }
 
 // Handle queue overflow: increment dropped counter and log warning once
+//
+// DROP-ON-OVERFLOW STRATEGY: When the queue is full, we drop events rather than
+// blocking producers. This is intentional:
+// - Blocking would add latency to user queries, defeating the purpose of telemetry
+// - Telemetry is "best effort" - missing some events during spikes is acceptable
+// - The dropped counter lets operators detect and address capacity issues
+//
+// SIZING GUIDANCE: The queue should be sized to handle burst query loads plus some
+// headroom for bgworker export delays. Monitor pg_stat_ch_stats().queue_size and
+// .dropped to tune capacity. A good starting point is 1024-4096 events.
+//
+// DETECTING OVERFLOW: Check pg_stat_ch_stats().dropped > 0 or look for the WARNING
+// in PostgreSQL logs. The overflow_logged flag prevents log spam by warning only once
+// until stats are reset.
 static void HandleOverflow() {
   pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
 
@@ -97,9 +111,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
 }
 
 // Shutdown callback to log final stats
-static void PschShmemShutdown(int code, Datum arg) {
-  (void)code;  // Unused parameter
-  (void)arg;   // Unused parameter
+static void PschShmemShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
 
   if (psch_shared_state != nullptr) {
     elog(LOG, "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
@@ -281,7 +293,10 @@ bool PschDequeueEvent(PschEvent* event) {
 
   // Read head with acquire semantics - we must see producer's latest writes
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();  // Ensure head read completes before tail read and data access
+  // pg_read_barrier() is sufficient here (vs full pg_memory_barrier() in GetStats)
+  // because this is a read-only path - we're not writing anything that needs to be
+  // visible to producers before we complete the read.
+  pg_read_barrier();
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
 
   if (head == tail) {
@@ -354,9 +369,13 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
 // a concurrent enqueue could increment a counter after we zero it but before we return,
 // losing that count permanently.
 //
-// ERROR HANDLING: PG_TRY/PG_CATCH ensures lock release on error. This is critical
+// ERROR HANDLING: PG_TRY/PG_FINALLY ensures lock release on error. This is critical
 // because stats reset might be called interactively by a DBA, and we don't want a
 // keyboard interrupt (Ctrl-C) to leave the lock held.
+//
+// NOTE: We don't need CHECK_FOR_INTERRUPTS inside the critical section because atomic
+// writes complete in nanoseconds - too fast to warrant interrupt checking. PG_FINALLY
+// handles any signal interrupts that arrive by ensuring lock release.
 //
 // OVERFLOW FLAG RESET: Clearing overflow_logged allows the warning to be logged
 // again on the next overflow, which is useful after capacity has been increased.
@@ -398,14 +417,10 @@ void PschRecordExportFailure(const char* error_msg) {
   pg_atomic_fetch_add_u64(&psch_shared_state->send_failures, 1);
   psch_shared_state->last_error_ts = GetCurrentTimestamp();
 
-  // Copy error message, truncating if necessary
+  // Copy error message using strlcpy (handles truncation automatically)
   if (error_msg != nullptr) {
-    size_t len = strlen(error_msg);
-    if (len >= sizeof(psch_shared_state->last_error_text)) {
-      len = sizeof(psch_shared_state->last_error_text) - 1;
-    }
-    memcpy(psch_shared_state->last_error_text, error_msg, len);
-    psch_shared_state->last_error_text[len] = '\0';
+    strlcpy(psch_shared_state->last_error_text, error_msg,
+            sizeof(psch_shared_state->last_error_text));
   }
 }
 

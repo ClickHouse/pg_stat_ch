@@ -100,24 +100,30 @@ static void UnpackSqlState(int sql_state, char* buf) {
   buf[5] = '\0';
 }
 
-// Trim leading and trailing whitespace in-place, return new length
-static size_t TrimWhitespace(char* str, size_t len) {
-  // Trim trailing first (no memmove needed)
+// Trim trailing whitespace in-place, return new length
+static size_t TrimTrailing(char* str, size_t len) {
   while (len > 0 && isspace(static_cast<unsigned char>(str[len - 1]))) {
     len--;
   }
   str[len] = '\0';
-
-  // Trim leading (requires memmove if any)
-  size_t start = 0;
-  while (start < len && isspace(static_cast<unsigned char>(str[start]))) {
-    start++;
-  }
-  if (start > 0) {
-    len -= start;
-    memmove(str, str + start, len + 1);  // +1 for null terminator
-  }
   return len;
+}
+
+// Copy string to destination, skipping leading whitespace and trimming trailing.
+// This avoids memmove by skipping leading whitespace BEFORE the copy.
+// Returns the final length of the trimmed string in dst.
+static size_t CopyTrimmed(char* dst, size_t dst_size, const char* src) {
+  if (src == nullptr || dst_size == 0) {
+    if (dst_size > 0) dst[0] = '\0';
+    return 0;
+  }
+  // Skip leading whitespace in source
+  while (*src != '\0' && isspace(static_cast<unsigned char>(*src))) src++;
+  // Copy using strlcpy (returns src length, not bytes copied)
+  size_t src_len = strlcpy(dst, src, dst_size);
+  size_t len = Min(src_len, dst_size - 1);
+  // Trim trailing whitespace in place
+  return TrimTrailing(dst, len);
 }
 
 // Get PgBackendStatus for the current backend (version-compatible)
@@ -145,20 +151,15 @@ static PgBackendStatus* GetBackendStatus(void) {
 // Get application name for current backend
 // Returns the length of the string copied to buf
 static int GetApplicationName(char* buf, int buf_size) {
-  int len;
   // Try application_name GUC first (always up-to-date)
   if (application_name != nullptr && application_name[0] != '\0') {
-    len = snprintf(buf, buf_size, "%s", application_name);
-    len = (len >= buf_size) ? buf_size - 1 : len;
-    return static_cast<int>(TrimWhitespace(buf, len));
+    return static_cast<int>(CopyTrimmed(buf, buf_size, application_name));
   }
 
   // Fall back to backend status
   PgBackendStatus* beentry = GetBackendStatus();
   if (beentry != nullptr && beentry->st_appname != nullptr) {
-    len = snprintf(buf, buf_size, "%s", beentry->st_appname);
-    len = (len >= buf_size) ? buf_size - 1 : len;
-    return static_cast<int>(TrimWhitespace(buf, len));
+    return static_cast<int>(CopyTrimmed(buf, buf_size, beentry->st_appname));
   }
 
   buf[0] = '\0';
@@ -188,12 +189,12 @@ static int GetClientAddress(char* buf, int buf_size) {
 
   // Handle local connections
   if (strcmp(remote_host.data(), "[local]") == 0) {
-    int len = snprintf(buf, buf_size, "127.0.0.1");
-    return (len >= buf_size) ? buf_size - 1 : len;
+    size_t src_len = strlcpy(buf, "127.0.0.1", buf_size);
+    return static_cast<int>(Min(src_len, static_cast<size_t>(buf_size - 1)));
   }
 
-  int len = snprintf(buf, buf_size, "%s", remote_host.data());
-  return (len >= buf_size) ? buf_size - 1 : len;
+  size_t src_len = strlcpy(buf, remote_host.data(), buf_size);
+  return static_cast<int>(Min(src_len, static_cast<size_t>(buf_size - 1)));
 }
 
 // Copy buffer usage counters to event
@@ -243,17 +244,10 @@ static void CopyClientContext(PschEvent* event) {
       static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
 }
 
-// Copy query text to event with truncation
+// Copy query text to event with truncation and whitespace trimming
 static void CopyQueryText(PschEvent* event, const char* query_text) {
   if (query_text != nullptr) {
-    size_t len = strlen(query_text);
-    if (len >= PSCH_MAX_QUERY_LEN) {
-      len = PSCH_MAX_QUERY_LEN - 1;
-    }
-    memcpy(event->query, query_text, len);
-    event->query[len] = '\0';
-    // Trim whitespace
-    event->query_len = static_cast<uint16>(TrimWhitespace(event->query, len));
+    event->query_len = static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
   }
 }
 
@@ -277,22 +271,12 @@ static void ResolveNames(PschEvent* event) {
     username = "<unknown>";
   }
 
-  // Copy names to event with length tracking
-  size_t dlen = strlen(datname);
-  if (dlen >= sizeof(event->datname)) {
-    dlen = sizeof(event->datname) - 1;
-  }
-  memcpy(event->datname, datname, dlen);
-  event->datname[dlen] = '\0';
-  event->datname_len = static_cast<uint8>(dlen);
+  // Copy names to event with length tracking using strlcpy
+  size_t dlen = strlcpy(event->datname, datname, sizeof(event->datname));
+  event->datname_len = static_cast<uint8>(Min(dlen, sizeof(event->datname) - 1));
 
-  size_t ulen = strlen(username);
-  if (ulen >= sizeof(event->username)) {
-    ulen = sizeof(event->username) - 1;
-  }
-  memcpy(event->username, username, ulen);
-  event->username[ulen] = '\0';
-  event->username_len = static_cast<uint8>(ulen);
+  size_t ulen = strlcpy(event->username, username, sizeof(event->username));
+  event->username_len = static_cast<uint8>(Min(ulen, sizeof(event->username) - 1));
 
   // Note: get_database_name returns palloc'd memory that will be freed at end of
   // transaction, GetUserNameFromId also returns palloc'd memory. We don't need to
@@ -301,7 +285,8 @@ static void ResolveNames(PschEvent* event) {
 }
 
 // Copy JIT instrumentation to event (PG15+)
-static void CopyJitInstrumentation(PschEvent* event, QueryDesc* query_desc) {
+static void CopyJitInstrumentation([[maybe_unused]] PschEvent* event,
+                                   [[maybe_unused]] QueryDesc* query_desc) {
 #if PG_VERSION_NUM >= 150000
   if (query_desc->estate->es_jit != nullptr) {
     JitInstrumentation* jit = &query_desc->estate->es_jit->instr;
@@ -318,14 +303,12 @@ static void CopyJitInstrumentation(PschEvent* event, QueryDesc* query_desc) {
     event->jit_deform_time_us = static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
 #endif
   }
-#else
-  (void)event;
-  (void)query_desc;
 #endif
 }
 
 // Copy parallel worker info to event (PG18+)
-static void CopyParallelWorkerInfo(PschEvent* event, QueryDesc* query_desc) {
+static void CopyParallelWorkerInfo([[maybe_unused]] PschEvent* event,
+                                   [[maybe_unused]] QueryDesc* query_desc) {
 #if PG_VERSION_NUM >= 180000
   if (query_desc->estate != nullptr) {
     event->parallel_workers_planned =
@@ -333,9 +316,6 @@ static void CopyParallelWorkerInfo(PschEvent* event, QueryDesc* query_desc) {
     event->parallel_workers_launched =
         static_cast<int16>(query_desc->estate->es_parallel_workers_launched);
   }
-#else
-  (void)event;
-  (void)query_desc;
 #endif
 }
 
@@ -669,8 +649,8 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   // Calculate buffer/WAL deltas
   BufferUsage bufusage_delta;
   WalUsage walusage_delta;
-  memset(&bufusage_delta, 0, sizeof(BufferUsage));
-  memset(&walusage_delta, 0, sizeof(WalUsage));
+  MemSet(&bufusage_delta, 0, sizeof(BufferUsage));
+  MemSet(&walusage_delta, 0, sizeof(WalUsage));
   BufferUsageAccumDiff(&bufusage_delta, &pgBufferUsage, &bufusage_start);
   WalUsageAccumDiff(&walusage_delta, &pgWalUsage, &walusage_start);
 
@@ -725,6 +705,10 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 }
 
 // Build and enqueue an error event from ErrorData
+//
+// NOTE: Query text captured here may contain sensitive data (passwords in CREATE USER,
+// connection strings, etc.). Consider this PII concern when configuring ClickHouse
+// retention policies. Future enhancement: GUC to disable query capture in error events.
 static void CaptureLogEvent(ErrorData* edata) {
   const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
 
@@ -743,26 +727,15 @@ static void CaptureLogEvent(ErrorData* edata) {
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
   event.err_elevel = static_cast<uint8>(edata->elevel);
 
-  // Error message
+  // Error message (trim whitespace)
   if (edata->message != nullptr) {
-    size_t len = strlen(edata->message);
-    if (len >= PSCH_MAX_ERR_MSG_LEN) {
-      len = PSCH_MAX_ERR_MSG_LEN - 1;
-    }
-    memcpy(event.err_message, edata->message, len);
-    event.err_message[len] = '\0';
-    event.err_message_len = static_cast<uint16>(TrimWhitespace(event.err_message, len));
+    event.err_message_len =
+        static_cast<uint16>(CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
   }
 
-  // Query text
+  // Query text (trim whitespace)
   if (query[0] != '\0') {
-    size_t len = strlen(query);
-    if (len >= PSCH_MAX_QUERY_LEN) {
-      len = PSCH_MAX_QUERY_LEN - 1;
-    }
-    memcpy(event.query, query, len);
-    event.query[len] = '\0';
-    event.query_len = static_cast<uint16>(TrimWhitespace(event.query, len));
+    event.query_len = static_cast<uint16>(CopyTrimmed(event.query, PSCH_MAX_QUERY_LEN, query));
   }
 
   // Resolve names and client context
@@ -779,7 +752,17 @@ static void CaptureLogEvent(ErrorData* edata) {
 }
 
 // emit_log_hook - captures log messages at configured level and above
+//
+// CHAINING ORDER: We chain to the previous hook FIRST to allow other extensions
+// (e.g., log formatters, filters) to transform ErrorData before we capture it.
+// This ensures we capture the final, potentially modified log message.
 static void PschEmitLogHook(ErrorData* edata) {
+  // Chain to previous hook first (allows log transformation by other extensions)
+  if (prev_emit_log_hook != nullptr) {
+    prev_emit_log_hook(edata);
+  }
+
+  // Capture the (potentially transformed) event
   if (ShouldCaptureLog(edata)) {
     CaptureLogEvent(edata);
   }
@@ -787,11 +770,6 @@ static void PschEmitLogHook(ErrorData* edata) {
   // Reset recursion guard on ERROR+ (transaction will abort)
   if (edata != nullptr && edata->elevel >= ERROR) {
     disable_error_capture = false;
-  }
-
-  // Chain to previous hook
-  if (prev_emit_log_hook != nullptr) {
-    prev_emit_log_hook(edata);
   }
 }
 

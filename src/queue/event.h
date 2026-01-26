@@ -51,6 +51,11 @@ enum PschCmdType {
 };
 
 // Event structure stored in shared memory queue (~2KB fixed size)
+//
+// VERSION-SPECIFIC FIELDS: All fields are unconditionally present regardless of
+// PostgreSQL version. This keeps the struct size fixed for ring buffer simplicity.
+// Fields marked with "PGxx+" are zero when running on older versions. The exporter
+// sends all fields; ClickHouse handles NULL/zero appropriately in aggregations.
 struct PschEvent {
   // Timing information
   TimestampTz ts_start;  // Query start timestamp (microseconds since epoch)
