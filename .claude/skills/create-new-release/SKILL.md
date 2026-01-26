@@ -18,7 +18,7 @@ Create and push a new semantic version release tag.
 
 3. **Get the latest semver tag** (assumes `v` prefix like `v1.2.3`):
    ```bash
-   git tag -l 'v*' | sort -V | tail -1
+   git tag --sort=-version:refname -l 'v*' | head -1
    ```
 
 4. **Parse and bump version** based on user selection:
