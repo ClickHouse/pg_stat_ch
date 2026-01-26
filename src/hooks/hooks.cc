@@ -13,6 +13,7 @@ extern "C" {
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
+#include "postmaster/bgworker.h"
 #include "tcop/utility.h"
 #include "utils/backend_status.h"
 #include "utils/elog.h"
@@ -56,6 +57,9 @@ static bool current_query_is_top_level = false;
 
 // Track query start time for duration calculation
 static TimestampTz query_start_ts = 0;
+
+// System initialization flag - set after hooks are installed and shmem is ready
+static bool system_init = false;
 
 // Convert PostgreSQL CmdType to our PschCmdType
 static PschCmdType ConvertCmdType(CmdType cmd) {
@@ -689,71 +693,103 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
 
 #undef CALL_PROCESS_UTILITY
 
-// emit_log_hook - captures errors (WARNING and above)
-static void PschEmitLogHook(ErrorData* edata) {
-  // Capture error if conditions are met
-  bool should_capture =
-      (edata != nullptr && psch_enabled && !IsParallelWorker() && MyProc != nullptr);
-
-  if (should_capture && edata->elevel >= psch_log_min_elevel && !disable_error_capture) {
-    const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
-
-    PschEvent event;
-    MemSet(&event, 0, sizeof(event));
-    event.ts_start = GetCurrentTimestamp();
-    event.dbid = MyDatabaseId;
-    event.userid = GetUserId();
-    ResolveNames(&event);  // Resolve db/user names (safe if not in transaction)
-    event.pid = MyProcPid;
-    event.top_level = (nesting_level == 0);
-    event.cmd_type = PSCH_CMD_UNKNOWN;
-
-    // Unpack SQLSTATE and error level
-    UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
-    event.err_elevel = static_cast<uint8>(edata->elevel);
-
-    // Copy error message if available
-    if (edata->message != nullptr) {
-      size_t len = strlen(edata->message);
-      if (len >= PSCH_MAX_ERR_MSG_LEN) {
-        len = PSCH_MAX_ERR_MSG_LEN - 1;
-      }
-      memcpy(event.err_message, edata->message, len);
-      event.err_message[len] = '\0';
-      // Trim whitespace
-      event.err_message_len = static_cast<uint16>(TrimWhitespace(event.err_message, len));
-    }
-
-    // Copy query text if available
-    if (query[0] != '\0') {
-      size_t len = strlen(query);
-      if (len >= PSCH_MAX_QUERY_LEN) {
-        len = PSCH_MAX_QUERY_LEN - 1;
-      }
-      memcpy(event.query, query, len);
-      event.query[len] = '\0';
-      // Trim whitespace
-      event.query_len = static_cast<uint16>(TrimWhitespace(event.query, len));
-    }
-
-    // Client context
-    event.application_name_len = static_cast<uint8>(
-        GetApplicationName(event.application_name, sizeof(event.application_name)));
-    event.client_addr_len =
-        static_cast<uint8>(GetClientAddress(event.client_addr, sizeof(event.client_addr)));
-
-    // Prevent recursive calls if PschEnqueueEvent triggers an error
-    disable_error_capture = true;
-    PschEnqueueEvent(&event);
-    disable_error_capture = false;
+// Check if log capture should occur for this error.
+// Returns false during early initialization, in background workers, or when disabled.
+static bool ShouldCaptureLog(ErrorData* edata) {
+  // Basic preconditions
+  if (edata == nullptr || !system_init || !psch_enabled || disable_error_capture) {
+    return false;
   }
 
-  // Reset flag on ERROR or above (transaction will abort)
+  // Check error level threshold
+  if (edata->elevel < psch_log_min_elevel) {
+    return false;
+  }
+
+  // PostgreSQL bootstrapping checks - MyProc indicates PGPROC allocation complete
+  if (MyProc == nullptr || IsParallelWorker()) {
+    return false;
+  }
+
+  // Session initialization checks (critical for debug5 safety):
+  // - MyDatabaseId: database must be assigned
+  // - IsUnderPostmaster: not single-user mode or bootstrap
+  // - psch_shared_state: shared memory must be ready
+  // - MyBgworkerEntry: skip background workers (not user queries)
+  if (MyDatabaseId == InvalidOid || !IsUnderPostmaster || psch_shared_state == nullptr ||
+      MyBgworkerEntry != nullptr) {
+    return false;
+  }
+
+  return true;
+}
+
+// Build and enqueue an error event from ErrorData
+static void CaptureLogEvent(ErrorData* edata) {
+  const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
+
+  PschEvent event;
+  MemSet(&event, 0, sizeof(event));
+
+  // Basic fields
+  event.ts_start = GetCurrentTimestamp();
+  event.dbid = MyDatabaseId;
+  event.userid = GetUserId();
+  event.pid = MyProcPid;
+  event.top_level = (nesting_level == 0);
+  event.cmd_type = PSCH_CMD_UNKNOWN;
+
+  // Error details
+  UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
+  event.err_elevel = static_cast<uint8>(edata->elevel);
+
+  // Error message
+  if (edata->message != nullptr) {
+    size_t len = strlen(edata->message);
+    if (len >= PSCH_MAX_ERR_MSG_LEN) {
+      len = PSCH_MAX_ERR_MSG_LEN - 1;
+    }
+    memcpy(event.err_message, edata->message, len);
+    event.err_message[len] = '\0';
+    event.err_message_len = static_cast<uint16>(TrimWhitespace(event.err_message, len));
+  }
+
+  // Query text
+  if (query[0] != '\0') {
+    size_t len = strlen(query);
+    if (len >= PSCH_MAX_QUERY_LEN) {
+      len = PSCH_MAX_QUERY_LEN - 1;
+    }
+    memcpy(event.query, query, len);
+    event.query[len] = '\0';
+    event.query_len = static_cast<uint16>(TrimWhitespace(event.query, len));
+  }
+
+  // Resolve names and client context
+  ResolveNames(&event);
+  event.application_name_len = static_cast<uint8>(
+      GetApplicationName(event.application_name, sizeof(event.application_name)));
+  event.client_addr_len =
+      static_cast<uint8>(GetClientAddress(event.client_addr, sizeof(event.client_addr)));
+
+  // Enqueue with recursion guard
+  disable_error_capture = true;
+  PschEnqueueEvent(&event);
+  disable_error_capture = false;
+}
+
+// emit_log_hook - captures log messages at configured level and above
+static void PschEmitLogHook(ErrorData* edata) {
+  if (ShouldCaptureLog(edata)) {
+    CaptureLogEvent(edata);
+  }
+
+  // Reset recursion guard on ERROR+ (transaction will abort)
   if (edata != nullptr && edata->elevel >= ERROR) {
     disable_error_capture = false;
   }
 
-  // Call previous hook in chain
+  // Chain to previous hook
   if (prev_emit_log_hook != nullptr) {
     prev_emit_log_hook(edata);
   }
@@ -782,6 +818,9 @@ void PschInstallHooks(void) {
 
   prev_emit_log_hook = emit_log_hook;
   emit_log_hook = PschEmitLogHook;
+
+  // Mark system as initialized - emit_log_hook will now capture messages
+  system_init = true;
 }
 
 }  // extern "C"
