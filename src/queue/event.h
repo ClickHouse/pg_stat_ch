@@ -35,6 +35,9 @@ extern "C" {
 // 2KB is enough for most queries; full query text is available via pg_stat_statements
 #define PSCH_MAX_QUERY_LEN 2048
 
+// Maximum error message length (truncated if longer)
+#define PSCH_MAX_ERR_MSG_LEN 2048
+
 // Command type values (matching PostgreSQL's CmdType enum)
 enum PschCmdType {
   PSCH_CMD_UNKNOWN = 0,
@@ -110,9 +113,11 @@ struct PschEvent {
   int16 parallel_workers_launched;
 
   // Error info (from emit_log_hook)
-  char err_sqlstate[6];  // SQLSTATE code (e.g., "42P01")
-  uint8 err_elevel;      // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
-  uint8 _padding3;       // Alignment
+  char err_sqlstate[6];    // SQLSTATE code (e.g., "42P01")
+  uint8 err_elevel;        // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
+  uint8 _padding3;         // Alignment
+  uint16 err_message_len;  // Actual length of error message
+  char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
 
   // Client context
   char application_name[64];   // Application name (NAMEDATALEN=64)

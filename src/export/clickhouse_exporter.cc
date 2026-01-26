@@ -138,6 +138,7 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   // Error columns
   auto col_err_sqlstate = std::make_shared<clickhouse::ColumnFixedString>(5);
   auto col_err_elevel = std::make_shared<clickhouse::ColumnUInt8>();
+  auto col_err_message = std::make_shared<clickhouse::ColumnString>();
   elog(DEBUG3, "pg_stat_ch: error columns created");
 
   // Client context columns
@@ -223,6 +224,14 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     // Error info (5-char SQLSTATE, trimmed)
     col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
     col_err_elevel->Append(ev.err_elevel);
+    // Error message (validate length)
+    uint16 safe_err_msg_len = ev.err_message_len;
+    if (safe_err_msg_len > PSCH_MAX_ERR_MSG_LEN) {
+      elog(WARNING, "pg_stat_ch: event %zu has invalid err_message_len %u, clamping", event_idx,
+           safe_err_msg_len);
+      safe_err_msg_len = PSCH_MAX_ERR_MSG_LEN;
+    }
+    col_err_message->Append(std::string(ev.err_message, safe_err_msg_len));
 
     elog(DEBUG3, "pg_stat_ch: event %zu - client context (app_len=%u, addr_len=%u)", event_idx,
          ev.application_name_len, ev.client_addr_len);
@@ -301,6 +310,7 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   // Error columns
   block.AppendColumn("err_sqlstate", col_err_sqlstate);
   block.AppendColumn("err_elevel", col_err_elevel);
+  block.AppendColumn("err_message", col_err_message);
 
   // Client context columns
   block.AppendColumn("app", col_app);
@@ -327,11 +337,21 @@ bool PschExporterInit(void) {
         .SetSendRetries(3)
         .SetRetryTimeout(std::chrono::seconds(5));
 
+    if (psch_clickhouse_use_tls) {
+      clickhouse::ClientOptions::SSLOptions ssl_opts;
+      ssl_opts.SetUseDefaultCALocations(true).SetUseSNI(true).SetSkipVerification(
+          psch_clickhouse_skip_tls_verify);
+      options.SetSSLOptions(ssl_opts);
+      elog(LOG, "pg_stat_ch: TLS enabled for ClickHouse connection%s",
+           psch_clickhouse_skip_tls_verify ? " (verification skipped)" : "");
+    }
+
     g_exporter.client = std::make_unique<clickhouse::Client>(options);
     g_exporter.initialized = true;
 
     const char* host = psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost";
-    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d", host, psch_clickhouse_port);
+    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d%s", host, psch_clickhouse_port,
+         psch_clickhouse_use_tls ? " (TLS)" : "");
 
     return true;
   } catch (const std::exception& ex) {

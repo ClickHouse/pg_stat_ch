@@ -1,22 +1,21 @@
 # Build artifacts
+build/
 *.o
 *.so
 *.dylib
 *.a
-.deps/
-build/
 
-# Compile database
-compile_commands.json
+# Git
+.git/
 
-# Editor/IDE
+# IDE/Editor
 .vscode/
 .idea/
+.cache/
 *.swp
 *.swo
-*~
 
-# PostgreSQL regression test output
+# Test output
 regression.diffs
 regression.out
 results/
@@ -26,9 +25,6 @@ log/
 # OS files
 .DS_Store
 Thumbs.db
-
-# clangd
-.cache/
 
 # Benchmark credentials
 benchmark/.env

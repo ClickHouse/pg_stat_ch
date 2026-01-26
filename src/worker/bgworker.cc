@@ -134,10 +134,13 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
     psch_wait_event_main = InitializeWaitEvent();
   }
 
-  // Initialize ClickHouse exporter
+  // Initialize ClickHouse exporter and verify connectivity
   pgstat_report_activity(STATE_RUNNING, "initializing ClickHouse exporter");
-  if (!PschExporterInit()) {
-    elog(WARNING, "pg_stat_ch: failed to initialize ClickHouse exporter");
+  if (PschExporterInit()) {
+    elog(LOG, "pg_stat_ch: ClickHouse connectivity verified on startup");
+  } else {
+    elog(WARNING,
+         "pg_stat_ch: failed to connect to ClickHouse on startup, will retry on first export");
   }
   pgstat_report_activity(STATE_IDLE, nullptr);
 

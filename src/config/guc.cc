@@ -17,6 +17,8 @@ int psch_clickhouse_port = 9000;
 char* psch_clickhouse_user = nullptr;
 char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
+bool psch_clickhouse_use_tls = false;
+bool psch_clickhouse_skip_tls_verify = false;
 int psch_queue_capacity = 65536;
 int psch_flush_interval_ms = 1000;
 int psch_batch_max = 10000;
@@ -123,6 +125,26 @@ void PschInitGuc(void) {
       nullptr,
       &psch_clickhouse_database,
       "pg_stat_ch",
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.clickhouse_use_tls",
+      "Enable TLS for ClickHouse connections.",
+      nullptr,
+      &psch_clickhouse_use_tls,
+      false,
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.clickhouse_skip_tls_verify",
+      "Skip TLS certificate verification (insecure, for testing only).",
+      nullptr,
+      &psch_clickhouse_skip_tls_verify,
+      false,
       PGC_POSTMASTER,
       0,
       nullptr, nullptr, nullptr);

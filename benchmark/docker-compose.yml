@@ -1,0 +1,64 @@
+services:
+  postgres:
+    build:
+      context: ..
+      dockerfile: benchmark/Dockerfile
+    container_name: pg_stat_ch_benchmark
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: benchmark
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_ch"
+      - "-c"
+      - "pg_stat_ch.enabled=on"
+      - "-c"
+      - "pg_stat_ch.clickhouse_host=${CLICKHOUSE_HOST:-localhost}"
+      - "-c"
+      - "pg_stat_ch.clickhouse_port=${CLICKHOUSE_PORT:-9000}"
+      - "-c"
+      - "pg_stat_ch.clickhouse_user=${CLICKHOUSE_USER:-default}"
+      - "-c"
+      - "pg_stat_ch.clickhouse_password=${CLICKHOUSE_PASSWORD:-}"
+      - "-c"
+      - "pg_stat_ch.clickhouse_database=${CLICKHOUSE_DATABASE:-pg_stat_ch}"
+      - "-c"
+      - "pg_stat_ch.clickhouse_use_tls=${CLICKHOUSE_USE_TLS:-false}"
+      - "-c"
+      - "pg_stat_ch.clickhouse_skip_tls_verify=${CLICKHOUSE_SKIP_TLS_VERIFY:-false}"
+      - "-c"
+      - "pg_stat_ch.queue_capacity=65536"
+      - "-c"
+      - "pg_stat_ch.flush_interval_ms=1000"
+      - "-c"
+      - "pg_stat_ch.batch_max=10000"
+      - "-c"
+      - "log_statement=none"
+      - "-c"
+      - "log_min_messages=warning"
+      # Settings to populate more telemetry columns
+      - "-c"
+      - "track_io_timing=on"
+      - "-c"
+      - "jit_above_cost=10000"
+      - "-c"
+      - "work_mem=256kB"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

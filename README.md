@@ -133,7 +133,7 @@ cmake --install build
 
 ### Dependencies
 
-The [clickhouse-cpp](https://github.com/ClickHouse/clickhouse-cpp) library is vendored as a git submodule:
+The [clickhouse-cpp](https://github.com/ClickHouse/clickhouse-cpp) library is vendored as a git submodule and **statically linked** into the extension. This means the final `pg_stat_ch.so` is self-contained with no external runtime dependencies on clickhouse-cpp.
 
 ```bash
 git submodule update --init --recursive
