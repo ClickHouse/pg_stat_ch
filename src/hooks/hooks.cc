@@ -96,6 +96,26 @@ static void UnpackSqlState(int sql_state, char* buf) {
   buf[5] = '\0';
 }
 
+// Trim leading and trailing whitespace in-place, return new length
+static size_t TrimWhitespace(char* str, size_t len) {
+  // Trim trailing first (no memmove needed)
+  while (len > 0 && isspace(static_cast<unsigned char>(str[len - 1]))) {
+    len--;
+  }
+  str[len] = '\0';
+
+  // Trim leading (requires memmove if any)
+  size_t start = 0;
+  while (start < len && isspace(static_cast<unsigned char>(str[start]))) {
+    start++;
+  }
+  if (start > 0) {
+    len -= start;
+    memmove(str, str + start, len + 1);  // +1 for null terminator
+  }
+  return len;
+}
+
 // Get PgBackendStatus for the current backend (version-compatible)
 static PgBackendStatus* GetBackendStatus(void) {
 #if PG_VERSION_NUM >= 170000
@@ -121,17 +141,20 @@ static PgBackendStatus* GetBackendStatus(void) {
 // Get application name for current backend
 // Returns the length of the string copied to buf
 static int GetApplicationName(char* buf, int buf_size) {
+  int len;
   // Try application_name GUC first (always up-to-date)
   if (application_name != nullptr && application_name[0] != '\0') {
-    int len = snprintf(buf, buf_size, "%s", application_name);
-    return (len >= buf_size) ? buf_size - 1 : len;
+    len = snprintf(buf, buf_size, "%s", application_name);
+    len = (len >= buf_size) ? buf_size - 1 : len;
+    return static_cast<int>(TrimWhitespace(buf, len));
   }
 
   // Fall back to backend status
   PgBackendStatus* beentry = GetBackendStatus();
   if (beentry != nullptr && beentry->st_appname != nullptr) {
-    int len = snprintf(buf, buf_size, "%s", beentry->st_appname);
-    return (len >= buf_size) ? buf_size - 1 : len;
+    len = snprintf(buf, buf_size, "%s", beentry->st_appname);
+    len = (len >= buf_size) ? buf_size - 1 : len;
+    return static_cast<int>(TrimWhitespace(buf, len));
   }
 
   buf[0] = '\0';
@@ -225,7 +248,8 @@ static void CopyQueryText(PschEvent* event, const char* query_text) {
     }
     memcpy(event->query, query_text, len);
     event->query[len] = '\0';
-    event->query_len = static_cast<uint16>(len);
+    // Trim whitespace
+    event->query_len = static_cast<uint16>(TrimWhitespace(event->query, len));
   }
 }
 
@@ -696,7 +720,8 @@ static void PschEmitLogHook(ErrorData* edata) {
       }
       memcpy(event.err_message, edata->message, len);
       event.err_message[len] = '\0';
-      event.err_message_len = static_cast<uint16>(len);
+      // Trim whitespace
+      event.err_message_len = static_cast<uint16>(TrimWhitespace(event.err_message, len));
     }
 
     // Copy query text if available
@@ -707,7 +732,8 @@ static void PschEmitLogHook(ErrorData* edata) {
       }
       memcpy(event.query, query, len);
       event.query[len] = '\0';
-      event.query_len = static_cast<uint16>(len);
+      // Trim whitespace
+      event.query_len = static_cast<uint16>(TrimWhitespace(event.query, len));
     }
 
     // Client context

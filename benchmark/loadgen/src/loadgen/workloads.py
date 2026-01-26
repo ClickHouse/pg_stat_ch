@@ -17,11 +17,11 @@ class WorkloadConfig:
 
 
 def _random_user_id() -> int:
-    return random.randint(1, 10000)
+    return random.randint(1, 100000)
 
 
 def _random_product_id() -> int:
-    return random.randint(1, 1000)
+    return random.randint(1, 10000)
 
 
 class SelectWorkload:
@@ -176,7 +176,7 @@ class UpdateWorkload:
             SET status = %s
             WHERE id = %s
             """,
-            (random.choice(statuses), random.randint(1, 50000)),
+            (random.choice(statuses), random.randint(1, 100000)),
         )
 
     @staticmethod
@@ -195,6 +195,128 @@ class UpdateWorkload:
     def all_queries(cls) -> list:
         """Return all UPDATE query methods."""
         return [cls.update_balance, cls.update_order_status, cls.update_inventory]
+
+
+class HeavyWorkload:
+    """Heavy workload: queries that exercise JIT, parallel, temp files, buffer reads."""
+
+    @staticmethod
+    def full_table_scan(cur: psycopg.Cursor) -> None:
+        """Full table scan to generate buffer reads."""
+        cur.execute(
+            """
+            SELECT COUNT(*), SUM(balance), AVG(balance), MIN(balance), MAX(balance),
+                   STDDEV(balance), VARIANCE(balance)
+            FROM bench.users
+            """
+        )
+        cur.fetchall()
+
+    @staticmethod
+    def complex_aggregation(cur: psycopg.Cursor) -> None:
+        """Complex aggregation to trigger JIT compilation."""
+        cur.execute(
+            """
+            SELECT
+                u.status,
+                COUNT(DISTINCT u.id) as users,
+                COUNT(o.id) as orders,
+                SUM(o.total_price) as revenue,
+                AVG(o.total_price) as avg_order,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY o.total_price) as median_order,
+                SUM(CASE WHEN o.status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
+            FROM bench.users u
+            LEFT JOIN bench.orders o ON u.id = o.user_id
+            GROUP BY u.status
+            """
+        )
+        cur.fetchall()
+
+    @staticmethod
+    def large_sort(cur: psycopg.Cursor) -> None:
+        """Large sort to spill to temp files (work_mem is low)."""
+        cur.execute(
+            """
+            SELECT u.id, u.username, u.balance,
+                   COUNT(t.id) as tx_count,
+                   SUM(t.amount) as total_amount
+            FROM bench.users u
+            LEFT JOIN bench.transactions t ON u.id = t.user_id
+            GROUP BY u.id, u.username, u.balance
+            ORDER BY total_amount DESC NULLS LAST
+            LIMIT 100
+            """
+        )
+        cur.fetchall()
+
+    @staticmethod
+    def hash_join(cur: psycopg.Cursor) -> None:
+        """Hash join across multiple tables."""
+        cur.execute(
+            """
+            SELECT i.category, i.name,
+                   COUNT(o.id) as order_count,
+                   SUM(o.quantity) as total_qty,
+                   SUM(o.total_price) as total_revenue
+            FROM bench.inventory i
+            JOIN bench.orders o ON i.id = o.product_id
+            JOIN bench.users u ON o.user_id = u.id
+            WHERE u.status = 'active'
+            GROUP BY i.category, i.name
+            ORDER BY total_revenue DESC
+            LIMIT 50
+            """
+        )
+        cur.fetchall()
+
+    @staticmethod
+    def window_functions(cur: psycopg.Cursor) -> None:
+        """Window functions to add complexity."""
+        cur.execute(
+            """
+            SELECT id, username, balance,
+                   ROW_NUMBER() OVER (ORDER BY balance DESC) as rank,
+                   balance - LAG(balance) OVER (ORDER BY balance DESC) as diff_from_prev,
+                   SUM(balance) OVER (ORDER BY balance DESC) as running_total,
+                   AVG(balance) OVER () as overall_avg
+            FROM bench.users
+            WHERE status = 'active'
+            LIMIT 100
+            """
+        )
+        cur.fetchall()
+
+    @staticmethod
+    def subquery_heavy(cur: psycopg.Cursor) -> None:
+        """Subquery-heavy query for complexity."""
+        cur.execute(
+            """
+            SELECT u.id, u.username,
+                   (SELECT COUNT(*) FROM bench.orders WHERE user_id = u.id) as order_count,
+                   (SELECT SUM(amount) FROM bench.transactions WHERE user_id = u.id) as tx_total,
+                   (SELECT MAX(created_at) FROM bench.orders WHERE user_id = u.id) as last_order
+            FROM bench.users u
+            WHERE u.id IN (
+                SELECT DISTINCT user_id FROM bench.orders
+                WHERE created_at > NOW() - INTERVAL '30 days'
+            )
+            LIMIT 50
+            """
+        )
+        cur.fetchall()
+
+    @classmethod
+    def all_queries(cls) -> list:
+        """Return all heavy query methods."""
+        return [
+            cls.full_table_scan,
+            cls.complex_aggregation,
+            cls.large_sort,
+            cls.hash_join,
+            cls.window_functions,
+            cls.subquery_heavy,
+        ]
 
 
 class DeleteWorkload:
@@ -233,10 +355,11 @@ class DeleteWorkload:
         return [cls.delete_old_order, cls.delete_old_transaction]
 
 
-# Default workload configuration: 40% SELECT, 25% INSERT, 25% UPDATE, 10% DELETE
+# Default workload configuration: 30% SELECT, 20% INSERT, 20% UPDATE, 10% DELETE, 20% HEAVY
 DEFAULT_WORKLOADS = {
-    "select": WorkloadConfig("SELECT", 40, SelectWorkload.all_queries()),
-    "insert": WorkloadConfig("INSERT", 25, InsertWorkload.all_queries()),
-    "update": WorkloadConfig("UPDATE", 25, UpdateWorkload.all_queries()),
+    "select": WorkloadConfig("SELECT", 30, SelectWorkload.all_queries()),
+    "insert": WorkloadConfig("INSERT", 20, InsertWorkload.all_queries()),
+    "update": WorkloadConfig("UPDATE", 20, UpdateWorkload.all_queries()),
     "delete": WorkloadConfig("DELETE", 10, DeleteWorkload.all_queries()),
+    "heavy": WorkloadConfig("HEAVY", 20, HeavyWorkload.all_queries()),
 }

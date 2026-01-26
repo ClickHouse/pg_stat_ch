@@ -65,7 +65,7 @@ CREATE INDEX idx_transactions_user_id ON bench.transactions(user_id);
 CREATE INDEX idx_transactions_type ON bench.transactions(type);
 CREATE INDEX idx_transactions_created_at ON bench.transactions(created_at);
 
--- Seed users (10,000 records)
+-- Seed users (100,000 records for JIT/parallel testing)
 INSERT INTO bench.users (username, email, balance, status)
 SELECT
     'user_' || i,
@@ -76,9 +76,9 @@ SELECT
         WHEN 1 THEN 'inactive'
         ELSE 'pending'
     END
-FROM generate_series(1, 10000) AS i;
+FROM generate_series(1, 100000) AS i;
 
--- Seed inventory (1,000 products)
+-- Seed inventory (10,000 products)
 INSERT INTO bench.inventory (sku, name, price, quantity, category)
 SELECT
     'SKU-' || LPAD(i::TEXT, 6, '0'),
@@ -92,13 +92,13 @@ SELECT
         WHEN 3 THEN 'home'
         ELSE 'sports'
     END
-FROM generate_series(1, 1000) AS i;
+FROM generate_series(1, 10000) AS i;
 
--- Seed some initial orders (5,000 records)
+-- Seed some initial orders (100,000 records)
 INSERT INTO bench.orders (user_id, product_id, quantity, total_price, status)
 SELECT
+    (random() * 99999 + 1)::INTEGER,
     (random() * 9999 + 1)::INTEGER,
-    (random() * 999 + 1)::INTEGER,
     (random() * 5 + 1)::INTEGER,
     (random() * 500 + 10)::DECIMAL(15, 2),
     CASE (random() * 4)::INTEGER
@@ -107,13 +107,13 @@ SELECT
         WHEN 2 THEN 'shipped'
         ELSE 'completed'
     END
-FROM generate_series(1, 5000) AS i;
+FROM generate_series(1, 100000) AS i;
 
--- Seed some initial transactions (10,000 records)
+-- Seed some initial transactions (200,000 records)
 INSERT INTO bench.transactions (user_id, order_id, amount, type, description)
 SELECT
-    (random() * 9999 + 1)::INTEGER,
-    CASE WHEN random() > 0.3 THEN (random() * 4999 + 1)::INTEGER ELSE NULL END,
+    (random() * 99999 + 1)::INTEGER,
+    CASE WHEN random() > 0.3 THEN (random() * 99999 + 1)::INTEGER ELSE NULL END,
     (random() * 500 + 1)::DECIMAL(15, 2),
     CASE (random() * 3)::INTEGER
         WHEN 0 THEN 'credit'
@@ -121,7 +121,7 @@ SELECT
         ELSE 'refund'
     END,
     'Transaction ' || i
-FROM generate_series(1, 10000) AS i;
+FROM generate_series(1, 200000) AS i;
 
 -- Update statistics
 ANALYZE bench.users;
