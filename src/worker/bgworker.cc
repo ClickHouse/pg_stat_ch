@@ -144,19 +144,13 @@ static int CalculateSleepMs() {
 // response but more false failures on slow networks.
 static void RunExportCycle(uint32 wait_event) {
   int sleep_ms = CalculateSleepMs();
-
-  elog(DEBUG2, "pg_stat_ch: waiting for latch (timeout=%d ms)", sleep_ms);
-  int rc =
-      WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
+  (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
   ResetLatch(MyLatch);
-
-  elog(DEBUG2, "pg_stat_ch: latch woke up (rc=%d), checking interrupts", rc);
 
   // Process barrier events first. ProcSignalBarrierPending is set when operations
   // like DROP DATABASE or DROP TABLESPACE need all backends to acknowledge.
   // Failure to call ProcessProcSignalBarrier() causes those operations to hang.
   if (ProcSignalBarrierPending) {
-    elog(DEBUG1, "pg_stat_ch: processing ProcSignalBarrier");
     ProcessProcSignalBarrier();
   }
 
@@ -167,13 +161,10 @@ static void RunExportCycle(uint32 wait_event) {
   //   - Various timeout flags
   CHECK_FOR_INTERRUPTS();
 
-  elog(DEBUG2, "pg_stat_ch: interrupts checked, handling config reload");
   HandleConfigReload();
 
   if (psch_enabled) {
-    elog(DEBUG2, "pg_stat_ch: starting export batch");
     ExportBatchWithRecovery();
-    elog(DEBUG2, "pg_stat_ch: export batch complete");
   }
 }
 
