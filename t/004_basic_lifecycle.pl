@@ -23,9 +23,9 @@ my $result = $node->safe_psql('postgres',
     "SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_stat_ch'");
 like($result, qr/pg_stat_ch\|/, 'Extension registered in pg_extension');
 
-# Test version function returns a version string (semver or git hash)
+# Test version function returns a version string starting with semver
 $result = $node->safe_psql('postgres', 'SELECT pg_stat_ch_version()');
-like($result, qr/^\d+\.\d+\.\d+|^[0-9a-f]+-?/, 'pg_stat_ch_version() returns version string');
+like($result, qr/^v?\d+\.\d+\.\d+/, 'pg_stat_ch_version() returns version string');
 
 # Verify all expected functions exist
 $result = $node->safe_psql('postgres',
