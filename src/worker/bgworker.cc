@@ -47,15 +47,10 @@ extern "C" {
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
 
-// Flag for immediate flush request (set by SIGUSR2)
-// Using sig_atomic_t for safe access from signal handler
-static volatile sig_atomic_t flush_requested = 0;
-
-// SIGUSR2 handler to request immediate flush
-// Note: SIGUSR1 is reserved for PostgreSQL's procsignal mechanism
+// SIGUSR2 handler: wake the worker for immediate flush.
+// Note: SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
 static void HandleFlushSignal(SIGNAL_ARGS) {
   int save_errno = errno;
-  flush_requested = 1;
   SetLatch(MyLatch);
   errno = save_errno;
 }
@@ -174,12 +169,6 @@ static void RunExportCycle(uint32 wait_event) {
 
   elog(DEBUG2, "pg_stat_ch: interrupts checked, handling config reload");
   HandleConfigReload();
-
-  // Check for immediate flush request (set by SIGUSR2 via pg_stat_ch_flush())
-  if (flush_requested != 0) {
-    flush_requested = 0;
-    elog(DEBUG1, "pg_stat_ch: immediate flush requested via SIGUSR2");
-  }
 
   if (psch_enabled) {
     elog(DEBUG2, "pg_stat_ch: starting export batch");
