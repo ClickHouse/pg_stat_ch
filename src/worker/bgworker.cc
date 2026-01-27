@@ -1,11 +1,25 @@
 // pg_stat_ch background worker implementation
 //
-// Follows PostgreSQL's official patterns from worker_spi.c and autovacuum.c:
-// - Signal handlers set up BEFORE BackgroundWorkerUnblockSignals()
-// - Uses die() for SIGTERM (standard PostgreSQL handler)
-// - Uses SignalHandlerForConfigReload for SIGHUP with ConfigReloadPending flag
-// - CHECK_FOR_INTERRUPTS() in main loop to process pending signals
-// - PG_TRY/PG_CATCH for error recovery
+// Signal handling notes:
+//
+// PostgreSQL uses SIGUSR1 for inter-process signaling via the "procsignal"
+// mechanism (storage/procsignal.h). Operations like DROP DATABASE use
+// ProcSignalBarrier to coordinate across all backends - they send SIGUSR1
+// and wait for each backend to acknowledge by calling ProcessProcSignalBarrier().
+//
+// We MUST use procsignal_sigusr1_handler for SIGUSR1. A previous bug used a
+// custom handler which prevented barrier acknowledgment, causing DROP DATABASE
+// to hang indefinitely. The fix:
+//   1. Use procsignal_sigusr1_handler for SIGUSR1 (handles barriers)
+//   2. Use SIGUSR2 for extension-specific immediate flush requests
+//   3. Add socket timeouts to ClickHouse connections as a safety net
+//
+// Signal assignments:
+//   SIGHUP  -> SignalHandlerForConfigReload (reload postgresql.conf)
+//   SIGTERM -> die() (graceful shutdown)
+//   SIGUSR1 -> procsignal_sigusr1_handler (PostgreSQL internal - barriers, etc.)
+//   SIGUSR2 -> HandleFlushSignal (extension-specific - immediate flush)
+//   SIGPIPE -> SIG_IGN (ignore broken pipe from network)
 
 extern "C" {
 #include "postgres.h"
@@ -16,6 +30,7 @@ extern "C" {
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/procsignal.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
 #include "utils/wait_event.h"
@@ -32,18 +47,32 @@ extern "C" {
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
 
-// SIGUSR1 handler to wake up the latch for immediate flush
+// SIGUSR2 handler: wake the worker for immediate flush.
+// Note: SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
 static void HandleFlushSignal(SIGNAL_ARGS) {
   int save_errno = errno;
   SetLatch(MyLatch);
   errno = save_errno;
 }
 
-// Set up signal handlers before unblocking (per worker_spi.c:158-163)
+// Set up signal handlers before unblocking signals.
+// Pattern from worker_spi.c:158-163 and autovacuum.c.
+//
+// CRITICAL: We MUST use procsignal_sigusr1_handler for SIGUSR1.
+// This handler processes PostgreSQL's internal signals including:
+//   - PROCSIG_BARRIER: Global barrier for DROP DATABASE, DROP TABLESPACE, etc.
+//   - PROCSIG_CATCHUP_INTERRUPT: Shared invalidation catchup
+//   - PROCSIG_NOTIFY_INTERRUPT: LISTEN/NOTIFY
+//   - PROCSIG_LOG_MEMORY_CONTEXT: Memory context logging
+//   - PROCSIG_RECOVERY_CONFLICT_*: Standby recovery conflicts
+//
+// If we don't use this handler, operations that require barrier acknowledgment
+// (like DROP DATABASE) will hang indefinitely waiting for this worker.
 static void SetupSignalHandlers() {
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   pqsignal(SIGTERM, die);
-  pqsignal(SIGUSR1, HandleFlushSignal);
+  pqsignal(SIGUSR1, procsignal_sigusr1_handler);  // REQUIRED for barriers
+  pqsignal(SIGUSR2, HandleFlushSignal);           // Extension-specific flush
   pqsignal(SIGPIPE, SIG_IGN);
 }
 
@@ -61,7 +90,7 @@ static void PschBgworkerShutdown([[maybe_unused]] int code, [[maybe_unused]] Dat
   PschExporterShutdown();
 }
 
-// Export batch with error recovery
+// Export batch with error recovery using PG_TRY/PG_CATCH
 static void ExportBatchWithRecovery() {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
@@ -99,14 +128,39 @@ static int CalculateSleepMs() {
   return sleep_ms;
 }
 
-// Run one export cycle: wait, check signals, and export if enabled
+// Run one export cycle: wait for events, process signals, export if enabled.
+//
+// Signal processing order is important:
+//   1. WaitLatch - sleep until timeout, latch set, or postmaster death
+//   2. Process barriers FIRST - critical for DROP DATABASE, etc.
+//   3. CHECK_FOR_INTERRUPTS - handles die/cancel, also processes barriers
+//   4. Config reload
+//   5. Export batch
+//
+// Note on blocking: If we're blocked in ClickHouse network I/O when a barrier
+// signal arrives, we can't process it until the I/O completes. The socket
+// timeouts configured in clickhouse_exporter.cc (30 seconds) ensure we don't
+// block forever. This is a tradeoff - shorter timeouts mean faster barrier
+// response but more false failures on slow networks.
 static void RunExportCycle(uint32 wait_event) {
   int sleep_ms = CalculateSleepMs();
-
   (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
   ResetLatch(MyLatch);
 
+  // Process barrier events first. ProcSignalBarrierPending is set when operations
+  // like DROP DATABASE or DROP TABLESPACE need all backends to acknowledge.
+  // Failure to call ProcessProcSignalBarrier() causes those operations to hang.
+  if (ProcSignalBarrierPending) {
+    ProcessProcSignalBarrier();
+  }
+
+  // CHECK_FOR_INTERRUPTS processes:
+  //   - ProcDiePending (SIGTERM received)
+  //   - QueryCancelPending (SIGINT received)
+  //   - ProcSignalBarrierPending (redundant with above, but standard practice)
+  //   - Various timeout flags
   CHECK_FOR_INTERRUPTS();
+
   HandleConfigReload();
 
   if (psch_enabled) {
@@ -124,7 +178,7 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
   // Register cleanup callback for graceful shutdown
   on_proc_exit(PschBgworkerShutdown, 0);
 
-  // Store our PID for signaling
+  // Store our PID for signaling (used by pg_stat_ch_flush())
   PschSetBgworkerPid(MyProcPid);
 
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
@@ -150,6 +204,9 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
   }
 }
 
+// Signal the background worker to flush immediately.
+// Called from pg_stat_ch_flush() SQL function.
+// Uses SIGUSR2 since SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
 void PschSignalFlush(void) {
   int bgworker_pid = PschGetBgworkerPid();
   if (bgworker_pid == 0) {
@@ -157,8 +214,7 @@ void PschSignalFlush(void) {
     return;
   }
 
-  // Send SIGUSR1 to wake up the bgworker
-  if (kill(bgworker_pid, SIGUSR1) != 0) {
+  if (kill(bgworker_pid, SIGUSR2) != 0) {
     ereport(WARNING, (errmsg("pg_stat_ch: failed to signal background worker")));
   }
 }

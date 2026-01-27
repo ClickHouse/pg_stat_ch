@@ -45,7 +45,7 @@ CREATE TABLE pg_stat_ch.events_raw
 
     rows UInt64 COMMENT 'Rows returned (SELECT) or affected (INSERT/UPDATE/DELETE). HIGH: large result sets or bulk operations. LOW: point queries. Watch for unexpected HIGH values indicating missing WHERE clauses.',
 
-    query String CODEC(ZSTD(3)) COMMENT 'Full SQL query text (may be truncated). Used for debugging and query analysis. ZSTD compression reduces storage.',
+    query String COMMENT 'Full SQL query text (may be truncated). Used for debugging and query analysis.',
 
     -- ========================================================================
     -- Shared buffer metrics (main buffer cache)
@@ -168,7 +168,7 @@ CREATE TABLE pg_stat_ch.events_raw
 
     err_elevel UInt8 COMMENT 'Error severity level. 0=none (success), 19=WARNING, 21=ERROR, 22=FATAL, 23=PANIC. Filter err_elevel>=21 for actual errors. WARNING (19) indicates potential issues.',
 
-    err_message String CODEC(ZSTD(3)) COMMENT 'Error message text. Contains the human-readable error description. May include DETAIL and HINT in some cases.',
+    err_message String COMMENT 'Error message text. Contains the human-readable error description. May include DETAIL and HINT in some cases.',
 
     -- ========================================================================
     -- Client context

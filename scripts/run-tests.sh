@@ -104,7 +104,7 @@ run_regress() {
         --outputdir=test/regression/results \
         --temp-instance=test/regression/tmp_check \
         --temp-config=test/regression/pg_stat_ch.conf \
-        basic version guc stats utility buffers cmd_type client_info error_capture
+        basic version guc stats utility buffers cmd_type client_info error_capture drop_database_barrier
 }
 
 # Run TAP tests

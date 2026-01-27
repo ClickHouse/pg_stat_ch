@@ -326,6 +326,13 @@ extern "C" {
 bool PschExporterInit(void) {
   try {
     clickhouse::ClientOptions options;
+
+    // Socket timeouts prevent indefinite blocking during network I/O. Without them,
+    // the bgworker can't respond to PostgreSQL signals (e.g., DROP DATABASE waits
+    // for ProcSignalBarrier acknowledgment). 30 seconds balances reliability on
+    // slow networks against signal responsiveness. See bgworker.cc for details.
+    constexpr auto kSocketTimeout = std::chrono::seconds(30);
+
     options.SetHost(psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost")
         .SetPort(psch_clickhouse_port)
         .SetUser(psch_clickhouse_user != nullptr ? psch_clickhouse_user : "default")
@@ -335,7 +342,10 @@ bool PschExporterInit(void) {
         .SetCompressionMethod(clickhouse::CompressionMethod::LZ4)
         .SetPingBeforeQuery(true)
         .SetSendRetries(3)
-        .SetRetryTimeout(std::chrono::seconds(5));
+        .SetRetryTimeout(std::chrono::seconds(5))
+        .SetConnectionConnectTimeout(kSocketTimeout)
+        .SetConnectionRecvTimeout(kSocketTimeout)
+        .SetConnectionSendTimeout(kSocketTimeout);
 
     if (psch_clickhouse_use_tls) {
       clickhouse::ClientOptions::SSLOptions ssl_opts;
