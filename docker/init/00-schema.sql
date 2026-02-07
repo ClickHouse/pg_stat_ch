@@ -2,6 +2,18 @@
 -- ClickHouse schema for pg_stat_ch events
 -- ============================================================================
 --
+-- CANONICAL SCHEMA REFERENCE
+--
+-- This file is the single source of truth for the pg_stat_ch ClickHouse schema.
+-- It serves a dual role:
+--   1. Docker init script (applied automatically by docker-compose)
+--   2. Schema documentation (column comments, MV explanations, example queries)
+--
+-- For production deployments:  clickhouse-client < docker/init/00-schema.sql
+-- For documentation:           see docs/clickhouse.md
+--
+-- ============================================================================
+--
 -- This schema is designed for the pg_stat_ch PostgreSQL extension which exports
 -- raw query execution telemetry to ClickHouse. All aggregation (p50/p95/p99,
 -- top queries, error rates) happens in ClickHouse via materialized views.
