@@ -2,14 +2,14 @@
 
 ## Test Types
 
-| Type | Description | Command |
-|------|-------------|---------|
-| `regress` | SQL regression tests | `mise run test:regress` |
-| `tap` | Perl TAP tests (stress, concurrent, lifecycle) | `mise run test:tap` |
-| `isolation` | Race condition tests | `mise run test:isolation` |
-| `stress` | High-load stress test with pgbench | `mise run test:stress` |
-| `clickhouse` | ClickHouse integration tests | `mise run test:clickhouse` |
-| `all` | Run all tests | `mise run test:all` |
+| Type | Description | Prerequisites | Command |
+|------|-------------|---------------|---------|
+| `regress` | SQL regression tests | None | `mise run test:regress` |
+| `tap` | Perl TAP tests (stress, concurrent, lifecycle) | PG built with `-Dtap_tests=enabled` ([see below](#tap-tests)) | `./scripts/run-tests.sh <pg_install> tap` |
+| `isolation` | Race condition tests | None | `mise run test:isolation` |
+| `stress` | High-load stress test with pgbench | None | `mise run test:stress` |
+| `clickhouse` | ClickHouse integration tests | Docker | `mise run test:clickhouse` |
+| `all` | Run all tests | None (skips TAP if unavailable) | `mise run test:all` |
 
 ## Running Tests
 
@@ -27,28 +27,31 @@ mise run test:clickhouse
 mise run clickhouse:stop
 ```
 
-## TAP Tests with Local PostgreSQL Build
+## TAP Tests
 
-TAP tests require PostgreSQL built with `--enable-tap-tests`. Mise-installed versions don't include TAP modules. To run TAP tests:
+TAP tests require PostgreSQL compiled with `-Dtap_tests=enabled` (Meson). Mise-installed PostgreSQL versions don't include the Perl TAP modules, so you must build PostgreSQL from source.
 
-1. Build PostgreSQL with TAP support:
-   ```bash
-   cd ../postgres
-   meson setup build_tap --prefix=$(pwd)/install_tap -Dtap_tests=enabled
-   ninja -C build_tap -j$(nproc)
-   ninja -C build_tap install
-   ```
+### 1. Build PostgreSQL with TAP support
 
-2. Build pg_stat_ch against it:
-   ```bash
-   cmake -B build -G Ninja -DPG_CONFIG=../postgres/install_tap/bin/pg_config
-   cmake --build build && cmake --install build
-   ```
+```bash
+cd ../postgres
+meson setup build_tap --prefix=$(pwd)/install_tap -Dtap_tests=enabled
+ninja -C build_tap -j$(nproc)
+ninja -C build_tap install
+```
 
-3. Run TAP tests:
-   ```bash
-   ./scripts/run-tests.sh ../postgres/install_tap tap
-   ```
+### 2. Build pg_stat_ch against it
+
+```bash
+cmake -B build -G Ninja -DPG_CONFIG=../postgres/install_tap/bin/pg_config
+cmake --build build && cmake --install build
+```
+
+### 3. Run TAP tests
+
+```bash
+./scripts/run-tests.sh ../postgres/install_tap tap
+```
 
 ## Test Files
 
