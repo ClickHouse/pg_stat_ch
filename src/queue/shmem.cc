@@ -159,7 +159,7 @@ static void InitializeSharedState(void) {
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
   MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
-  psch_shared_state->bgworker_pid = 0;
+  pg_atomic_init_u32(&psch_shared_state->bgworker_pid, 0);
 
   // Zero-initialize the ring buffer
   MemSet(GetRingBuffer(), 0, psch_queue_capacity * sizeof(PschEvent));
@@ -327,7 +327,7 @@ bool PschDequeueEvent(PschEvent* event) {
 // causing temporary inconsistencies in the reported queue_size vs counters.
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
                   uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
-                  const char** last_error_text, TimestampTz* last_error_ts) {
+                  char* last_error_buf, size_t last_error_buf_size, TimestampTz* last_error_ts) {
   if (psch_shared_state == nullptr) {
     *enqueued = 0;
     *dropped = 0;
@@ -336,7 +336,8 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
     *queue_capacity = 0;
     *send_failures = 0;
     *last_success_ts = 0;
-    *last_error_text = "";
+    if (last_error_buf_size > 0)
+      last_error_buf[0] = '\0';
     *last_error_ts = 0;
     return;
   }
@@ -356,10 +357,14 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   *queue_size = static_cast<uint32>(head - tail);
   *queue_capacity = psch_shared_state->capacity;
 
-  // Read exporter timestamps and error text
+  // Copy exporter timestamps and error text under lock to prevent torn reads.
+  // The error text is copied into the caller's buffer so it remains valid after
+  // the lock is released (returning a pointer into shmem would allow torn reads).
+  LWLockAcquire(psch_shared_state->lock, LW_SHARED);
   *last_success_ts = psch_shared_state->last_success_ts;
   *last_error_ts = psch_shared_state->last_error_ts;
-  *last_error_text = psch_shared_state->last_error_text;
+  strlcpy(last_error_buf, psch_shared_state->last_error_text, last_error_buf_size);
+  LWLockRelease(psch_shared_state->lock);
 }
 
 // Reset statistics counters (called by SQL function pg_stat_ch_reset())
@@ -388,26 +393,32 @@ void PschResetStats(void) {
 }
 
 // Record a successful export (updates timestamp)
+// Lock protects last_success_ts from torn reads by PschGetStats/PschResetStats.
 void PschRecordExportSuccess(void) {
   if (psch_shared_state == nullptr) {
     return;
   }
+  LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   psch_shared_state->last_success_ts = GetCurrentTimestamp();
+  LWLockRelease(psch_shared_state->lock);
 }
 
 // Record an export failure (updates counter, timestamp, and error text)
+// Lock protects last_error_ts and last_error_text from torn reads by
+// PschGetStats/PschResetStats. send_failures is atomic so it's safe outside the lock.
 void PschRecordExportFailure(const char* error_msg) {
   if (psch_shared_state == nullptr) {
     return;
   }
   pg_atomic_fetch_add_u64(&psch_shared_state->send_failures, 1);
-  psch_shared_state->last_error_ts = GetCurrentTimestamp();
 
-  // Copy error message using strlcpy (handles truncation automatically)
+  LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
+  psch_shared_state->last_error_ts = GetCurrentTimestamp();
   if (error_msg != nullptr) {
     strlcpy(psch_shared_state->last_error_text, error_msg,
             sizeof(psch_shared_state->last_error_text));
   }
+  LWLockRelease(psch_shared_state->lock);
 }
 
 // Get the background worker PID
@@ -415,7 +426,7 @@ int PschGetBgworkerPid(void) {
   if (psch_shared_state == nullptr) {
     return 0;
   }
-  return psch_shared_state->bgworker_pid;
+  return static_cast<int>(pg_atomic_read_u32(&psch_shared_state->bgworker_pid));
 }
 
 // Set the background worker PID
@@ -423,7 +434,7 @@ void PschSetBgworkerPid(int pid) {
   if (psch_shared_state == nullptr) {
     return;
   }
-  psch_shared_state->bgworker_pid = pid;
+  pg_atomic_write_u32(&psch_shared_state->bgworker_pid, static_cast<uint32>(pid));
 }
 
 }  // extern "C"
