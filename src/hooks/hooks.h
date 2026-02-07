@@ -11,6 +11,10 @@ extern "C" {
 // Install executor hooks (called from _PG_init)
 void PschInstallHooks(void);
 
+// Suppress error capture to prevent deadlock during enqueue.
+// When true, emit_log_hook will not re-enter PschEnqueueEvent.
+void PschSuppressErrorCapture(bool suppress);
+
 #ifdef __cplusplus
 }
 #endif

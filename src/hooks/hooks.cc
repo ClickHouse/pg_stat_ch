@@ -776,6 +776,8 @@ static void PschEmitLogHook(ErrorData* edata) {
   }
 }
 
+void PschSuppressErrorCapture(bool suppress) { disable_error_capture = suppress; }
+
 void PschInstallHooks(void) {
 #if PG_VERSION_NUM >= 140000
   // Enable query ID calculation

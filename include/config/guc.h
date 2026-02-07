@@ -15,5 +15,6 @@ extern int psch_queue_capacity;
 extern int psch_flush_interval_ms;
 extern int psch_batch_max;
 extern int psch_log_min_elevel;
+extern bool psch_debug_force_locked_overflow;
 
 #endif  // PG_STAT_CH_GUC_H

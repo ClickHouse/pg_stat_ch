@@ -41,6 +41,7 @@ extern "C" {
 }
 
 #include "config/guc.h"
+#include "hooks/hooks.h"
 #include "queue/shmem.h"
 
 // Shared memory state
@@ -90,7 +91,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
 
-  if (head - tail >= capacity) {
+  if (head - tail >= capacity || psch_debug_force_locked_overflow) {
     HandleOverflow();
     return false;
   }
@@ -245,6 +246,11 @@ bool PschEnqueueEvent(const PschEvent* event) {
     return false;
   }
 
+  // Suppress error capture for the duration of this function to prevent deadlock.
+  // HandleOverflow() calls ereport(WARNING) which triggers emit_log_hook, which
+  // would re-enter PschEnqueueEvent() and deadlock on LWLockAcquire.
+  PschSuppressErrorCapture(true);
+
   uint32 capacity = psch_shared_state->capacity;
 
   // === LOCK-FREE FAST PATH: Check for overflow without acquiring lock ===
@@ -255,6 +261,7 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   if (head - tail >= capacity) {
     HandleOverflow();
+    PschSuppressErrorCapture(false);
     return false;
   }
 
@@ -267,6 +274,8 @@ bool PschEnqueueEvent(const PschEvent* event) {
   PG_FINALLY();
   { LWLockRelease(psch_shared_state->lock); }
   PG_END_TRY();
+
+  PschSuppressErrorCapture(false);
   return result;
 }
 

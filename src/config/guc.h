@@ -18,6 +18,7 @@ extern char* psch_clickhouse_database;
 extern int psch_queue_capacity;
 extern int psch_flush_interval_ms;
 extern int psch_batch_max;
+extern bool psch_debug_force_locked_overflow;
 
 // Initialize GUC variables
 void PschInitGuc(void);
