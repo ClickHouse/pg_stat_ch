@@ -23,6 +23,7 @@ int psch_queue_capacity = 65536;
 int psch_flush_interval_ms = 1000;
 int psch_batch_max = 10000;
 int psch_log_min_elevel = WARNING;
+bool psch_debug_force_locked_overflow = false;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -190,6 +191,16 @@ void PschInitGuc(void) {
       &psch_log_min_elevel,
       WARNING,
       log_elevel_options.data(),
+      PGC_SUSET,
+      0,
+      nullptr, nullptr, nullptr);
+  DefineCustomBoolVariable(
+      "pg_stat_ch.debug_force_locked_overflow",
+      "Force HandleOverflow in locked path (debug/test only).",
+      "When enabled, TryEnqueueLocked always calls HandleOverflow regardless of "
+      "queue state. Used to deterministically test the overflow-under-lock deadlock fix.",
+      &psch_debug_force_locked_overflow,
+      false,
       PGC_SUSET,
       0,
       nullptr, nullptr, nullptr);

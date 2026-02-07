@@ -1,8 +1,8 @@
 -- GUC configuration test
 CREATE EXTENSION pg_stat_ch;
 SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLATE "C";
-                 name                  
----------------------------------------
+                  name                  
+----------------------------------------
  pg_stat_ch.batch_max
  pg_stat_ch.clickhouse_database
  pg_stat_ch.clickhouse_host
@@ -11,11 +11,12 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.clickhouse_skip_tls_verify
  pg_stat_ch.clickhouse_use_tls
  pg_stat_ch.clickhouse_user
+ pg_stat_ch.debug_force_locked_overflow
  pg_stat_ch.enabled
  pg_stat_ch.flush_interval_ms
  pg_stat_ch.log_min_elevel
  pg_stat_ch.queue_capacity
-(12 rows)
+(13 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
