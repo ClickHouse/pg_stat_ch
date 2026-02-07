@@ -61,7 +61,7 @@ struct PschSharedState {
   TimestampTz last_success_ts;     // Last successful export timestamp
   TimestampTz last_error_ts;       // Last error timestamp
   char last_error_text[256];       // Last error message (truncated)
-  int bgworker_pid;                // Background worker PID for signaling
+  pg_atomic_uint32 bgworker_pid;   // Background worker PID for signaling
 
   // Ring buffer array follows immediately after this struct (flexible array member)
 };
@@ -87,10 +87,12 @@ bool PschEnqueueEvent(const PschEvent* event);
 // Dequeue an event from the ring buffer (returns true if event was available)
 bool PschDequeueEvent(PschEvent* event);
 
-// Get current queue statistics
+// Get current queue statistics.
+// last_error_buf must point to a caller-owned buffer of last_error_buf_size bytes;
+// the error text is copied into it under the lock to prevent torn reads.
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
                   uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
-                  const char** last_error_text, TimestampTz* last_error_ts);
+                  char* last_error_buf, size_t last_error_buf_size, TimestampTz* last_error_ts);
 
 // Reset all queue statistics to zero
 void PschResetStats(void);

@@ -90,11 +90,11 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   uint32 queue_capacity = 0;
   uint64 send_failures = 0;
   TimestampTz last_success_ts = 0;
-  const char* last_error_text = nullptr;
+  char last_error_text[256] = {0};
   TimestampTz last_error_ts = 0;
 
   PschGetStats(&enqueued, &dropped, &exported, &queue_size, &queue_capacity, &send_failures,
-               &last_success_ts, &last_error_text, &last_error_ts);
+               &last_success_ts, last_error_text, sizeof(last_error_text), &last_error_ts);
 
   // Fill values
   MemSet(nulls, false, sizeof(nulls));
@@ -113,7 +113,7 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   }
 
   // last_error_text: null if empty
-  if (last_error_text == nullptr || last_error_text[0] == '\0') {
+  if (last_error_text[0] == '\0') {
     nulls[5] = true;
     values[5] = (Datum)0;
   } else {
