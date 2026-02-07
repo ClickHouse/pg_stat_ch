@@ -51,4 +51,19 @@ SHOW pg_stat_ch.log_min_elevel;
  warning
 (1 row)
 
+-- Test that clickhouse_password is hidden from non-superusers (issue #3)
+CREATE ROLE psch_test_user LOGIN;
+SET ROLE psch_test_user;
+-- Should error: must be superuser
+SHOW pg_stat_ch.clickhouse_password;
+ERROR:  permission denied to examine "pg_stat_ch.clickhouse_password"
+DETAIL:  Only roles with privileges of the "pg_read_all_settings" role may examine this parameter.
+-- Should return no rows (GUC_SUPERUSER_ONLY hides from pg_settings)
+SELECT name, setting FROM pg_settings WHERE name = 'pg_stat_ch.clickhouse_password';
+ name | setting 
+------+---------
+(0 rows)
+
+RESET ROLE;
+DROP ROLE psch_test_user;
 DROP EXTENSION pg_stat_ch;
