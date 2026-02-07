@@ -116,7 +116,7 @@ void PschInitGuc(void) {
       &psch_clickhouse_password,
       "",
       PGC_POSTMASTER,
-      0,
+      GUC_SUPERUSER_ONLY,
       nullptr, nullptr, nullptr);
 
   DefineCustomStringVariable(
