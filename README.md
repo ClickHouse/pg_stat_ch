@@ -272,7 +272,7 @@ See [docs/testing.md](docs/testing.md) for test types, TAP test setup, and a ful
 
 ## Troubleshooting
 
-Common issues: extension not loading (check `shared_preload_libraries`), events not appearing (check `pg_stat_ch_stats()` for errors), high queue usage or dropped events (tune `queue_capacity`, `flush_interval_ms`, `batch_max`).
+Common issues: extension not loading (check `shared_preload_libraries`), events not appearing (check `pg_stat_ch_stats()` for errors), high queue usage or dropped events (tune `pg_stat_ch.queue_capacity`, `pg_stat_ch.flush_interval_ms`, `pg_stat_ch.batch_max`).
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) for detailed solutions.
 
