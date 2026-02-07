@@ -2,6 +2,8 @@
 
 ## Quick Start (Docker)
 
+From the repo root:
+
 ```bash
 docker compose -f docker/docker-compose.test.yml up -d
 
@@ -13,7 +15,7 @@ This creates a ClickHouse server on ports 19000 (native) and 18123 (HTTP) with t
 
 ## Manual Setup
 
-For production deployments, apply the canonical schema directly:
+For production deployments, apply the canonical schema directly (from the repo root):
 
 ```bash
 clickhouse-client < docker/init/00-schema.sql
