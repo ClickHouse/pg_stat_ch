@@ -21,7 +21,7 @@ For production deployments, apply the canonical schema directly (from the repo r
 clickhouse-client < docker/init/00-schema.sql
 ```
 
-The schema file ([`docker/init/00-schema.sql`](../docker/init/00-schema.sql)) is the single source of truth and includes:
+The schema file ([`docker/init/00-schema.sql`](/docker/init/00-schema.sql)) is the single source of truth and includes:
 - Full `events_raw` table with all columns documented (what metrics mean, when values are HIGH/LOW)
 - 4 materialized views for common analytics patterns
 - Column comments explaining how to interpret each metric
@@ -199,4 +199,4 @@ ORDER BY jit_overhead_pct DESC
 LIMIT 20;
 ```
 
-For more example queries, see the comments in [`docker/init/00-schema.sql`](../docker/init/00-schema.sql).
+For more example queries, see the comments in [`docker/init/00-schema.sql`](/docker/init/00-schema.sql).
