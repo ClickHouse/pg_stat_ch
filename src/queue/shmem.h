@@ -57,6 +57,7 @@ struct PschSharedState {
   char pad3[PG_CACHE_LINE_SIZE - (2 * sizeof(pg_atomic_uint64))];
 
   // === Exporter stats (written by bgworker, read by stats function) ===
+  pg_atomic_uint32 export_error;   // Non-zero when exporter has a hard error (hooks disable)
   pg_atomic_uint64 send_failures;  // Total failed send attempts
   TimestampTz last_success_ts;     // Last successful export timestamp
   TimestampTz last_error_ts;       // Last error timestamp
@@ -100,6 +101,10 @@ void PschRecordExportSuccess(void);
 
 // Record export failure (called by bgworker on export error)
 void PschRecordExportFailure(const char* error_msg);
+
+// Set/get export error flag (disables hooks when exporter can't connect)
+void PschSetExportError(bool error);
+bool PschGetExportError(void);
 
 // Get the background worker PID (for signaling)
 int PschGetBgworkerPid(void);

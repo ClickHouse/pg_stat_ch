@@ -19,7 +19,7 @@ char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
 bool psch_clickhouse_use_tls = false;
 bool psch_clickhouse_skip_tls_verify = false;
-int psch_queue_capacity = 65536;
+int psch_queue_capacity = 16384;
 int psch_flush_interval_ms = 1000;
 int psch_batch_max = 10000;
 int psch_log_min_elevel = WARNING;
@@ -152,9 +152,10 @@ void PschInitGuc(void) {
   DefineCustomIntVariable(
       "pg_stat_ch.queue_capacity",
       "Maximum number of events in the shared memory queue (must be a power of 2).",
-      nullptr,
+      "Each event is ~3.5KB with default buffer sizes. Default 16384 uses ~56MB. "
+      "Increase if you see queue overflow warnings.",
       &psch_queue_capacity,
-      65536,              // bootValue
+      16384,              // bootValue (reduced from 65536 to limit memory)
       1024, 4194304,      // min, max
       PGC_POSTMASTER,
       0,

@@ -117,6 +117,8 @@ The `QueryDesc` structure provides access to all query execution information:
 
 **What pg_stat_ch captures:** Messages at the configured minimum level and above (default: WARNING). The minimum level is controlled by the `pg_stat_ch.log_min_elevel` GUC parameter.
 
+**Important:** This GUC can only filter *down* from what PostgreSQL emits. PostgreSQL's `log_min_messages` controls which messages reach `emit_log_hook` in the first place. To capture messages at a given level, both settings must be at that level or lower. For example, to capture LOG-level messages (e.g., checkpoints), set `log_min_messages = 'log'` in addition to `pg_stat_ch.log_min_elevel = 'log'`.
+
 **Error levels** (from `elog.h`):
 
 | Level | Value | Captured by default |

@@ -82,15 +82,15 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   auto col_ts_start = std::make_shared<clickhouse::ColumnDateTime64>(6);
   elog(DEBUG3, "pg_stat_ch: col_ts_start created");
   auto col_duration_us = std::make_shared<clickhouse::ColumnUInt64>();
-  // Use pre-resolved names from event (resolved at capture time in hooks)
-  auto col_db = std::make_shared<clickhouse::ColumnString>();
-  auto col_username = std::make_shared<clickhouse::ColumnString>();
+  auto col_dboid = std::make_shared<clickhouse::ColumnUInt32>();
+  auto col_useroid = std::make_shared<clickhouse::ColumnUInt32>();
   elog(DEBUG3, "pg_stat_ch: basic columns created");
   auto col_pid = std::make_shared<clickhouse::ColumnInt32>();
   auto col_query_id = std::make_shared<clickhouse::ColumnInt64>();
   auto col_cmd_type = std::make_shared<clickhouse::ColumnString>();
   auto col_rows = std::make_shared<clickhouse::ColumnUInt64>();
   auto col_query = std::make_shared<clickhouse::ColumnString>();
+  auto col_query_normalized = std::make_shared<clickhouse::ColumnString>();
   elog(DEBUG3, "pg_stat_ch: all basic columns created");
 
   // Buffer usage columns
@@ -134,12 +134,20 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   auto col_parallel_workers_planned = std::make_shared<clickhouse::ColumnInt16>();
   auto col_parallel_workers_launched = std::make_shared<clickhouse::ColumnInt16>();
 
-  elog(DEBUG3, "pg_stat_ch: creating error columns");
-  // Error columns
-  auto col_err_sqlstate = std::make_shared<clickhouse::ColumnFixedString>(5);
-  auto col_err_elevel = std::make_shared<clickhouse::ColumnUInt8>();
-  auto col_err_message = std::make_shared<clickhouse::ColumnString>();
-  elog(DEBUG3, "pg_stat_ch: error columns created");
+  elog(DEBUG3, "pg_stat_ch: creating log columns");
+  // Log columns
+  auto col_log_sqlstate = std::make_shared<clickhouse::ColumnFixedString>(5);
+  auto col_log_elevel = std::make_shared<clickhouse::ColumnUInt8>();
+  auto col_log_message = std::make_shared<clickhouse::ColumnString>();
+  // Source location columns
+  auto col_log_filename = std::make_shared<clickhouse::ColumnString>();
+  auto col_log_funcname = std::make_shared<clickhouse::ColumnString>();
+  auto col_log_lineno = std::make_shared<clickhouse::ColumnInt32>();
+  // Extended log info columns
+  auto col_log_detail = std::make_shared<clickhouse::ColumnString>();
+  auto col_log_hint = std::make_shared<clickhouse::ColumnString>();
+  auto col_log_context = std::make_shared<clickhouse::ColumnString>();
+  elog(DEBUG3, "pg_stat_ch: log columns created");
 
   // Client context columns
   auto col_app = std::make_shared<clickhouse::ColumnString>();
@@ -155,9 +163,8 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_ts_start->Append(unix_us);
     col_duration_us->Append(ev.duration_us);
 
-    // Use pre-resolved names from event (resolved at capture time in hooks)
-    col_db->Append(std::string(ev.datname, ev.datname_len));
-    col_username->Append(std::string(ev.username, ev.username_len));
+    col_dboid->Append(static_cast<uint32_t>(ev.dbid));
+    col_useroid->Append(static_cast<uint32_t>(ev.userid));
 
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
@@ -172,6 +179,14 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
       safe_query_len = PSCH_MAX_QUERY_LEN;
     }
     col_query->Append(std::string(ev.query, safe_query_len));
+
+    uint16 safe_norm_len = ev.query_normalized_len;
+    if (safe_norm_len > PSCH_MAX_QUERY_LEN) {
+      elog(WARNING, "pg_stat_ch: event %zu has invalid query_normalized_len %u, clamping",
+           event_idx, safe_norm_len);
+      safe_norm_len = PSCH_MAX_QUERY_LEN;
+    }
+    col_query_normalized->Append(std::string(ev.query_normalized, safe_norm_len));
 
     elog(DEBUG3, "pg_stat_ch: event %zu - buffer usage", event_idx);
     // Buffer usage
@@ -220,18 +235,48 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_parallel_workers_planned->Append(ev.parallel_workers_planned);
     col_parallel_workers_launched->Append(ev.parallel_workers_launched);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - error info", event_idx);
-    // Error info (5-char SQLSTATE, trimmed)
-    col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
-    col_err_elevel->Append(ev.err_elevel);
-    // Error message (validate length)
-    uint16 safe_err_msg_len = ev.err_message_len;
-    if (safe_err_msg_len > PSCH_MAX_ERR_MSG_LEN) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid err_message_len %u, clamping", event_idx,
-           safe_err_msg_len);
-      safe_err_msg_len = PSCH_MAX_ERR_MSG_LEN;
+    elog(DEBUG3, "pg_stat_ch: event %zu - log info", event_idx);
+    // Log info (5-char SQLSTATE, trimmed)
+    col_log_sqlstate->Append(std::string_view(ev.log_sqlstate, 5));
+    col_log_elevel->Append(ev.log_elevel);
+    // Log message (validate length)
+    uint16 safe_log_msg_len = ev.log_message_len;
+    if (safe_log_msg_len > PSCH_MAX_LOG_MESSAGE_LEN) {
+      elog(WARNING, "pg_stat_ch: event %zu has invalid log_message_len %u, clamping", event_idx,
+           safe_log_msg_len);
+      safe_log_msg_len = PSCH_MAX_LOG_MESSAGE_LEN;
     }
-    col_err_message->Append(std::string(ev.err_message, safe_err_msg_len));
+    col_log_message->Append(std::string(ev.log_message, safe_log_msg_len));
+
+    // Source location (validate lengths)
+    uint8 safe_filename_len = ev.log_filename_len;
+    if (safe_filename_len > PSCH_MAX_LOG_FILENAME_LEN - 1) {
+      safe_filename_len = PSCH_MAX_LOG_FILENAME_LEN - 1;
+    }
+    col_log_filename->Append(std::string(ev.log_filename, safe_filename_len));
+    uint8 safe_funcname_len = ev.log_funcname_len;
+    if (safe_funcname_len > PSCH_MAX_LOG_FUNCNAME_LEN - 1) {
+      safe_funcname_len = PSCH_MAX_LOG_FUNCNAME_LEN - 1;
+    }
+    col_log_funcname->Append(std::string(ev.log_funcname, safe_funcname_len));
+    col_log_lineno->Append(ev.log_lineno);
+
+    // Extended log info (validate lengths)
+    uint16 safe_detail_len = ev.log_detail_len;
+    if (safe_detail_len > PSCH_MAX_LOG_DETAIL_LEN - 1) {
+      safe_detail_len = PSCH_MAX_LOG_DETAIL_LEN - 1;
+    }
+    col_log_detail->Append(std::string(ev.log_detail, safe_detail_len));
+    uint16 safe_hint_len = ev.log_hint_len;
+    if (safe_hint_len > PSCH_MAX_LOG_HINT_LEN - 1) {
+      safe_hint_len = PSCH_MAX_LOG_HINT_LEN - 1;
+    }
+    col_log_hint->Append(std::string(ev.log_hint, safe_hint_len));
+    uint16 safe_context_len = ev.log_context_len;
+    if (safe_context_len > PSCH_MAX_LOG_CONTEXT_LEN - 1) {
+      safe_context_len = PSCH_MAX_LOG_CONTEXT_LEN - 1;
+    }
+    col_log_context->Append(std::string(ev.log_context, safe_context_len));
 
     elog(DEBUG3, "pg_stat_ch: event %zu - client context (app_len=%u, addr_len=%u)", event_idx,
          ev.application_name_len, ev.client_addr_len);
@@ -258,13 +303,14 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   // Basic columns
   block.AppendColumn("ts_start", col_ts_start);
   block.AppendColumn("duration_us", col_duration_us);
-  block.AppendColumn("db", col_db);
-  block.AppendColumn("username", col_username);
+  block.AppendColumn("dboid", col_dboid);
+  block.AppendColumn("useroid", col_useroid);
   block.AppendColumn("pid", col_pid);
   block.AppendColumn("query_id", col_query_id);
   block.AppendColumn("cmd_type", col_cmd_type);
   block.AppendColumn("rows", col_rows);
   block.AppendColumn("query", col_query);
+  block.AppendColumn("query_normalized", col_query_normalized);
 
   // Buffer usage columns
   block.AppendColumn("shared_blks_hit", col_shared_blks_hit);
@@ -307,10 +353,16 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   block.AppendColumn("parallel_workers_planned", col_parallel_workers_planned);
   block.AppendColumn("parallel_workers_launched", col_parallel_workers_launched);
 
-  // Error columns
-  block.AppendColumn("err_sqlstate", col_err_sqlstate);
-  block.AppendColumn("err_elevel", col_err_elevel);
-  block.AppendColumn("err_message", col_err_message);
+  // Log columns
+  block.AppendColumn("log_sqlstate", col_log_sqlstate);
+  block.AppendColumn("log_elevel", col_log_elevel);
+  block.AppendColumn("log_message", col_log_message);
+  block.AppendColumn("log_filename", col_log_filename);
+  block.AppendColumn("log_funcname", col_log_funcname);
+  block.AppendColumn("log_lineno", col_log_lineno);
+  block.AppendColumn("log_detail", col_log_detail);
+  block.AppendColumn("log_hint", col_log_hint);
+  block.AppendColumn("log_context", col_log_context);
 
   // Client context columns
   block.AppendColumn("app", col_app);

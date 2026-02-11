@@ -48,9 +48,7 @@ PschSharedState* psch_shared_state = nullptr;
 
 // Previous hook values for chaining
 static shmem_startup_hook_type prev_shmem_startup_hook = nullptr;
-#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = nullptr;
-#endif
 
 // Get pointer to the ring buffer array (immediately follows the shared state)
 static inline PschEvent* GetRingBuffer(void) {
@@ -77,9 +75,11 @@ static void HandleOverflow() {
   pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
 
   // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
-  if (!pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
+  bool was_set = pg_atomic_test_set_flag(&psch_shared_state->overflow_logged);
+  if (was_set) {
     ereport(WARNING,
-            (errmsg("pg_stat_ch: queue overflow, events being dropped"),
+            (errmsg("pg_stat_ch: queue overflow, events being dropped (was_set=%d, addr=%p)",
+                     was_set, (void*)&psch_shared_state->overflow_logged),
              errhint("Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
   }
 }
@@ -133,14 +133,12 @@ static void RequestSharedResources(void) {
   RequestNamedLWLockTranche("pg_stat_ch", 1);
 }
 
-#if PG_VERSION_NUM >= 150000
 static void PschShmemRequestHook(void) {
   if (prev_shmem_request_hook != nullptr) {
     prev_shmem_request_hook();
   }
   RequestSharedResources();
 }
-#endif
 
 // Initialize shared state fields on first-time setup.
 // Called with AddinShmemInitLock held.
@@ -155,6 +153,7 @@ static void InitializeSharedState(void) {
   pg_atomic_init_u64(&psch_shared_state->exported, 0);
 
   // Initialize exporter stats
+  pg_atomic_init_u32(&psch_shared_state->export_error, 0);
   pg_atomic_init_u64(&psch_shared_state->send_failures, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
@@ -196,10 +195,7 @@ static void PschShmemStartupHook(void) {
 }
 
 void PschShmemRequest(void) {
-#if PG_VERSION_NUM < 150000
-  // For PG < 15, request resources directly
-  RequestSharedResources();
-#endif
+  // No-op: shmem_request_hook handles resource requests in PG16+
 }
 
 void PschShmemStartup(void) {
@@ -207,12 +203,8 @@ void PschShmemStartup(void) {
 }
 
 void PschInstallShmemHooks(void) {
-#if PG_VERSION_NUM >= 150000
   prev_shmem_request_hook = shmem_request_hook;
   shmem_request_hook = PschShmemRequestHook;
-#else
-  RequestSharedResources();
-#endif
 
   prev_shmem_startup_hook = shmem_startup_hook;
   shmem_startup_hook = PschShmemStartupHook;
@@ -242,6 +234,11 @@ void PschInstallShmemHooks(void) {
 // the queue unboundedly.
 bool PschEnqueueEvent(const PschEvent* event) {
   if (psch_shared_state == nullptr || !psch_enabled) {
+    return false;
+  }
+
+  // Skip enqueue if exporter has a hard error (no point capturing events we can't export)
+  if (pg_atomic_read_u32(&psch_shared_state->export_error) != 0) {
     return false;
   }
 
@@ -380,6 +377,7 @@ void PschResetStats(void) {
   pg_atomic_write_u64(&psch_shared_state->dropped, 0);
   pg_atomic_write_u64(&psch_shared_state->exported, 0);
   pg_atomic_write_u64(&psch_shared_state->send_failures, 0);
+  pg_atomic_write_u32(&psch_shared_state->export_error, 0);
   pg_atomic_clear_flag(&psch_shared_state->overflow_logged);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
@@ -408,6 +406,22 @@ void PschRecordExportFailure(const char* error_msg) {
     strlcpy(psch_shared_state->last_error_text, error_msg,
             sizeof(psch_shared_state->last_error_text));
   }
+}
+
+// Set export error flag (disables hooks)
+void PschSetExportError(bool error) {
+  if (psch_shared_state == nullptr) {
+    return;
+  }
+  pg_atomic_write_u32(&psch_shared_state->export_error, error ? 1 : 0);
+}
+
+// Check if export error flag is set
+bool PschGetExportError(void) {
+  if (psch_shared_state == nullptr) {
+    return false;
+  }
+  return pg_atomic_read_u32(&psch_shared_state->export_error) != 0;
 }
 
 // Get the background worker PID
