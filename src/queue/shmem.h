@@ -81,8 +81,13 @@ void PschShmemStartup(void);
 // Install shmem hooks (called from _PG_init)
 void PschInstallShmemHooks(void);
 
-// Enqueue an event to the ring buffer (returns true if successful, false if dropped)
+// Enqueue an event to the ring buffer. Returns true if the event was enqueued or
+// buffered locally for deferred flush; false if dropped due to overflow.
 bool PschEnqueueEvent(const PschEvent* event);
+
+// Enqueue a batch of events under a single lock acquisition.
+// Returns the number of events successfully enqueued (rest are dropped via overflow).
+int PschEnqueueBatch(const PschEvent* events, int count);
 
 // Dequeue an event from the ring buffer (returns true if event was available)
 bool PschDequeueEvent(PschEvent* event);

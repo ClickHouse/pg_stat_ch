@@ -42,9 +42,9 @@ extern "C" {
 
 #include "config/guc.h"
 #include "hooks/hooks.h"
+#include "queue/local_batch.h"
 #include "queue/shmem.h"
 
-// Shared memory state
 PschSharedState* psch_shared_state = nullptr;
 
 // Previous hook values for chaining
@@ -53,7 +53,6 @@ static shmem_startup_hook_type prev_shmem_startup_hook = nullptr;
 static shmem_request_hook_type prev_shmem_request_hook = nullptr;
 #endif
 
-// Get pointer to the ring buffer array (immediately follows the shared state)
 static inline PschEvent* GetRingBuffer(void) {
   return reinterpret_cast<PschEvent*>(reinterpret_cast<char*>(psch_shared_state) +
                                       sizeof(PschSharedState));
@@ -87,6 +86,12 @@ static void HandleOverflow() {
 
 // Check queue fullness and enqueue event if space available.
 // Called with lock held. Returns true if event was enqueued.
+//
+// SMART COPY: Instead of copying the full ~4.5KB PschEvent, we copy only the bytes
+// that contain actual data. For a typical pgbench query (~50 bytes, no error), this
+// copies ~600 bytes instead of ~4,500 bytes — 7.5x less data under the exclusive lock.
+// The two large buffers (err_message: 2KB, query: 2KB) are mostly empty; we copy
+// only their actual content based on the length fields.
 static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
@@ -99,7 +104,34 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   // Fast modulo via bitmask (requires power-of-2 capacity, enforced by GUC check)
   uint32 mask = capacity - 1;
   PschEvent* slot = &GetRingBuffer()[head & mask];
-  memcpy(slot, event, sizeof(PschEvent));
+
+  // 1. Copy header: all fixed fields up to err_message (includes err_message_len)
+  const size_t header_size = offsetof(PschEvent, err_message);
+  memcpy(slot, event, header_size);
+
+  // 2. Copy actual err_message content (usually 0 bytes for non-error events)
+  if (event->err_message_len > 0) {
+    uint16 len = Min(event->err_message_len, (uint16)(PSCH_MAX_ERR_MSG_LEN - 1));
+    memcpy(slot->err_message, event->err_message, len);
+    slot->err_message[len] = '\0';
+  } else {
+    slot->err_message[0] = '\0';
+  }
+
+  // 3. Copy mid section: application_name, client_addr, query_len
+  const size_t mid_offset = offsetof(PschEvent, application_name);
+  const size_t mid_size = offsetof(PschEvent, query) - mid_offset;
+  memcpy(reinterpret_cast<char*>(slot) + mid_offset,
+         reinterpret_cast<const char*>(event) + mid_offset, mid_size);
+
+  // 4. Copy actual query content (typically 20-200 bytes vs 2KB buffer)
+  if (event->query_len > 0) {
+    uint16 len = Min(event->query_len, (uint16)(PSCH_MAX_QUERY_LEN - 1));
+    memcpy(slot->query, event->query, len);
+    slot->query[len] = '\0';
+  } else {
+    slot->query[0] = '\0';
+  }
 
   // CRITICAL: Memory barrier ensures the event data is written to shared memory
   // before we update head. Without this, the consumer might read stale data on
@@ -111,7 +143,6 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   return true;
 }
 
-// Shutdown callback to log final stats
 static void PschShmemShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
   if (psch_shared_state != nullptr) {
     elog(LOG, "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
@@ -155,14 +186,12 @@ static void InitializeSharedState(void) {
   pg_atomic_init_u64(&psch_shared_state->tail, 0);
   pg_atomic_init_u64(&psch_shared_state->exported, 0);
 
-  // Initialize exporter stats
   pg_atomic_init_u64(&psch_shared_state->send_failures, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
   MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
   pg_atomic_init_u32(&psch_shared_state->bgworker_pid, 0);
 
-  // Zero-initialize the ring buffer
   MemSet(GetRingBuffer(), 0, psch_queue_capacity * sizeof(PschEvent));
 
   elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, size=%zu)", psch_queue_capacity,
@@ -198,14 +227,11 @@ static void PschShmemStartupHook(void) {
 
 void PschShmemRequest(void) {
 #if PG_VERSION_NUM < 150000
-  // For PG < 15, request resources directly
   RequestSharedResources();
 #endif
 }
 
-void PschShmemStartup(void) {
-  // This is called by PschShmemStartupHook
-}
+void PschShmemStartup(void) {}
 
 void PschInstallShmemHooks(void) {
 #if PG_VERSION_NUM >= 150000
@@ -265,18 +291,58 @@ bool PschEnqueueEvent(const PschEvent* event) {
     return false;
   }
 
-  // === SLOW PATH: Acquire lock and enqueue ===
-  bool result = false;
+  // === TRY-LOCK PATH: Attempt non-blocking lock ===
+  if (LWLockConditionalAcquire(psch_shared_state->lock, LW_EXCLUSIVE)) {
+    bool result = false;
+    PG_TRY();
+    { result = TryEnqueueLocked(event, capacity); }
+    PG_FINALLY();
+    { LWLockRelease(psch_shared_state->lock); }
+    PG_END_TRY();
+    PschSuppressErrorCapture(false);
+    return result;
+  }
 
+  // === CONTENDED PATH: Buffer locally, flush at transaction end ===
+  PschSuppressErrorCapture(false);
+  PschLocalBatchAdd(event);
+  return true;
+}
+
+// Enqueue a batch of events under a single lock acquisition.
+// Called by PschLocalBatchFlush to amortize lock overhead across multiple events.
+int PschEnqueueBatch(const PschEvent* events, int count) {
+  if (psch_shared_state == nullptr || !psch_enabled || count == 0)
+    return 0;
+
+  PschSuppressErrorCapture(true);
+  uint32 capacity = psch_shared_state->capacity;
+
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
+  pg_read_barrier();
+  uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  if (head - tail >= capacity) {
+    for (int i = 0; i < count; i++)
+      HandleOverflow();
+    PschSuppressErrorCapture(false);
+    return 0;
+  }
+
+  int enqueued = 0;
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   PG_TRY();
-  { result = TryEnqueueLocked(event, capacity); }
+  {
+    for (int i = 0; i < count; i++) {
+      if (TryEnqueueLocked(&events[i], capacity))
+        enqueued++;
+    }
+  }
   PG_FINALLY();
   { LWLockRelease(psch_shared_state->lock); }
   PG_END_TRY();
 
   PschSuppressErrorCapture(false);
-  return result;
+  return enqueued;
 }
 
 // Dequeue an event from the ring buffer (single-consumer, called by bgworker)
@@ -351,7 +417,6 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
     return;
   }
 
-  // Read cumulative counters first
   *enqueued = pg_atomic_read_u64(&psch_shared_state->enqueued);
   *dropped = pg_atomic_read_u64(&psch_shared_state->dropped);
   *exported = pg_atomic_read_u64(&psch_shared_state->exported);
@@ -360,7 +425,6 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   // Full barrier for consistent snapshot (counters before positions)
   pg_memory_barrier();
 
-  // Read current positions to calculate queue occupancy
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
   *queue_size = static_cast<uint32>(head - tail);
@@ -430,7 +494,6 @@ void PschRecordExportFailure(const char* error_msg) {
   LWLockRelease(psch_shared_state->lock);
 }
 
-// Get the background worker PID
 int PschGetBgworkerPid(void) {
   if (psch_shared_state == nullptr) {
     return 0;
@@ -438,7 +501,6 @@ int PschGetBgworkerPid(void) {
   return static_cast<int>(pg_atomic_read_u32(&psch_shared_state->bgworker_pid));
 }
 
-// Set the background worker PID
 void PschSetBgworkerPid(int pid) {
   if (psch_shared_state == nullptr) {
     return;
