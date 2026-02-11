@@ -61,7 +61,83 @@ static TimestampTz query_start_ts = 0;
 // System initialization flag - set after hooks are installed and shmem is ready
 static bool system_init = false;
 
-// Convert PostgreSQL CmdType to our PschCmdType
+static int GetClientAddress(char* buf, int buf_size);
+static void ResolveNames(PschEvent* event);
+
+static uint8 CopyName(char* dst, size_t dst_size, const char* src) {
+  size_t len = strlcpy(dst, src, dst_size);
+  return static_cast<uint8>(Min(len, dst_size - 1));
+}
+
+// Cache for session-stable values to avoid repeated catalog lookups on every query.
+// Following pg_stat_monitor's pattern of caching client IP (pg_stat_monitor.c:73-96).
+// Database name and client address never change within a session. Username is
+// re-resolved when userid changes (handles SET ROLE).
+struct BackendCache {
+  bool initialized;
+  char datname[NAMEDATALEN];
+  uint8 datname_len;
+  Oid cached_userid;
+  char username[NAMEDATALEN];
+  uint8 username_len;
+  char client_addr[46];  // INET6_ADDRSTRLEN
+  uint8 client_addr_len;
+};
+static BackendCache backend_cache = {};
+
+// Resolve and cache the current username. On initial resolve, falls back to
+// "<unknown>" if resolution fails. On SET ROLE re-resolve, keeps the existing
+// cached value on failure (better to show the old name than "<unknown>") and
+// leaves cached_userid unchanged so future calls can retry resolution.
+static void CacheUsername(Oid userid, bool fallback_on_null) {
+  const char* username = GetUserNameFromId(userid, true);
+  if (username != nullptr) {
+    backend_cache.username_len =
+        CopyName(backend_cache.username, sizeof(backend_cache.username), username);
+    backend_cache.cached_userid = userid;
+  } else if (fallback_on_null) {
+    backend_cache.username_len =
+        CopyName(backend_cache.username, sizeof(backend_cache.username), "<unknown>");
+    backend_cache.cached_userid = userid;
+  }
+}
+
+// Ensure the backend cache is populated. Called on each query; the first call
+// resolves datname and client_addr (session-stable), and all calls check whether
+// userid changed (SET ROLE) to re-resolve username.
+static void EnsureBackendCache(void) {
+  Oid userid = GetUserId();
+
+  if (!backend_cache.initialized) {
+    // Can't resolve catalog names outside a transaction
+    if (!IsTransactionState()) {
+      return;
+    }
+
+    // Database name (session-stable)
+    const char* datname = get_database_name(MyDatabaseId);
+    backend_cache.datname_len = CopyName(backend_cache.datname, sizeof(backend_cache.datname),
+                                         datname != nullptr ? datname : "<unknown>");
+
+    // Client address (session-stable)
+    backend_cache.client_addr_len = static_cast<uint8>(
+        GetClientAddress(backend_cache.client_addr, sizeof(backend_cache.client_addr)));
+
+    // Username (may change via SET ROLE)
+    CacheUsername(userid, true);
+
+    backend_cache.initialized = true;
+    return;
+  }
+
+  // Re-resolve username if userid changed (SET ROLE)
+  if (backend_cache.cached_userid != userid) {
+    if (IsTransactionState()) {
+      CacheUsername(userid, false);
+    }
+  }
+}
+
 static PschCmdType ConvertCmdType(CmdType cmd) {
   switch (cmd) {
     case CMD_SELECT:
@@ -85,7 +161,6 @@ static PschCmdType ConvertCmdType(CmdType cmd) {
   }
 }
 
-// Calculate time difference in microseconds
 static int64 TimeDiffMicrosec(struct timeval end, struct timeval start) {
   return (static_cast<int64>(end.tv_sec - start.tv_sec) * 1000000LL) +
          static_cast<int64>(end.tv_usec - start.tv_usec);
@@ -100,7 +175,6 @@ static void UnpackSqlState(int sql_state, char* buf) {
   buf[5] = '\0';
 }
 
-// Trim trailing whitespace in-place, return new length
 static size_t TrimTrailing(char* str, size_t len) {
   while (len > 0 && isspace(static_cast<unsigned char>(str[len - 1]))) {
     len--;
@@ -118,13 +192,10 @@ static size_t CopyTrimmed(char* dst, size_t dst_size, const char* src) {
       dst[0] = '\0';
     return 0;
   }
-  // Skip leading whitespace in source
   while (*src != '\0' && isspace(static_cast<unsigned char>(*src)))
     src++;
-  // Copy using strlcpy (returns src length, not bytes copied)
   size_t src_len = strlcpy(dst, src, dst_size);
   size_t len = Min(src_len, dst_size - 1);
-  // Trim trailing whitespace in place
   return TrimTrailing(dst, len);
 }
 
@@ -150,15 +221,12 @@ static PgBackendStatus* GetBackendStatus(void) {
 #endif
 }
 
-// Get application name for current backend
-// Returns the length of the string copied to buf
 static int GetApplicationName(char* buf, int buf_size) {
   // Try application_name GUC first (always up-to-date)
   if (application_name != nullptr && application_name[0] != '\0') {
     return static_cast<int>(CopyTrimmed(buf, buf_size, application_name));
   }
 
-  // Fall back to backend status
   PgBackendStatus* beentry = GetBackendStatus();
   if (beentry != nullptr && beentry->st_appname != nullptr) {
     return static_cast<int>(CopyTrimmed(buf, buf_size, beentry->st_appname));
@@ -168,8 +236,6 @@ static int GetApplicationName(char* buf, int buf_size) {
   return 0;
 }
 
-// Get client address for current backend as a string
-// Returns the length of the string copied to buf
 static int GetClientAddress(char* buf, int buf_size) {
   buf[0] = '\0';
 
@@ -178,7 +244,6 @@ static int GetClientAddress(char* buf, int buf_size) {
     return 0;
   }
 
-  // Get the client address as a string
   std::array<char, NI_MAXHOST> remote_host{};
 
   int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
@@ -199,7 +264,6 @@ static int GetClientAddress(char* buf, int buf_size) {
   return static_cast<int>(Min(src_len, static_cast<size_t>(buf_size - 1)));
 }
 
-// Copy buffer usage counters to event
 static void CopyBufferUsage(PschEvent* event, const BufferUsage* buf) {
   event->shared_blks_hit = buf->shared_blks_hit;
   event->shared_blks_read = buf->shared_blks_read;
@@ -231,22 +295,55 @@ static void CopyIoTiming(PschEvent* event, const BufferUsage* buf) {
 #endif
 }
 
-// Copy WAL usage to event
 static void CopyWalUsage(PschEvent* event, const WalUsage* wal) {
   event->wal_records = wal->wal_records;
   event->wal_fpi = wal->wal_fpi;
   event->wal_bytes = wal->wal_bytes;
 }
 
-// Copy client context (application name, client address) to event
+// Initialize PschEvent by zeroing only fixed-size fields (~550 bytes) instead of
+// the full struct (~4.5KB). The two large text buffers (err_message: 2KB, query: 2KB)
+// are just null-terminated since they'll be overwritten by CopyTrimmed/strlcpy or
+// left at len=0.
+static void InitEventPartial(PschEvent* event) {
+  // Zero header: all fixed fields before err_message (~430 bytes)
+  const size_t header_size = offsetof(PschEvent, err_message);
+  memset(event, 0, header_size);
+  event->err_message[0] = '\0';
+
+  // Zero mid section: application_name through query_len (~114 bytes)
+  const size_t mid_offset = offsetof(PschEvent, application_name);
+  const size_t mid_size = offsetof(PschEvent, query) - mid_offset;
+  memset(reinterpret_cast<char*>(event) + mid_offset, 0, mid_size);
+  event->query[0] = '\0';
+}
+
+static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level,
+                          PschCmdType cmd_type) {
+  InitEventPartial(event);
+  event->ts_start = ts_start;
+  event->dbid = MyDatabaseId;
+  event->userid = GetUserId();
+  event->pid = MyProcPid;
+  event->top_level = top_level;
+  event->cmd_type = cmd_type;
+  ResolveNames(event);
+}
+
 static void CopyClientContext(PschEvent* event) {
   event->application_name_len = static_cast<uint8>(
       GetApplicationName(event->application_name, sizeof(event->application_name)));
-  event->client_addr_len =
-      static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+
+  EnsureBackendCache();
+  if (backend_cache.initialized) {
+    memcpy(event->client_addr, backend_cache.client_addr, backend_cache.client_addr_len + 1);
+    event->client_addr_len = backend_cache.client_addr_len;
+  } else {
+    event->client_addr_len =
+        static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+  }
 }
 
-// Copy query text to event with truncation and whitespace trimming
 static void CopyQueryText(PschEvent* event, const char* query_text) {
   if (query_text != nullptr) {
     event->query_len =
@@ -254,37 +351,32 @@ static void CopyQueryText(PschEvent* event, const char* query_text) {
   }
 }
 
-// Resolve database and user names from OIDs (pg_stat_monitor pattern)
-// Must be called from a transaction context (foreground hooks)
+// Resolve database and user names, using the session cache when available.
+// Falls back to catalog lookups if cache hasn't been initialized yet (e.g.,
+// emit_log_hook fires before the first executor hook).
 static void ResolveNames(PschEvent* event) {
+  EnsureBackendCache();
+
+  if (backend_cache.initialized) {
+    memcpy(event->datname, backend_cache.datname, backend_cache.datname_len + 1);
+    event->datname_len = backend_cache.datname_len;
+    memcpy(event->username, backend_cache.username, backend_cache.username_len + 1);
+    event->username_len = backend_cache.username_len;
+    return;
+  }
+
+  // Fallback: resolve fresh (cache not yet initialized, e.g. emit_log_hook early)
   const char* datname = nullptr;
   const char* username = nullptr;
-
-  // Only resolve names if we're in a transaction state (catalog access is safe)
   if (IsTransactionState()) {
     datname = get_database_name(event->dbid);
     username = GetUserNameFromId(event->userid, true);
   }
 
-  // Fall back to placeholder if name resolution fails
-  if (datname == nullptr) {
-    datname = "<unknown>";
-  }
-  if (username == nullptr) {
-    username = "<unknown>";
-  }
-
-  // Copy names to event with length tracking using strlcpy
-  size_t dlen = strlcpy(event->datname, datname, sizeof(event->datname));
-  event->datname_len = static_cast<uint8>(Min(dlen, sizeof(event->datname) - 1));
-
-  size_t ulen = strlcpy(event->username, username, sizeof(event->username));
-  event->username_len = static_cast<uint8>(Min(ulen, sizeof(event->username) - 1));
-
-  // Note: get_database_name returns palloc'd memory that will be freed at end of
-  // transaction, GetUserNameFromId also returns palloc'd memory. We don't need to
-  // explicitly pfree since we're in a transaction context and using the memory
-  // immediately.
+  event->datname_len =
+      CopyName(event->datname, sizeof(event->datname), datname != nullptr ? datname : "<unknown>");
+  event->username_len = CopyName(event->username, sizeof(event->username),
+                                 username != nullptr ? username : "<unknown>");
 }
 
 // Copy JIT instrumentation to event (PG15+)
@@ -322,20 +414,11 @@ static void CopyParallelWorkerInfo([[maybe_unused]] PschEvent* event,
 #endif
 }
 
-// Build a PschEvent from a QueryDesc
 static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
                                     int64 cpu_sys_us) {
-  MemSet(event, 0, sizeof(*event));
-
-  // Basic identification
-  event->ts_start = query_start_ts;
-  event->dbid = MyDatabaseId;
-  event->userid = GetUserId();
-  ResolveNames(event);
-  event->pid = MyProcPid;
+  InitBaseEvent(event, query_start_ts, current_query_is_top_level,
+                ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
-  event->top_level = current_query_is_top_level;
-  event->cmd_type = ConvertCmdType(query_desc->operation);
   event->rows = query_desc->estate->es_processed;
   event->cpu_user_time_us = cpu_user_us;
   event->cpu_sys_time_us = cpu_sys_us;
@@ -363,7 +446,6 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
 extern "C" {
 
 static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
-  // Skip if this is a parallel worker
   if (IsParallelWorker()) {
     if (prev_executor_start != nullptr) {
       prev_executor_start(query_desc, eflags);
@@ -385,14 +467,12 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     current_query_is_top_level = false;
   }
 
-  // Call previous hook or standard function
   if (prev_executor_start != nullptr) {
     prev_executor_start(query_desc, eflags);
   } else {
     standard_ExecutorStart(query_desc, eflags);
   }
 
-  // Set up instrumentation if enabled and query has a valid queryId
   if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
     if (query_desc->totaltime == nullptr) {
       MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
@@ -412,7 +492,6 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
 static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint64 count,
                             bool execute_once) {
 #endif
-  // Skip parallel workers
   if (IsParallelWorker()) {
 #if PG_VERSION_NUM >= 180000
     if (prev_executor_run != nullptr) {
@@ -453,7 +532,6 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
 }
 
 static void PschExecutorFinish(QueryDesc* query_desc) {
-  // Skip parallel workers
   if (IsParallelWorker()) {
     if (prev_executor_finish != nullptr) {
       prev_executor_finish(query_desc);
@@ -478,7 +556,6 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
 }
 
 static void PschExecutorEnd(QueryDesc* query_desc) {
-  // Skip if disabled, parallel worker, or no valid queryId
   if (!psch_enabled || IsParallelWorker() || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
     if (prev_executor_end != nullptr) {
       prev_executor_end(query_desc);
@@ -488,7 +565,6 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     return;
   }
 
-  // Finalize instrumentation
   if (query_desc->totaltime != nullptr) {
     InstrEndLoop(query_desc->totaltime);
   }
@@ -502,12 +578,10 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, rusage_start.ru_stime);
   }
 
-  // Build and enqueue the event
   PschEvent event;
   BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
 
-  // Call previous hook or standard function
   if (prev_executor_end != nullptr) {
     prev_executor_end(query_desc);
   } else {
@@ -520,18 +594,8 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
                                  uint64 duration_us, bool is_top_level, uint64 rows,
                                  BufferUsage* bufusage, WalUsage* walusage, int64 cpu_user_us,
                                  int64 cpu_sys_us) {
-  MemSet(event, 0, sizeof(*event));
-
-  // Basic identification
-  event->ts_start = start_ts;
+  InitBaseEvent(event, start_ts, is_top_level, PSCH_CMD_UTILITY);
   event->duration_us = duration_us;
-  event->dbid = MyDatabaseId;
-  event->userid = GetUserId();
-  ResolveNames(event);
-  event->pid = MyProcPid;
-  event->queryid = 0;  // Utility statements don't have queryId
-  event->top_level = is_top_level;
-  event->cmd_type = PSCH_CMD_UTILITY;
   event->rows = rows;
   event->cpu_user_time_us = cpu_user_us;
   event->cpu_sys_time_us = cpu_sys_us;
@@ -565,7 +629,6 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
   } while (0)
 #endif
 
-// Check if we should track this utility statement
 static bool ShouldTrackUtility(Node* parsetree) {
   if (!psch_enabled || IsParallelWorker()) {
     return false;
@@ -578,7 +641,6 @@ static bool ShouldTrackUtility(Node* parsetree) {
   return true;
 }
 
-// Get row count from QueryCompletion for utility statements
 static uint64 GetUtilityRowCount(QueryCompletion* qc) {
   if (qc == nullptr) {
     return 0;
@@ -594,7 +656,6 @@ static uint64 GetUtilityRowCount(QueryCompletion* qc) {
   }
 }
 
-// Execute utility with nesting level tracking
 static void ExecuteUtilityWithNesting(PlannedStmt* pstmt, const char* queryString,
 #if PG_VERSION_NUM >= 140000
                                       bool readOnlyTree,
@@ -637,19 +698,16 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   instr_time start_time;
   INSTR_TIME_SET_CURRENT(start_time);
 
-  // Execute the utility
 #if PG_VERSION_NUM >= 140000
   ExecuteUtilityWithNesting(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
 #else
   ExecuteUtilityWithNesting(pstmt, queryString, context, params, queryEnv, dest, qc);
 #endif
 
-  // Calculate duration
   instr_time duration;
   INSTR_TIME_SET_CURRENT(duration);
   INSTR_TIME_SUBTRACT(duration, start_time);
 
-  // Calculate buffer/WAL deltas
   BufferUsage bufusage_delta;
   WalUsage walusage_delta;
   MemSet(&bufusage_delta, 0, sizeof(BufferUsage));
@@ -657,7 +715,6 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   BufferUsageAccumDiff(&bufusage_delta, &pgBufferUsage, &bufusage_start);
   WalUsageAccumDiff(&walusage_delta, &pgWalUsage, &walusage_start);
 
-  // Calculate CPU time delta
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
   struct rusage rusage_util_end;
@@ -666,7 +723,6 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
     cpu_sys_us = TimeDiffMicrosec(rusage_util_end.ru_stime, rusage_util_start.ru_stime);
   }
 
-  // Build and enqueue event
   PschEvent event;
   BuildEventForUtility(&event, queryString, start_ts, INSTR_TIME_GET_MICROSEC(duration),
                        is_top_level, GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta,
@@ -716,37 +772,21 @@ static void CaptureLogEvent(ErrorData* edata) {
   const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
 
   PschEvent event;
-  MemSet(&event, 0, sizeof(event));
+  InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
 
-  // Basic fields
-  event.ts_start = GetCurrentTimestamp();
-  event.dbid = MyDatabaseId;
-  event.userid = GetUserId();
-  event.pid = MyProcPid;
-  event.top_level = (nesting_level == 0);
-  event.cmd_type = PSCH_CMD_UNKNOWN;
-
-  // Error details
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
   event.err_elevel = static_cast<uint8>(edata->elevel);
 
-  // Error message (trim whitespace)
   if (edata->message != nullptr) {
     event.err_message_len =
         static_cast<uint16>(CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
   }
 
-  // Query text (trim whitespace)
   if (query[0] != '\0') {
     event.query_len = static_cast<uint16>(CopyTrimmed(event.query, PSCH_MAX_QUERY_LEN, query));
   }
 
-  // Resolve names and client context
-  ResolveNames(&event);
-  event.application_name_len = static_cast<uint8>(
-      GetApplicationName(event.application_name, sizeof(event.application_name)));
-  event.client_addr_len =
-      static_cast<uint8>(GetClientAddress(event.client_addr, sizeof(event.client_addr)));
+  CopyClientContext(&event);
 
   // Enqueue with recursion guard
   disable_error_capture = true;
@@ -782,7 +822,6 @@ void PschSuppressErrorCapture(bool suppress) {
 
 void PschInstallHooks(void) {
 #if PG_VERSION_NUM >= 140000
-  // Enable query ID calculation
   EnableQueryId();
 #endif
 
