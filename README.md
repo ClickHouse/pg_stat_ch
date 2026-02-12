@@ -6,13 +6,14 @@ A PostgreSQL extension that captures per-query execution telemetry and exports i
 
 - [Overview](#overview)
 - [Architecture](#architecture)
-  - [Hooks](#hooks)
 - [Features](#features)
 - [Supported Versions](#supported-versions)
 - [Building from Source](#building-from-source)
 - [Installation](#installation)
+- [Recommended PostgreSQL Settings](#recommended-postgresql-settings)
 - [Configuration](#configuration)
 - [SQL API](#sql-api)
+- [Example Queries](#example-queries)
 - [ClickHouse Setup](#clickhouse-setup)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
@@ -41,44 +42,6 @@ PostgreSQL Hooks (foreground) → Shared Memory Queue → Background Worker → 
 3. **Background Worker** dequeues batches and exports to ClickHouse
 4. **ClickHouse** stores raw events in `events_raw` table; views/MVs provide aggregates
 
-### Hooks
-
-pg_stat_ch uses PostgreSQL's executor and utility hooks to capture telemetry:
-
-| Hook | Purpose |
-|------|---------|
-| `ExecutorStart_hook` | Initialize instrumentation, capture start time and CPU baseline |
-| `ExecutorRun/Finish_hook` | Track query nesting level |
-| `ExecutorEnd_hook` | Extract metrics from QueryDesc, enqueue event |
-| `ProcessUtility_hook` | Capture DDL and utility statements (CREATE, COPY, VACUUM, etc.) |
-| `emit_log_hook` | Capture errors and warnings (SQLSTATE, error level) |
-
-**Key design decisions:**
-- Parallel workers are skipped (metrics aggregated by leader)
-- Nesting level tracked to identify top-level vs nested queries
-- Hooks chain to previous values for compatibility with other extensions
-- Error capture uses deadlock prevention to avoid recursive calls
-
-See [docs/hooks.md](docs/hooks.md) for detailed documentation on each hook, captured metrics, and code examples.
-
-### Source Structure
-
-```
-src/
-├── pg_stat_ch.cc              # Entry point, _PG_init(), SQL functions
-├── config/
-│   └── guc.cc                 # GUC variable definitions
-├── hooks/
-│   └── hooks.cc               # PostgreSQL executor/utility hooks
-├── queue/
-│   ├── event.h                # Event structure (~2KB fixed size)
-│   └── shmem.cc               # Shared memory ring buffer
-├── worker/
-│   └── bgworker.cc            # Background worker main loop
-└── export/
-    └── clickhouse_exporter.cc # ClickHouse client integration
-```
-
 ## Features
 
 - **Full Query Telemetry**: Timing, row counts, buffer usage, WAL usage, CPU time
@@ -92,50 +55,29 @@ src/
 
 ## Supported Versions
 
-| PostgreSQL | Status | New Features |
-|------------|--------|--------------|
-| 18 | Full support | Parallel worker stats (`parallel_workers_planned/launched`) |
-| 17 | Full support | JIT deform time, separate local/shared I/O timing, custom wait event name |
-| 16 | Full support | Baseline: all core metrics |
-
-See [docs/version-compatibility.md](docs/version-compatibility.md) for detailed feature matrix, field descriptions, and example queries.
+PostgreSQL 16, 17, and 18 are fully supported. See [docs/version-compatibility.md](docs/version-compatibility.md) for the feature matrix and version-specific fields.
 
 ## Building from Source
 
-### Prerequisites
+Prerequisites:
 
-- CMake 3.16+
-- C++17 compiler (GCC 9+, Clang 10+)
+- CMake 3.16+, C++17 compiler (GCC 9+, Clang 10+)
 - PostgreSQL 16+ development headers
 - [mise](https://mise.jdx.dev/) (recommended) or manual PostgreSQL installation
 
-### Build Commands
-
-Using mise (recommended):
-
-```bash
-mise run build              # Debug build (PG 18)
-mise run build:release      # Release build
-mise run build:16           # Build for PostgreSQL 16
-mise run build:17           # Build for PostgreSQL 17
-mise run build:18           # Build for PostgreSQL 18
-mise run install            # Install the extension
-```
-
-Manual build:
-
-```bash
-cmake -B build -G Ninja -DPG_CONFIG=/path/to/pg_config
-cmake --build build
-cmake --install build
-```
-
-### Dependencies
-
-The [clickhouse-cpp](https://github.com/ClickHouse/clickhouse-cpp) library is vendored as a git submodule and **statically linked** into the extension. This means the final `pg_stat_ch.so` is self-contained with no external runtime dependencies on clickhouse-cpp.
+[clickhouse-cpp](https://github.com/ClickHouse/clickhouse-cpp) is vendored as a submodule and statically linked.
 
 ```bash
 git submodule update --init --recursive
+
+# Using mise (recommended)
+mise run build              # Debug build (use build:16/17/18 for specific versions)
+mise run build:release      # Release build
+mise run install            # Install the extension
+
+# Or manually
+cmake -B build -G Ninja -DPG_CONFIG=/path/to/pg_config
+cmake --build build && cmake --install build
 ```
 
 ## Installation
@@ -151,6 +93,10 @@ shared_preload_libraries = 'pg_stat_ch'
 pg_stat_ch.clickhouse_host = 'localhost'
 pg_stat_ch.clickhouse_port = 9000
 pg_stat_ch.clickhouse_database = 'pg_stat_ch'
+
+# TLS (recommended for production)
+pg_stat_ch.clickhouse_use_tls = on
+pg_stat_ch.clickhouse_skip_tls_verify = off
 ```
 
 ### 2. Restart PostgreSQL
@@ -172,6 +118,12 @@ SELECT pg_stat_ch_version();
 SELECT * FROM pg_stat_ch_stats();
 ```
 
+## Recommended PostgreSQL Settings
+
+```ini
+track_io_timing = on   # Enables I/O timing columns for captured events
+```
+
 ## Configuration
 
 ### GUC Variables
@@ -187,77 +139,50 @@ SELECT * FROM pg_stat_ch_stats();
 | `pg_stat_ch.queue_capacity` | int | `65536` | Restart | Ring buffer size (must be power of 2) |
 | `pg_stat_ch.flush_interval_ms` | int | `1000` | SIGHUP | Export batch interval in milliseconds |
 | `pg_stat_ch.batch_max` | int | `10000` | SIGHUP | Maximum events per ClickHouse insert |
+| `pg_stat_ch.clickhouse_use_tls` | bool | `off` | Restart | Enable TLS for ClickHouse connections |
+| `pg_stat_ch.clickhouse_skip_tls_verify` | bool | `off` | Restart | Skip TLS certificate verification (insecure) |
 | `pg_stat_ch.log_min_elevel` | enum | `warning` | Superuser | Minimum error level to capture (debug5..panic) |
 
 See [Error Level Values](docs/version-compatibility.md#error-fields) for the complete list of error levels and their numeric values in ClickHouse.
 
 ## SQL API
 
-### `pg_stat_ch_version()`
+| Function | Description |
+|----------|-------------|
+| `pg_stat_ch_version()` | Returns extension version string |
+| `pg_stat_ch_stats()` | Queue and exporter statistics ([column details](docs/troubleshooting.md#sql-api-reference)) |
+| `pg_stat_ch_reset()` | Reset all queue counters to zero |
+| `pg_stat_ch_flush()` | Trigger immediate flush of queued events to ClickHouse |
 
-Returns the extension version string.
+## Example Queries
 
-```sql
-SELECT pg_stat_ch_version();
--- Returns: '0.1.0' (or git commit hash)
-```
-
-### `pg_stat_ch_stats()`
-
-Returns queue and exporter statistics:
+Raw per-execution events enable percentiles, time-series, and per-app drill-downs:
 
 ```sql
-SELECT * FROM pg_stat_ch_stats();
+-- Slowest queries for a specific application, with percentiles
+SELECT query_id,
+       count() AS calls,
+       quantile(0.95)(duration_us) / 1000 AS p95_ms,
+       quantile(0.99)(duration_us) / 1000 AS p99_ms
+FROM pg_stat_ch.events_raw
+WHERE app = 'myapp'
+  AND ts_start > now() - INTERVAL 1 HOUR
+GROUP BY query_id
+ORDER BY p99_ms DESC
+LIMIT 10;
 ```
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `enqueued_events` | bigint | Total events added to queue |
-| `dropped_events` | bigint | Events dropped due to full queue |
-| `exported_events` | bigint | Events successfully sent to ClickHouse |
-| `send_failures` | bigint | Failed export attempts |
-| `last_success_ts` | timestamptz | Last successful export timestamp |
-| `last_error_text` | text | Most recent error message |
-| `last_error_ts` | timestamptz | Most recent error timestamp |
-| `queue_size` | int | Current events in queue |
-| `queue_capacity` | int | Maximum queue capacity |
-| `queue_usage_pct` | float | Queue utilization percentage |
-
-### `pg_stat_ch_reset()`
-
-Resets all queue counters to zero.
-
-```sql
-SELECT pg_stat_ch_reset();
-```
-
-### `pg_stat_ch_flush()`
-
-Triggers an immediate flush of queued events to ClickHouse (signals the background worker).
-
-```sql
-SELECT pg_stat_ch_flush();
-```
+See [docs/clickhouse.md](docs/clickhouse.md) for materialized view definitions and more query examples.
 
 ## ClickHouse Setup
 
 ```bash
-# Start ClickHouse with schema pre-created
-docker compose -f docker/docker-compose.test.yml up -d
-
-# Or via mise
-mise run clickhouse:start
+docker compose -f docker/docker-compose.test.yml up -d   # Dev (schema pre-created)
+mise run clickhouse:start                                 # Or via mise
+clickhouse-client < docker/init/00-schema.sql             # Production
 ```
 
-For production, apply the canonical schema directly:
-
-```bash
-clickhouse-client < docker/init/00-schema.sql
-```
-
-The schema creates `events_raw` plus 4 materialized views for dashboards (recent events, query stats with percentiles, load by app/user, error tracking).
-
-See [docs/clickhouse.md](docs/clickhouse.md) for the full setup guide, schema overview, materialized view explanations, and example queries.
+Creates `events_raw` plus 4 materialized views (percentiles, load by app/user, error tracking). See [docs/clickhouse.md](docs/clickhouse.md) for the full setup guide and schema details.
 
 ## Testing
 

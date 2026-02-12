@@ -108,20 +108,6 @@ The background worker appears as "PgStatChExporter" in `pg_stat_activity.wait_ev
 
 Uses `pgstat_get_beentry_by_proc_number()` for O(1) backend status lookup instead of iterating all backends (internal optimization, no user-visible change).
 
-### PostgreSQL 16 (Baseline)
-
-All core features are available:
-
-- **Buffer Usage**: Tracks all block access patterns (shared, local, temp) with hit/read/dirtied/written counts
-- **Shared I/O Timing**: Read/write time for shared buffers (requires `track_io_timing = on`)
-- **Temp I/O Timing**: Read/write time for temp blocks
-- **WAL Usage**: Records generated, full page images, total bytes
-- **CPU Time**: User and system CPU time via `getrusage(RUSAGE_SELF)`
-- **JIT Instrumentation**: Function count and timing for generation/inlining/optimization/emission phases
-- **MERGE Command**: Full support for SQL MERGE statements (introduced in PG15)
-- **Error Capture**: SQLSTATE codes and error levels via `emit_log_hook`
-- **Client Context**: Application name and client IP address
-
 ## Field Reference
 
 ### Timing Fields
