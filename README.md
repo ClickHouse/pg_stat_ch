@@ -156,19 +156,19 @@ See [Error Level Values](docs/version-compatibility.md#error-fields) for the com
 
 ## Example Queries
 
-With raw events in ClickHouse, you get analytics that pg_stat_statements can't provide:
+Raw per-execution events enable percentiles, time-series, and per-app drill-downs:
 
 ```sql
--- Latency percentiles per query (last hour)
+-- Slowest queries for a specific application, with percentiles
 SELECT query_id,
-       count() AS executions,
-       quantile(0.50)(duration_us) AS p50_us,
-       quantile(0.95)(duration_us) AS p95_us,
-       quantile(0.99)(duration_us) AS p99_us
+       count() AS calls,
+       quantile(0.95)(duration_us) / 1000 AS p95_ms,
+       quantile(0.99)(duration_us) / 1000 AS p99_ms
 FROM pg_stat_ch.events_raw
-WHERE ts_start > now() - INTERVAL 1 HOUR
+WHERE app = 'myapp'
+  AND ts_start > now() - INTERVAL 1 HOUR
 GROUP BY query_id
-ORDER BY p99_us DESC
+ORDER BY p99_ms DESC
 LIMIT 10;
 ```
 

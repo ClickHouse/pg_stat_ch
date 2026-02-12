@@ -97,46 +97,46 @@ Recent errors with a 7-day TTL, filtered from `events_raw` where `err_elevel > 0
 
 ## Example Queries
 
-### Recent Slow Queries (>100ms)
+Queries follow a typical workflow: find problems with MVs, then drill into raw events.
 
-```sql
-SELECT ts_start, db, duration_us/1000 AS duration_ms, query
-FROM pg_stat_ch.events_raw
-WHERE duration_us > 100000
-ORDER BY ts_start DESC
-LIMIT 20;
-```
+### Find Slowest Queries (MV)
 
-### Query Statistics by query_id
+Identify worst tail latency from the pre-aggregated `query_stats_5m` view. The `-State`/`-Merge` pattern is how ClickHouse finalizes pre-aggregated columns.
 
 ```sql
 SELECT
     query_id,
     cmd_type,
-    count() AS calls,
-    avg(duration_us) AS avg_us,
-    quantile(0.95)(duration_us) AS p95_us,
-    sum(rows) AS total_rows
-FROM pg_stat_ch.events_raw
-WHERE ts_start > now() - INTERVAL 1 HOUR
+    countMerge(calls_state) AS calls,
+    round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 1 HOUR
 GROUP BY query_id, cmd_type
-ORDER BY p95_us DESC;
+ORDER BY p99_ms DESC
+LIMIT 10;
 ```
 
-### Errors by SQLSTATE
+### Latency Trend for a Specific Query
+
+After finding a slow `query_id` above, see how its latency changes over time. Impossible with pg_stat_statements since it only stores cumulative aggregates.
 
 ```sql
 SELECT
-    err_sqlstate,
-    count() AS errors,
-    any(query) AS sample_query
+    toStartOfFiveMinutes(ts_start) AS bucket,
+    count() AS calls,
+    quantile(0.95)(duration_us) / 1000 AS p95_ms
 FROM pg_stat_ch.events_raw
-WHERE err_elevel >= 21  -- ERROR level and above
-GROUP BY err_sqlstate
-ORDER BY errors DESC;
+WHERE query_id = 14460383662181259114  -- from the query above
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
 ```
 
 ### Cache Miss Outliers
+
+Find individual executions that read the most from disk.
 
 ```sql
 SELECT
@@ -154,19 +154,39 @@ ORDER BY shared_blks_read DESC
 LIMIT 20;
 ```
 
-### QPS Over Time
+### Errors by SQLSTATE
+
+Find which error types are most frequent. Filters on `err_elevel >= 21` (ERROR and above) to skip warnings.
+
+```sql
+SELECT
+    err_sqlstate,
+    count() AS errors,
+    any(query) AS sample_query
+FROM pg_stat_ch.events_raw
+WHERE err_elevel >= 21
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY err_sqlstate
+ORDER BY errors DESC;
+```
+
+### QPS Over Time (MV)
+
+Time-series throughput from the pre-aggregated view. Each bucket is 5 minutes, so divide by 300 for per-second rate.
 
 ```sql
 SELECT
     bucket,
-    countMerge(calls_state) / 300 AS qps  -- 300 seconds = 5 minutes
+    countMerge(calls_state) / 300 AS qps
 FROM pg_stat_ch.query_stats_5m
 WHERE bucket >= now() - INTERVAL 24 HOUR
 GROUP BY bucket
 ORDER BY bucket;
 ```
 
-### Load by Application
+### Load by Application (MV)
+
+Rank applications by total query time to find the heaviest consumers.
 
 ```sql
 SELECT
@@ -176,7 +196,7 @@ SELECT
     round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms,
     sumMerge(errors_sum_state) AS errors
 FROM pg_stat_ch.db_app_user_1m
-WHERE bucket >= now() - INTERVAL 30 MINUTE
+WHERE bucket >= now() - INTERVAL 24 HOUR
 GROUP BY app
 ORDER BY total_seconds DESC;
 ```
