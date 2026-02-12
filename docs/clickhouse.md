@@ -25,7 +25,7 @@ The schema file ([`docker/init/00-schema.sql`](/docker/init/00-schema.sql)) is t
 - Full `events_raw` table with all columns documented (what metrics mean, when values are HIGH/LOW)
 - 4 materialized views for common analytics patterns
 - Column comments explaining how to interpret each metric
-- Example queries for dashboards and debugging
+- Canonical table/materialized-view DDL used by deployments
 
 ## Schema Overview
 
