@@ -111,13 +111,19 @@ static void ExportBatchWithRecovery() {
     }
     PG_END_TRY();
 
-    if (exported < psch_batch_max) break;
+    if (exported < psch_batch_max) {
+      break;
+    }
 
     // Process signals between batches to stay responsive
-    if (ProcSignalBarrierPending) ProcessProcSignalBarrier();
+    if (ProcSignalBarrierPending) {
+      ProcessProcSignalBarrier();
+    }
     CHECK_FOR_INTERRUPTS();
     HandleConfigReload();
-    if (!psch_enabled) break;
+    if (!psch_enabled) {
+      break;
+    }
   }
 
   pgstat_report_activity(STATE_IDLE, nullptr);
