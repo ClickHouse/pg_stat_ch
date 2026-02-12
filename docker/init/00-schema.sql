@@ -7,7 +7,7 @@
 -- This file is the single source of truth for the pg_stat_ch ClickHouse schema.
 -- It serves a dual role:
 --   1. Docker init script (applied automatically by docker-compose)
---   2. Schema documentation (column comments, MV explanations, example queries)
+--   2. Schema documentation (column comments, MV explanations)
 --
 -- For production deployments:  clickhouse-client < docker/init/00-schema.sql
 -- For documentation:           see docs/clickhouse.md
@@ -32,7 +32,7 @@ DROP TABLE IF EXISTS pg_stat_ch.events_raw;
 -- exported in batches by the pg_stat_ch background worker.
 --
 -- Partitioned by date for efficient time-range queries and data retention.
--- Ordered by (ts_start, db, query_id) for fast lookups of recent queries.
+-- Ordered by ts_start for efficient global time-range scans.
 --
 -- ============================================================================
 
@@ -45,13 +45,13 @@ CREATE TABLE pg_stat_ch.events_raw
 
     duration_us UInt64 COMMENT 'Total query execution time in microseconds. HIGH: slow query, investigate EXPLAIN. LOW: fast query. Compare with p95/p99 from query_stats_5m to identify outliers.',
 
-    db LowCardinality(String) COMMENT 'PostgreSQL database name. Use for multi-tenant filtering and per-database load analysis.',
+    dboid UInt32 COMMENT 'PostgreSQL database OID (MyDatabaseId). Stable numeric identifier for per-database filtering and multi-tenant analysis.',
 
-    username LowCardinality(String) COMMENT 'PostgreSQL user/role name. Useful for auditing and per-user resource tracking.',
+    useroid UInt32 COMMENT 'PostgreSQL role OID (GetUserId). Stable numeric identifier for auditing and per-user resource tracking.',
 
     pid Int32 COMMENT 'PostgreSQL backend process ID. Correlate with pg_stat_activity for session debugging.',
 
-    query_id UInt64 COMMENT '64-bit hash identifying normalized queries. Queries differing only in constants share the same query_id. Use for aggregating statistics across similar queries.',
+    query_id Int64 COMMENT '64-bit hash identifying normalized queries. Queries differing only in constants share the same query_id. Use for aggregating statistics across similar queries.',
 
     cmd_type LowCardinality(String) COMMENT 'Command type: SELECT, INSERT, UPDATE, DELETE, MERGE, UTILITY, or UNKNOWN. Use for workload characterization (read-heavy vs write-heavy).',
 
@@ -193,7 +193,7 @@ CREATE TABLE pg_stat_ch.events_raw
 )
 ENGINE = MergeTree
 PARTITION BY toDate(ts_start)
-ORDER BY (ts_start, db, query_id);
+ORDER BY ts_start;
 
 
 -- ============================================================================
@@ -213,7 +213,7 @@ ORDER BY (ts_start, db, query_id);
 --   - events_raw can have longer retention (days/weeks)
 --
 -- EXAMPLE QUERY:
---   SELECT ts_start, db, duration_us/1000 AS ms, substring(query, 1, 100)
+--   SELECT ts_start, dboid, duration_us/1000 AS ms, substring(query, 1, 100)
 --   FROM pg_stat_ch.events_recent_1h
 --   WHERE ts_start > now() - INTERVAL 5 MINUTE
 --   ORDER BY ts_start DESC
@@ -226,7 +226,7 @@ DROP TABLE IF EXISTS pg_stat_ch.events_recent_1h;
 CREATE MATERIALIZED VIEW pg_stat_ch.events_recent_1h
 ENGINE = MergeTree
 PARTITION BY toDate(ts_start)
-ORDER BY (ts_start, db, query_id)
+ORDER BY (ts_start, dboid, query_id)
 TTL toDateTime(ts_start) + INTERVAL 1 HOUR DELETE
 AS
 SELECT *
@@ -278,8 +278,8 @@ DROP TABLE IF EXISTS pg_stat_ch.query_stats_5m;
 CREATE MATERIALIZED VIEW pg_stat_ch.query_stats_5m
 (
     bucket DateTime COMMENT '5-minute time bucket start',
-    db LowCardinality(String) COMMENT 'Database name',
-    query_id UInt64 COMMENT 'Normalized query identifier',
+    dboid UInt32 COMMENT 'Database OID',
+    query_id Int64 COMMENT 'Normalized query identifier',
     cmd_type LowCardinality(String) COMMENT 'Command type (SELECT, INSERT, etc.)',
 
     calls_state AggregateFunction(count) COMMENT 'Call count state. Finalize with countMerge().',
@@ -294,11 +294,11 @@ CREATE MATERIALIZED VIEW pg_stat_ch.query_stats_5m
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMMDD(bucket)
-ORDER BY (bucket, db, query_id, cmd_type)
+ORDER BY (bucket, dboid, query_id, cmd_type)
 AS
 SELECT
     toStartOfInterval(toDateTime(ts_start), INTERVAL 5 MINUTE) AS bucket,
-    db,
+    dboid,
     query_id,
     cmd_type,
 
@@ -312,7 +312,7 @@ SELECT
     sumState(shared_blks_hit) AS shared_hit_sum_state,
     sumState(shared_blks_read) AS shared_read_sum_state
 FROM pg_stat_ch.events_raw
-GROUP BY bucket, db, query_id, cmd_type;
+GROUP BY bucket, dboid, query_id, cmd_type;
 
 
 -- ============================================================================
@@ -343,14 +343,14 @@ GROUP BY bucket, db, query_id, cmd_type;
 -- EXAMPLE: Error rate by database and user
 --
 --   SELECT
---     db,
---     username,
+--     dboid,
+--     useroid,
 --     countMerge(calls_state) AS queries,
 --     sumMerge(errors_sum_state) AS errors,
 --     round(100 * sumMerge(errors_sum_state) / countMerge(calls_state), 2) AS error_pct
 --   FROM pg_stat_ch.db_app_user_1m
 --   WHERE bucket >= now() - INTERVAL 1 HOUR
---   GROUP BY db, username
+--   GROUP BY dboid, useroid
 --   HAVING errors > 0
 --   ORDER BY error_pct DESC;
 --
@@ -361,9 +361,9 @@ DROP TABLE IF EXISTS pg_stat_ch.db_app_user_1m;
 CREATE MATERIALIZED VIEW pg_stat_ch.db_app_user_1m
 (
     bucket DateTime COMMENT '1-minute time bucket start',
-    db LowCardinality(String) COMMENT 'Database name',
+    dboid UInt32 COMMENT 'Database OID',
     app LowCardinality(String) COMMENT 'Application name',
-    username LowCardinality(String) COMMENT 'PostgreSQL username',
+    useroid UInt32 COMMENT 'PostgreSQL role OID',
     cmd_type LowCardinality(String) COMMENT 'Command type',
 
     calls_state AggregateFunction(count) COMMENT 'Query count state. Finalize with countMerge().',
@@ -373,13 +373,13 @@ CREATE MATERIALIZED VIEW pg_stat_ch.db_app_user_1m
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMMDD(bucket)
-ORDER BY (bucket, db, app, username, cmd_type)
+ORDER BY (bucket, dboid, app, useroid, cmd_type)
 AS
 SELECT
     toStartOfMinute(toDateTime(ts_start)) AS bucket,
-    db,
+    dboid,
     app,
-    username,
+    useroid,
     cmd_type,
 
     countState() AS calls_state,
@@ -387,7 +387,7 @@ SELECT
     quantilesTDigestState(0.95, 0.99)(duration_us) AS duration_q_state,
     sumState(toUInt64(err_elevel > 0)) AS errors_sum_state
 FROM pg_stat_ch.events_raw
-GROUP BY bucket, db, app, username, cmd_type;
+GROUP BY bucket, dboid, app, useroid, cmd_type;
 
 
 -- ============================================================================
@@ -410,8 +410,8 @@ GROUP BY bucket, db, app, username, cmd_type;
 --
 --   SELECT
 --     ts_start,
---     db,
---     username,
+--     dboid,
+--     useroid,
 --     app,
 --     err_sqlstate,
 --     err_message,
@@ -451,13 +451,13 @@ DROP TABLE IF EXISTS pg_stat_ch.errors_recent;
 CREATE MATERIALIZED VIEW pg_stat_ch.errors_recent
 ENGINE = MergeTree
 PARTITION BY toDate(ts_start)
-ORDER BY (ts_start, db, err_sqlstate)
+ORDER BY (ts_start, dboid, err_sqlstate)
 TTL toDateTime(ts_start) + INTERVAL 7 DAY DELETE
 AS
 SELECT
     ts_start,
-    db,
-    username,
+    dboid,
+    useroid,
     app,
     client_addr,
     pid,
@@ -468,93 +468,3 @@ SELECT
     query
 FROM pg_stat_ch.events_raw
 WHERE err_elevel > 0;
-
-
--- ============================================================================
--- Quick Reference: Example Queries
--- ============================================================================
---
--- The following queries demonstrate common analytics patterns using the
--- schema above. Copy and adapt for your dashboards and alerts.
---
--- ============================================================================
-
--- Example 1: Recent slow queries (>100ms)
---
--- SELECT ts_start, db, duration_us/1000 AS ms, substring(query, 1, 200)
--- FROM pg_stat_ch.events_raw
--- WHERE duration_us > 100000
---   AND ts_start > now() - INTERVAL 1 HOUR
--- ORDER BY ts_start DESC
--- LIMIT 20;
-
--- Example 2: Cache hit ratio by query (identify queries with poor cache usage)
---
--- SELECT
---   query_id,
---   sumMerge(shared_hit_sum_state) AS hits,
---   sumMerge(shared_read_sum_state) AS reads,
---   round(100 * sumMerge(shared_hit_sum_state) /
---         (sumMerge(shared_hit_sum_state) + sumMerge(shared_read_sum_state) + 0.001), 2) AS hit_pct
--- FROM pg_stat_ch.query_stats_5m
--- WHERE bucket >= now() - INTERVAL 1 HOUR
--- GROUP BY query_id
--- HAVING reads > 1000
--- ORDER BY hit_pct ASC
--- LIMIT 20;
-
--- Example 3: QPS over time (queries per second)
---
--- SELECT
---   bucket,
---   countMerge(calls_state) / 300 AS qps  -- 300 seconds = 5 minutes
--- FROM pg_stat_ch.query_stats_5m
--- WHERE bucket >= now() - INTERVAL 24 HOUR
--- GROUP BY bucket
--- ORDER BY bucket;
-
--- Example 4: Top queries by total time (identify optimization targets)
---
--- SELECT
---   query_id,
---   cmd_type,
---   countMerge(calls_state) AS calls,
---   round(sumMerge(duration_sum_state) / 1000000, 2) AS total_sec,
---   round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms
--- FROM pg_stat_ch.query_stats_5m
--- WHERE bucket >= now() - INTERVAL 1 HOUR
--- GROUP BY query_id, cmd_type
--- ORDER BY total_sec DESC
--- LIMIT 10;
-
--- Example 5: Parallel worker efficiency (PG18+)
---
--- SELECT
---   query_id,
---   count() AS executions,
---   avg(parallel_workers_planned) AS avg_planned,
---   avg(parallel_workers_launched) AS avg_launched,
---   round(100 * avg(parallel_workers_launched) / (avg(parallel_workers_planned) + 0.001), 1) AS efficiency_pct
--- FROM pg_stat_ch.events_raw
--- WHERE parallel_workers_planned > 0
---   AND ts_start > now() - INTERVAL 1 HOUR
--- GROUP BY query_id
--- ORDER BY executions DESC
--- LIMIT 20;
-
--- Example 6: JIT overhead analysis
---
--- SELECT
---   query_id,
---   count() AS calls,
---   avg(jit_functions) AS avg_functions,
---   avg(jit_generation_time_us + jit_inlining_time_us + jit_optimization_time_us + jit_emission_time_us) AS avg_jit_us,
---   avg(duration_us) AS avg_duration_us,
---   round(100 * avg(jit_generation_time_us + jit_inlining_time_us + jit_optimization_time_us + jit_emission_time_us) / avg(duration_us), 1) AS jit_overhead_pct
--- FROM pg_stat_ch.events_raw
--- WHERE jit_functions > 0
---   AND ts_start > now() - INTERVAL 1 HOUR
--- GROUP BY query_id
--- HAVING calls >= 10
--- ORDER BY jit_overhead_pct DESC
--- LIMIT 20;

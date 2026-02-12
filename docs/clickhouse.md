@@ -35,7 +35,7 @@ The primary table stores one row per query execution. Events are exported in bat
 
 | Category | Columns | Notes |
 |----------|---------|-------|
-| **Identity & Timing** | `ts_start`, `duration_us`, `db`, `username`, `pid`, `query_id` | Core fields for every event |
+| **Identity & Timing** | `ts_start`, `duration_us`, `dboid`, `useroid`, `pid`, `query_id` | Core fields for every event |
 | **Query** | `cmd_type`, `rows`, `query` | Command classification and text |
 | **Shared Buffers** | `shared_blks_hit/read/dirtied/written` | Cache hit ratio = hit / (hit + read) |
 | **Local Buffers** | `local_blks_hit/read/dirtied/written` | Temp table I/O |
@@ -49,6 +49,28 @@ The primary table stores one row per query execution. Events are exported in bat
 | **Client** | `app`, `client_addr` | Load attribution |
 
 See the schema file for detailed COMMENT annotations on each column explaining what HIGH/LOW values mean and tuning guidance.
+
+### OID Name Mapping
+
+Identity fields are stored as OIDs (`dboid`, `useroid`). To get readable names in dashboards, resolve OIDs from PostgreSQL catalogs:
+
+```sql
+-- PostgreSQL: resolve database and role names
+SELECT oid, datname FROM pg_database ORDER BY datname;
+SELECT oid, rolname FROM pg_roles ORDER BY rolname;
+```
+
+```sql
+-- ClickHouse: aggregate by OID
+SELECT
+    dboid,
+    useroid,
+    count() AS calls
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 1 HOUR
+GROUP BY dboid, useroid
+ORDER BY calls DESC;
+```
 
 ### Materialized Views
 
@@ -201,4 +223,34 @@ GROUP BY app
 ORDER BY total_seconds DESC;
 ```
 
-For more example queries, see the comments in [`docker/init/00-schema.sql`](/docker/init/00-schema.sql).
+### WAL and Full Page Images Over Time
+
+Shows the checkpoint cycle — FPIs spike right after each checkpoint then drop until the next one. This sawtooth pattern is invisible in pg_stat_statements.
+
+```sql
+SELECT
+    toStartOfMinute(ts_start) AS bucket,
+    sum(wal_fpi) AS total_fpi,
+    sum(wal_bytes) AS total_wal_bytes
+FROM pg_stat_ch.events_raw
+WHERE cmd_type IN ('INSERT', 'UPDATE', 'DELETE')
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Dirty Blocks Over Time
+
+Buffer write pressure by block type. Spikes in shared blocks indicate write-heavy batches; non-zero local/temp indicates temp table or work_mem spill activity.
+
+```sql
+SELECT
+    toStartOfMinute(ts_start) AS bucket,
+    sum(shared_blks_dirtied) AS shared_dirtied,
+    sum(local_blks_dirtied) AS local_dirtied,
+    sum(temp_blks_written) AS temp_written
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```

@@ -121,10 +121,10 @@ subtest 'all fields populated' => sub {
     );
     cmp_ok($duration_check, '>=', 1, 'duration_us is populated');
 
-    my $db_check = psch_query_clickhouse(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE db = 'postgres'"
+    my $dboid_check = psch_query_clickhouse(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE dboid > 0"
     );
-    cmp_ok($db_check, '>=', 1, 'db field is populated');
+    cmp_ok($dboid_check, '>=', 1, 'dboid field is populated');
 
     my $cmd_type_check = psch_query_clickhouse(
         "SELECT count() FROM pg_stat_ch.events_raw WHERE cmd_type != ''"

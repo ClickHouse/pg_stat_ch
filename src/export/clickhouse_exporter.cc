@@ -82,9 +82,8 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   auto col_ts_start = std::make_shared<clickhouse::ColumnDateTime64>(6);
   elog(DEBUG3, "pg_stat_ch: col_ts_start created");
   auto col_duration_us = std::make_shared<clickhouse::ColumnUInt64>();
-  // Use pre-resolved names from event (resolved at capture time in hooks)
-  auto col_db = std::make_shared<clickhouse::ColumnString>();
-  auto col_username = std::make_shared<clickhouse::ColumnString>();
+  auto col_dboid = std::make_shared<clickhouse::ColumnUInt32>();
+  auto col_useroid = std::make_shared<clickhouse::ColumnUInt32>();
   elog(DEBUG3, "pg_stat_ch: basic columns created");
   auto col_pid = std::make_shared<clickhouse::ColumnInt32>();
   auto col_query_id = std::make_shared<clickhouse::ColumnInt64>();
@@ -155,9 +154,8 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
     col_ts_start->Append(unix_us);
     col_duration_us->Append(ev.duration_us);
 
-    // Use pre-resolved names from event (resolved at capture time in hooks)
-    col_db->Append(std::string(ev.datname, ev.datname_len));
-    col_username->Append(std::string(ev.username, ev.username_len));
+    col_dboid->Append(ev.dbid);
+    col_useroid->Append(ev.userid);
 
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
@@ -258,8 +256,8 @@ clickhouse::Block BuildClickHouseBlock(const std::vector<PschEvent>& events) {
   // Basic columns
   block.AppendColumn("ts_start", col_ts_start);
   block.AppendColumn("duration_us", col_duration_us);
-  block.AppendColumn("db", col_db);
-  block.AppendColumn("username", col_username);
+  block.AppendColumn("dboid", col_dboid);
+  block.AppendColumn("useroid", col_useroid);
   block.AppendColumn("pid", col_pid);
   block.AppendColumn("query_id", col_query_id);
   block.AppendColumn("cmd_type", col_cmd_type);

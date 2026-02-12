@@ -7,8 +7,6 @@ extern "C" {
 #include "postgres.h"
 
 #include "access/parallel.h"
-#include "access/xact.h"
-#include "commands/dbcommands.h"
 #include "common/ip.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -18,7 +16,6 @@ extern "C" {
 #include "utils/backend_status.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
-#include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 
 #if PG_VERSION_NUM >= 140000
@@ -62,79 +59,24 @@ static TimestampTz query_start_ts = 0;
 static bool system_init = false;
 
 static int GetClientAddress(char* buf, int buf_size);
-static void ResolveNames(PschEvent* event);
-
-static uint8 CopyName(char* dst, size_t dst_size, const char* src) {
-  size_t len = strlcpy(dst, src, dst_size);
-  return static_cast<uint8>(Min(len, dst_size - 1));
-}
 
 // Cache for session-stable values to avoid repeated catalog lookups on every query.
 // Following pg_stat_monitor's pattern of caching client IP (pg_stat_monitor.c:73-96).
-// Database name and client address never change within a session. Username is
-// re-resolved when userid changes (handles SET ROLE).
 struct BackendCache {
   bool initialized;
-  char datname[NAMEDATALEN];
-  uint8 datname_len;
-  Oid cached_userid;
-  char username[NAMEDATALEN];
-  uint8 username_len;
   char client_addr[46];  // INET6_ADDRSTRLEN
   uint8 client_addr_len;
 };
 static BackendCache backend_cache = {};
 
-// Resolve and cache the current username. On initial resolve, falls back to
-// "<unknown>" if resolution fails. On SET ROLE re-resolve, keeps the existing
-// cached value on failure (better to show the old name than "<unknown>") and
-// leaves cached_userid unchanged so future calls can retry resolution.
-static void CacheUsername(Oid userid, bool fallback_on_null) {
-  const char* username = GetUserNameFromId(userid, true);
-  if (username != nullptr) {
-    backend_cache.username_len =
-        CopyName(backend_cache.username, sizeof(backend_cache.username), username);
-    backend_cache.cached_userid = userid;
-  } else if (fallback_on_null) {
-    backend_cache.username_len =
-        CopyName(backend_cache.username, sizeof(backend_cache.username), "<unknown>");
-    backend_cache.cached_userid = userid;
-  }
-}
-
-// Ensure the backend cache is populated. Called on each query; the first call
-// resolves datname and client_addr (session-stable), and all calls check whether
-// userid changed (SET ROLE) to re-resolve username.
+// Ensure the backend cache is populated. Called on each query; first call
+// resolves client_addr (session-stable).
 static void EnsureBackendCache(void) {
-  Oid userid = GetUserId();
-
   if (!backend_cache.initialized) {
-    // Can't resolve catalog names outside a transaction
-    if (!IsTransactionState()) {
-      return;
-    }
-
-    // Database name (session-stable)
-    const char* datname = get_database_name(MyDatabaseId);
-    backend_cache.datname_len = CopyName(backend_cache.datname, sizeof(backend_cache.datname),
-                                         datname != nullptr ? datname : "<unknown>");
-
     // Client address (session-stable)
     backend_cache.client_addr_len = static_cast<uint8>(
         GetClientAddress(backend_cache.client_addr, sizeof(backend_cache.client_addr)));
-
-    // Username (may change via SET ROLE)
-    CacheUsername(userid, true);
-
     backend_cache.initialized = true;
-    return;
-  }
-
-  // Re-resolve username if userid changed (SET ROLE)
-  if (backend_cache.cached_userid != userid) {
-    if (IsTransactionState()) {
-      CacheUsername(userid, false);
-    }
   }
 }
 
@@ -327,7 +269,6 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level
   event->pid = MyProcPid;
   event->top_level = top_level;
   event->cmd_type = cmd_type;
-  ResolveNames(event);
 }
 
 static void CopyClientContext(PschEvent* event) {
@@ -349,34 +290,6 @@ static void CopyQueryText(PschEvent* event, const char* query_text) {
     event->query_len =
         static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
   }
-}
-
-// Resolve database and user names, using the session cache when available.
-// Falls back to catalog lookups if cache hasn't been initialized yet (e.g.,
-// emit_log_hook fires before the first executor hook).
-static void ResolveNames(PschEvent* event) {
-  EnsureBackendCache();
-
-  if (backend_cache.initialized) {
-    memcpy(event->datname, backend_cache.datname, backend_cache.datname_len + 1);
-    event->datname_len = backend_cache.datname_len;
-    memcpy(event->username, backend_cache.username, backend_cache.username_len + 1);
-    event->username_len = backend_cache.username_len;
-    return;
-  }
-
-  // Fallback: resolve fresh (cache not yet initialized, e.g. emit_log_hook early)
-  const char* datname = nullptr;
-  const char* username = nullptr;
-  if (IsTransactionState()) {
-    datname = get_database_name(event->dbid);
-    username = GetUserNameFromId(event->userid, true);
-  }
-
-  event->datname_len =
-      CopyName(event->datname, sizeof(event->datname), datname != nullptr ? datname : "<unknown>");
-  event->username_len = CopyName(event->username, sizeof(event->username),
-                                 username != nullptr ? username : "<unknown>");
 }
 
 // Copy JIT instrumentation to event (PG15+)

@@ -121,8 +121,8 @@ Uses `pgstat_get_beentry_by_proc_number()` for O(1) backend status lookup instea
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `db` | String | Database name |
-| `username` | String | User name who executed the query |
+| `dboid` | UInt32 | Database OID (`MyDatabaseId`) |
+| `useroid` | UInt32 | Role OID (`GetUserId`) |
 | `pid` | Int32 | Backend process ID |
 | `query_id` | Int64 | Query identifier (hash of normalized query) |
 | `cmd_type` | String | Command type: SELECT, INSERT, UPDATE, DELETE, MERGE, UTILITY, NOTHING, UNKNOWN |
