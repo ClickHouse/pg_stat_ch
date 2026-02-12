@@ -98,6 +98,9 @@ static void ExportBatchWithRecovery() {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
   for (;;) {
+    // volatile: required because PG_TRY/PG_CATCH uses setjmp/longjmp.
+    // Without it, the compiler may keep 'exported' in a register that
+    // gets clobbered on longjmp, making the value undefined in PG_CATCH.
     volatile int exported = 0;
 
     PG_TRY();
@@ -107,7 +110,6 @@ static void ExportBatchWithRecovery() {
       EmitErrorReport();
       FlushErrorState();
       elog(WARNING, "pg_stat_ch: export error, will retry");
-      exported = 0;
     }
     PG_END_TRY();
 

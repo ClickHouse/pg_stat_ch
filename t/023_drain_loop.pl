@@ -71,10 +71,12 @@ subtest 'drain loop exports all batches in one cycle' => sub {
     my $exported = psch_wait_for_export($node, $num_events, $timeout);
     my $elapsed = time() - $t0;
 
+    my $flush_interval_s = $flush_interval_ms / 1000;
+
     cmp_ok($exported, '>=', $num_events,
         "all $num_events events exported (got $exported)");
-    cmp_ok($elapsed, '<', $flush_interval_ms / 1000,
-        "drain completed in ${elapsed}s, well under one flush interval (${\ ($flush_interval_ms / 1000)}s)");
+    cmp_ok($elapsed, '<', $flush_interval_s,
+        "drain completed in ${elapsed}s, well under one flush interval (${flush_interval_s}s)");
 
     # Queue should be nearly empty; a small residual (1-2) is expected because
     # the flush() and stats() calls themselves generate events after the drain.
