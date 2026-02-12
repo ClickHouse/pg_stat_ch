@@ -90,19 +90,35 @@ static void PschBgworkerShutdown([[maybe_unused]] int code, [[maybe_unused]] Dat
   PschExporterShutdown();
 }
 
-// Export batch with error recovery using PG_TRY/PG_CATCH
+// Drain the queue: loop exporting batches until a partial batch (< batch_max)
+// indicates the queue is nearly empty. Each batch gets its own PG_TRY/PG_CATCH
+// so an error on batch N+1 doesn't lose batches 1..N. Signals are processed
+// between batches to stay responsive to SIGTERM, barriers, and config reload.
 static void ExportBatchWithRecovery() {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
-  PG_TRY();
-  { PschExportBatch(); }
-  PG_CATCH();
-  {
-    EmitErrorReport();
-    FlushErrorState();
-    elog(WARNING, "pg_stat_ch: export error, will retry");
+  for (;;) {
+    volatile int exported = 0;
+
+    PG_TRY();
+    { exported = PschExportBatch(); }
+    PG_CATCH();
+    {
+      EmitErrorReport();
+      FlushErrorState();
+      elog(WARNING, "pg_stat_ch: export error, will retry");
+      exported = 0;
+    }
+    PG_END_TRY();
+
+    if (exported < psch_batch_max) break;
+
+    // Process signals between batches to stay responsive
+    if (ProcSignalBarrierPending) ProcessProcSignalBarrier();
+    CHECK_FOR_INTERRUPTS();
+    HandleConfigReload();
+    if (!psch_enabled) break;
   }
-  PG_END_TRY();
 
   pgstat_report_activity(STATE_IDLE, nullptr);
 }
