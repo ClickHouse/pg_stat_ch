@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(pg_stat_ch VERSION 0.1.0 LANGUAGES CXX C)
 
+if(WIN32)
+  message(FATAL_ERROR "Windows is not supported")
+endif()
+
 # Add cmake modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
@@ -18,7 +22,7 @@ include(CompilerWarnings)
 
 # OpenSSL support (enables TLS connections to ClickHouse)
 option(WITH_OPENSSL "Enable OpenSSL for TLS connections" ON)
-include(OpenSSL)
+include(PgStatChOpenSSL)
 pg_stat_ch_setup_openssl()
 
 # Add clickhouse-cpp library (statically linked, compiled with PIC for shared library linking)
@@ -58,8 +62,11 @@ pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES
   PREFIX ""
-  SUFFIX ".so"
+  SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
 )
+if(APPLE)
+  target_link_options(pg_stat_ch PRIVATE -undefined dynamic_lookup)
+endif()
 
 # Install targets
 install(TARGETS pg_stat_ch LIBRARY DESTINATION ${PostgreSQLServer_PKGLIB_DIR})
