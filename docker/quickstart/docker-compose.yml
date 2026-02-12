@@ -1,0 +1,69 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.1
+    container_name: psch-quickstart-ch
+    ports:
+      - "29000:9000"   # Native protocol
+      - "28123:8123"   # HTTP interface
+    volumes:
+      - ../init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "-q", "SELECT 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    environment:
+      CLICKHOUSE_DB: pg_stat_ch
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  postgres:
+    build:
+      context: ../..
+      dockerfile: docker/postgres-ext.Dockerfile
+    container_name: psch-quickstart-pg
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_ch"
+      - "-c"
+      - "pg_stat_ch.enabled=on"
+      - "-c"
+      - "pg_stat_ch.clickhouse_host=clickhouse"
+      - "-c"
+      - "pg_stat_ch.clickhouse_port=9000"
+      - "-c"
+      - "pg_stat_ch.clickhouse_user=default"
+      - "-c"
+      - "pg_stat_ch.clickhouse_password="
+      - "-c"
+      - "pg_stat_ch.clickhouse_database=pg_stat_ch"
+      - "-c"
+      - "pg_stat_ch.flush_interval_ms=250"
+      - "-c"
+      - "pg_stat_ch.batch_max=1000"
+      - "-c"
+      - "track_io_timing=on"
+    volumes:
+      - quickstart-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  quickstart-pgdata:
