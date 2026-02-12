@@ -201,4 +201,34 @@ GROUP BY app
 ORDER BY total_seconds DESC;
 ```
 
-For more example queries, see the comments in [`docker/init/00-schema.sql`](/docker/init/00-schema.sql).
+### WAL and Full Page Images Over Time
+
+Shows the checkpoint cycle - FPIs spike right after each checkpoint then drop until the next one. This sawtooth pattern is invisible in pg_stat_statements.
+
+```sql
+SELECT
+    toStartOfMinute(ts_start) AS bucket,
+    sum(wal_fpi) AS total_fpi,
+    sum(wal_bytes) AS total_wal_bytes
+FROM pg_stat_ch.events_raw
+WHERE cmd_type IN ('INSERT', 'UPDATE', 'DELETE')
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Dirty Blocks Over Time
+
+Buffer write pressure by block type. Spikes in shared blocks indicate write-heavy batches; non-zero local/temp indicates temp table or work_mem spill activity.
+
+```sql
+SELECT
+    toStartOfMinute(ts_start) AS bucket,
+    sum(shared_blks_dirtied) AS shared_dirtied,
+    sum(local_blks_dirtied) AS local_dirtied,
+    sum(temp_blks_written) AS temp_written
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
