@@ -372,7 +372,7 @@ bool PschExporterInit(void) {
   }
 }
 
-void PschExportBatch(void) {
+int PschExportBatch(void) {
   elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
 
   if (g_exporter.client == nullptr) {
@@ -380,7 +380,7 @@ void PschExportBatch(void) {
     if (!PschExporterInit()) {
       g_exporter.consecutive_failures++;
       PschRecordExportFailure("Failed to connect to ClickHouse");
-      return;
+      return 0;
     }
   }
 
@@ -388,7 +388,7 @@ void PschExportBatch(void) {
   std::vector<PschEvent> events = DequeueEvents(psch_batch_max);
   if (events.empty()) {
     elog(DEBUG1, "pg_stat_ch: no events to export");
-    return;
+    return 0;
   }
 
   elog(DEBUG1, "pg_stat_ch: building ClickHouse block with %zu events", events.size());
@@ -407,7 +407,9 @@ void PschExportBatch(void) {
     g_exporter.consecutive_failures = 0;
     PschRecordExportSuccess();
 
-    elog(DEBUG1, "pg_stat_ch: exported %zu events to ClickHouse", events.size());
+    int count = static_cast<int>(events.size());
+    elog(DEBUG1, "pg_stat_ch: exported %d events to ClickHouse", count);
+    return count;
 
   } catch (const std::exception& ex) {
     std::string err_msg = ex.what();
@@ -417,6 +419,7 @@ void PschExportBatch(void) {
     g_exporter.consecutive_failures++;
     PschRecordExportFailure(err_msg.c_str());
     g_exporter.client.reset();
+    return 0;
   }
 }
 

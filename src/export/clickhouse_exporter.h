@@ -11,8 +11,8 @@ extern "C" {
 // Initialize the ClickHouse exporter (called once at bgworker startup)
 bool PschExporterInit(void);
 
-// Export a batch of events to ClickHouse
-void PschExportBatch(void);
+// Export one batch. Returns number of events exported (0 = queue empty or error).
+int PschExportBatch(void);
 
 // Shutdown the exporter and close connection
 void PschExporterShutdown(void);
