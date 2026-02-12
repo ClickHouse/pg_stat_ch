@@ -90,6 +90,19 @@ static void PschBgworkerShutdown([[maybe_unused]] int code, [[maybe_unused]] Dat
   PschExporterShutdown();
 }
 
+// Process pending signals: barriers, interrupts (SIGTERM/SIGINT), config reload.
+// Called after WaitLatch wakes and between batches in the drain loop.
+static void ProcessPendingSignals() {
+  // Barriers first: ProcSignalBarrierPending is set when operations like
+  // DROP DATABASE need all backends to acknowledge. Failing to process
+  // causes those operations to hang.
+  if (ProcSignalBarrierPending) {
+    ProcessProcSignalBarrier();
+  }
+  CHECK_FOR_INTERRUPTS();
+  HandleConfigReload();
+}
+
 // Drain the queue: loop exporting batches until a partial batch (< batch_max)
 // indicates the queue is nearly empty. Each batch gets its own PG_TRY/PG_CATCH
 // so an error on batch N+1 doesn't lose batches 1..N. Signals are processed
@@ -117,12 +130,7 @@ static void ExportBatchWithRecovery() {
       break;
     }
 
-    // Process signals between batches to stay responsive
-    if (ProcSignalBarrierPending) {
-      ProcessProcSignalBarrier();
-    }
-    CHECK_FOR_INTERRUPTS();
-    HandleConfigReload();
+    ProcessPendingSignals();
     if (!psch_enabled) {
       break;
     }
@@ -152,40 +160,17 @@ static int CalculateSleepMs() {
   return sleep_ms;
 }
 
-// Run one export cycle: wait for events, process signals, export if enabled.
-//
-// Signal processing order is important:
-//   1. WaitLatch - sleep until timeout, latch set, or postmaster death
-//   2. Process barriers FIRST - critical for DROP DATABASE, etc.
-//   3. CHECK_FOR_INTERRUPTS - handles die/cancel, also processes barriers
-//   4. Config reload
-//   5. Export batch
+// Run one export cycle: sleep, process signals, then drain queue if enabled.
 //
 // Note on blocking: If we're blocked in ClickHouse network I/O when a barrier
 // signal arrives, we can't process it until the I/O completes. The socket
-// timeouts configured in clickhouse_exporter.cc (30 seconds) ensure we don't
-// block forever. This is a tradeoff - shorter timeouts mean faster barrier
-// response but more false failures on slow networks.
+// timeouts configured in clickhouse_exporter.cc (30 seconds) bound this delay.
 static void RunExportCycle(uint32 wait_event) {
   int sleep_ms = CalculateSleepMs();
   (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
   ResetLatch(MyLatch);
 
-  // Process barrier events first. ProcSignalBarrierPending is set when operations
-  // like DROP DATABASE or DROP TABLESPACE need all backends to acknowledge.
-  // Failure to call ProcessProcSignalBarrier() causes those operations to hang.
-  if (ProcSignalBarrierPending) {
-    ProcessProcSignalBarrier();
-  }
-
-  // CHECK_FOR_INTERRUPTS processes:
-  //   - ProcDiePending (SIGTERM received)
-  //   - QueryCancelPending (SIGINT received)
-  //   - ProcSignalBarrierPending (redundant with above, but standard practice)
-  //   - Various timeout flags
-  CHECK_FOR_INTERRUPTS();
-
-  HandleConfigReload();
+  ProcessPendingSignals();
 
   if (psch_enabled) {
     ExportBatchWithRecovery();
