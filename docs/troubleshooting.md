@@ -1,5 +1,28 @@
 # Troubleshooting
 
+## SQL API Reference
+
+### `pg_stat_ch_stats()`
+
+Returns queue and exporter statistics:
+
+```sql
+SELECT * FROM pg_stat_ch_stats();
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `enqueued_events` | bigint | Total events added to queue |
+| `dropped_events` | bigint | Events dropped due to full queue |
+| `exported_events` | bigint | Events successfully sent to ClickHouse |
+| `send_failures` | bigint | Failed export attempts |
+| `last_success_ts` | timestamptz | Last successful export timestamp |
+| `last_error_text` | text | Most recent error message |
+| `last_error_ts` | timestamptz | Most recent error timestamp |
+| `queue_size` | int | Current events in queue |
+| `queue_capacity` | int | Maximum queue capacity |
+| `queue_usage_pct` | float | Queue utilization percentage |
+
 ## Extension Won't Load
 
 ```

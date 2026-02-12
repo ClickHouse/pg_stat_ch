@@ -136,20 +136,21 @@ GROUP BY err_sqlstate
 ORDER BY errors DESC;
 ```
 
-### Cache Hit Ratio by Query
+### Cache Miss Outliers
 
 ```sql
 SELECT
+    ts_start,
     query_id,
-    sumMerge(shared_hit_sum_state) AS hits,
-    sumMerge(shared_read_sum_state) AS reads,
-    round(100 * sumMerge(shared_hit_sum_state) /
-          (sumMerge(shared_hit_sum_state) + sumMerge(shared_read_sum_state) + 0.001), 2) AS hit_pct
-FROM pg_stat_ch.query_stats_5m
-WHERE bucket >= now() - INTERVAL 1 HOUR
-GROUP BY query_id
-HAVING reads > 1000
-ORDER BY hit_pct ASC
+    shared_blks_read,
+    shared_blks_hit,
+    round(100 * shared_blks_read / (shared_blks_hit + shared_blks_read), 2) AS miss_pct,
+    duration_us / 1000 AS duration_ms,
+    query
+FROM pg_stat_ch.events_raw
+WHERE shared_blks_read > 100
+  AND ts_start > now() - INTERVAL 1 HOUR
+ORDER BY shared_blks_read DESC
 LIMIT 20;
 ```
 
@@ -178,25 +179,6 @@ FROM pg_stat_ch.db_app_user_1m
 WHERE bucket >= now() - INTERVAL 30 MINUTE
 GROUP BY app
 ORDER BY total_seconds DESC;
-```
-
-### JIT Overhead Analysis
-
-```sql
-SELECT
-    query_id,
-    count() AS calls,
-    avg(jit_functions) AS avg_functions,
-    avg(jit_generation_time_us + jit_inlining_time_us + jit_optimization_time_us + jit_emission_time_us) AS avg_jit_us,
-    avg(duration_us) AS avg_duration_us,
-    round(100 * avg(jit_generation_time_us + jit_inlining_time_us + jit_optimization_time_us + jit_emission_time_us) / avg(duration_us), 1) AS jit_overhead_pct
-FROM pg_stat_ch.events_raw
-WHERE jit_functions > 0
-  AND ts_start > now() - INTERVAL 1 HOUR
-GROUP BY query_id
-HAVING calls >= 10
-ORDER BY jit_overhead_pct DESC
-LIMIT 20;
 ```
 
 For more example queries, see the comments in [`docker/init/00-schema.sql`](/docker/init/00-schema.sql).

@@ -117,22 +117,7 @@ The `QueryDesc` structure provides access to all query execution information:
 
 **What pg_stat_ch captures:** Messages at the configured minimum level and above (default: WARNING). The minimum level is controlled by the `pg_stat_ch.log_min_elevel` GUC parameter.
 
-**Error levels** (from `elog.h`):
-
-| Level | Value | Captured by default |
-|-------|-------|---------------------|
-| DEBUG5 | 10 | No |
-| DEBUG4 | 11 | No |
-| DEBUG3 | 12 | No |
-| DEBUG2 | 13 | No |
-| DEBUG1 | 14 | No |
-| LOG | 15 | No |
-| INFO | 17 | No |
-| NOTICE | 18 | No |
-| WARNING | 19 | Yes |
-| ERROR | 21 | Yes |
-| FATAL | 22 | Yes |
-| PANIC | 23 | Yes |
+See [version-compatibility.md](version-compatibility.md#error-fields) for the complete list of error levels and their numeric values.
 
 **ErrorData fields captured:**
 
@@ -219,20 +204,6 @@ Parallel workers execute portions of a query plan. pg_stat_ch:
 │                  Batch export to ClickHouse                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-## Version Compatibility
-
-The hook signatures and available data vary by PostgreSQL version:
-
-| Feature | PG16 | PG17 | PG18 |
-|---------|------|------|------|
-| ExecutorRun `execute_once` param | Yes | Yes | Removed |
-| Separate local block I/O timing | No | Yes | Yes |
-| JIT deform counter | No | Yes | Yes |
-| Parallel worker counts | No | No | Yes |
-| Unified nesting_level | No | Yes | Yes |
-
-See [version-compatibility.md](version-compatibility.md) for the complete feature matrix.
 
 ## References
 
