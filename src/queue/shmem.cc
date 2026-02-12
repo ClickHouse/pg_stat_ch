@@ -77,7 +77,7 @@ static void HandleOverflow() {
   pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
 
   // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
-  if (!pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
+  if (pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
     ereport(WARNING,
             (errmsg("pg_stat_ch: queue overflow, events being dropped"),
              errhint("Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
