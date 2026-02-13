@@ -1,7 +1,7 @@
 <div align="center">
 
-![pg_stat_ch logo](./images/logo_dark.png#gh-dark-mode-only)
-![pg_stat_ch logo](./images/logo_light.png#gh-light-mode-only)
+<img src="./images/logo_dark.png#gh-dark-mode-only" alt="pg_stat_ch logo" width="512">
+<img src="./images/logo_light.png#gh-light-mode-only" alt="pg_stat_ch logo" width="512">
 
 # pg_stat_ch: PostgreSQL Query Telemetry Exporter to ClickHouse
 
