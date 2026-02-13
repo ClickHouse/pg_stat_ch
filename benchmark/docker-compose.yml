@@ -2,7 +2,7 @@ services:
   postgres:
     build:
       context: ..
-      dockerfile: benchmark/Dockerfile
+      dockerfile: docker/postgres-ext.Dockerfile
     container_name: pg_stat_ch_benchmark
     ports:
       - "5433:5432"
@@ -54,6 +54,7 @@ services:
       - "work_mem=256kB"
     volumes:
       - pgdata:/var/lib/postgresql
+      - ./init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

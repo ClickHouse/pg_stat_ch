@@ -5,13 +5,10 @@
 From the repo root:
 
 ```bash
-docker compose -f docker/docker-compose.test.yml up -d
-
-# Or via mise
-mise run clickhouse:start
+./scripts/quickstart.sh up
 ```
 
-This creates a ClickHouse server on ports 19000 (native) and 18123 (HTTP) with the `pg_stat_ch` database, `events_raw` table, and all materialized views pre-created.
+This brings up local PostgreSQL + ClickHouse with the `pg_stat_ch` schema preloaded. For endpoints and stack details, see [docker/quickstart/README.md](../docker/quickstart/README.md).
 
 ## Manual Setup
 

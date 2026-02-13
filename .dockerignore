@@ -22,9 +22,22 @@ results/
 tmp_check/
 log/
 
+# Non-build docs and metadata
+.github/
+.claude/
+CLAUDE.md
+README.md
+INSTALL.md
+LICENSE.md
+docs/
+specs/
+t/
+test/
+
 # OS files
 .DS_Store
 Thumbs.db
 
 # Benchmark credentials
 benchmark/.env
+benchmark/loadgen/

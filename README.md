@@ -2,6 +2,23 @@
 
 A PostgreSQL extension that captures per-query execution telemetry and exports it to ClickHouse in real-time. Unlike pg_stat_statements which aggregates statistics in PostgreSQL, pg_stat_ch exports **raw events** to ClickHouse where aggregation happens via ClickHouse's powerful analytical engine.
 
+## Quickstart
+
+Run local PostgreSQL + ClickHouse with schema preloaded:
+
+```bash
+./scripts/quickstart.sh up
+./scripts/quickstart.sh check
+```
+
+Stop:
+
+```bash
+./scripts/quickstart.sh down
+```
+
+See [docker/quickstart/README.md](docker/quickstart/README.md) for endpoints and stack details.
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -14,7 +31,6 @@ A PostgreSQL extension that captures per-query execution telemetry and exports i
 - [Configuration](#configuration)
 - [SQL API](#sql-api)
 - [Example Queries](#example-queries)
-- [ClickHouse Setup](#clickhouse-setup)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -88,6 +104,7 @@ Add to `postgresql.conf`:
 
 ```ini
 shared_preload_libraries = 'pg_stat_ch'
+track_io_timing = on   # Enables I/O timing columns for captured events
 
 # ClickHouse connection (change for your setup)
 pg_stat_ch.clickhouse_host = 'localhost'
@@ -102,26 +119,32 @@ pg_stat_ch.clickhouse_skip_tls_verify = off
 ### 2. Restart PostgreSQL
 
 ```bash
-sudo systemctl restart postgresql
+# Restart PostgreSQL using your service manager (systemd, brew services, Docker, etc.)
 ```
 
-### 3. Create the Extension
+### 3. Set Up Schema on ClickHouse
+
+Quickstart path: run `./scripts/quickstart.sh up` and schema setup is handled automatically.
+
+Manual / existing ClickHouse paths:
+
+```bash
+clickhouse-client < docker/init/00-schema.sql
+```
+
+Creates `events_raw` plus materialized views. See [docs/clickhouse.md](docs/clickhouse.md) for full schema details.
+
+### 4. Create the Extension
 
 ```sql
 CREATE EXTENSION pg_stat_ch;
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```sql
 SELECT pg_stat_ch_version();
 SELECT * FROM pg_stat_ch_stats();
-```
-
-## Recommended PostgreSQL Settings
-
-```ini
-track_io_timing = on   # Enables I/O timing columns for captured events
 ```
 
 ## Configuration
@@ -173,16 +196,6 @@ LIMIT 10;
 ```
 
 See [docs/clickhouse.md](docs/clickhouse.md) for materialized view definitions and more query examples.
-
-## ClickHouse Setup
-
-```bash
-docker compose -f docker/docker-compose.test.yml up -d   # Dev (schema pre-created)
-mise run clickhouse:start                                 # Or via mise
-clickhouse-client < docker/init/00-schema.sql             # Production
-```
-
-Creates `events_raw` plus 4 materialized views (percentiles, load by app/user, error tracking). See [docs/clickhouse.md](docs/clickhouse.md) for the full setup guide and schema details.
 
 ## Testing
 

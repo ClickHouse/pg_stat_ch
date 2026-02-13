@@ -78,7 +78,7 @@ jobs:
           docker rm -f clickhouse-test 2>/dev/null || true
           docker run -d --name clickhouse-test \
             --network host \
-            clickhouse/clickhouse-server:24.3
+            clickhouse/clickhouse-server:26.1
           # Wait for ClickHouse to be ready
           for i in {1..30}; do
             if curl -sf 'http://localhost:8123/' --data 'SELECT 1' >/dev/null 2>&1; then

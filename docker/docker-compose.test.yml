@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.3
+    image: clickhouse/clickhouse-server:26.1
     container_name: psch-clickhouse
     ports:
       - "19000:9000"   # Native protocol
