@@ -43,6 +43,12 @@ See [docker/quickstart/README.md](docker/quickstart/README.md) for endpoints and
 
 ## Overview
 
+<div align="center">
+
+<img src="images/dashboard.png" alt="Dashboard showing query telemetry: expensive queries with percentiles, cache miss analysis, QPS over time, latency, shared buffer and WAL metrics" width="800" />
+
+</div>
+
 pg_stat_ch captures detailed telemetry for every query executed in PostgreSQL and exports it to ClickHouse via a single data pipeline:
 
 ```
