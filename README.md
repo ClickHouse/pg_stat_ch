@@ -1,4 +1,10 @@
+<div align="center">
+
+<img src="images/logo.png" alt="pg_stat_ch logo, in yellow" width="512" />
+
 # pg_stat_ch: PostgreSQL Query Telemetry Exporter to ClickHouse
+
+</div>
 
 A PostgreSQL extension that captures per-query execution telemetry and exports it to ClickHouse in real-time. Unlike pg_stat_statements which aggregates statistics in PostgreSQL, pg_stat_ch exports **raw events** to ClickHouse where aggregation happens via ClickHouse's powerful analytical engine.
 
