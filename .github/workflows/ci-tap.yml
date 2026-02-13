@@ -14,7 +14,7 @@ env:
 jobs:
   tap-tests:
     name: TAP Tests (PG 18)
-    runs-on: [self-hosted, Linux, X64, amd-large]
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
