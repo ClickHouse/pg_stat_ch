@@ -45,7 +45,7 @@ See [docker/quickstart/README.md](docker/quickstart/README.md) for endpoints and
 
 <div align="center">
 
-<img src="images/dashboard.png" alt="Dashboard showing query telemetry: expensive queries with percentiles, cache miss analysis, QPS over time, latency, shared buffer and WAL metrics" width="800" />
+<a href="images/dashboard.png"><img src="images/dashboard.png" alt="Dashboard showing query telemetry: expensive queries with percentiles, cache miss analysis, QPS over time, latency, shared buffer and WAL metrics" width="35%" /></a>
 
 </div>
 
