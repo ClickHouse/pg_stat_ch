@@ -36,7 +36,7 @@ step s3_reset { SELECT pg_stat_ch_reset(); }
 step s3_invariants {
     SELECT
         dropped_events = 0 AS no_drops,
-        queue_capacity = 65536 AS default_capacity
+        queue_capacity = 131072 AS default_capacity
     FROM pg_stat_ch_stats();
 }
 

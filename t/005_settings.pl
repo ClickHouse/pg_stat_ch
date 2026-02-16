@@ -68,9 +68,9 @@ pg_stat_ch.queue_capacity = 1000
 $node2->start();
 $node2->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');
 
-# The actual capacity should be the default (65536), not 1000
+# The actual capacity should be the default (131072), not 1000
 my $actual_cap = $node2->safe_psql('postgres', "SHOW pg_stat_ch.queue_capacity");
-is($actual_cap, '65536', 'Invalid queue_capacity (1000) falls back to default (65536)');
+is($actual_cap, '131072', 'Invalid queue_capacity (1000) falls back to default (131072)');
 
 $node2->stop();
 

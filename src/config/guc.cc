@@ -19,9 +19,9 @@ char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
 bool psch_clickhouse_use_tls = false;
 bool psch_clickhouse_skip_tls_verify = false;
-int psch_queue_capacity = 65536;
-int psch_flush_interval_ms = 1000;
-int psch_batch_max = 10000;
+int psch_queue_capacity = 131072;
+int psch_flush_interval_ms = 200;
+int psch_batch_max = 200000;
 int psch_log_min_elevel = WARNING;
 bool psch_debug_force_locked_overflow = false;
 
@@ -155,7 +155,7 @@ void PschInitGuc(void) {
       "Maximum number of events in the shared memory queue (must be a power of 2).",
       nullptr,
       &psch_queue_capacity,
-      65536,              // bootValue
+      131072,             // bootValue
       1024, 4194304,      // min, max
       PGC_POSTMASTER,
       0,
@@ -166,7 +166,7 @@ void PschInitGuc(void) {
       "Interval in milliseconds between ClickHouse export batches.",
       nullptr,
       &psch_flush_interval_ms,
-      1000,           // bootValue
+      200,            // bootValue
       100, 60000,     // min, max
       PGC_SIGHUP,
       GUC_UNIT_MS,
@@ -177,7 +177,7 @@ void PschInitGuc(void) {
       "Maximum number of events per ClickHouse insert batch.",
       nullptr,
       &psch_batch_max,
-      10000,            // bootValue
+      200000,           // bootValue
       1, 1000000,       // min, max
       PGC_SIGHUP,
       0,

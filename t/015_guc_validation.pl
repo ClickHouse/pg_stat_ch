@@ -26,7 +26,7 @@ pg_stat_ch.queue_capacity = 1000
     $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');
 
     my $capacity = $node->safe_psql('postgres', 'SELECT queue_capacity FROM pg_stat_ch_stats()');
-    is($capacity, '65536', 'Invalid capacity 1000 falls back to default 65536');
+    is($capacity, '131072', 'Invalid capacity 1000 falls back to default 131072');
 
     $node->stop();
 };
