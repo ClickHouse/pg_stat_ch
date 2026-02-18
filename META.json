@@ -1,0 +1,50 @@
+{
+  "abstract": "PostgreSQL Query Telemetry Exporter to ClickHouse",
+  "description": "A PostgreSQL extension that captures per-query execution telemetry and exports it to ClickHouse in real-time.",
+  "generated_by": "David E. Wheeler",
+  "license": "apache_2_0",
+  "maintainer": [
+    "Kaushik Iska <iska.kaushik@gmail.com>",
+    "Kevin Biju Kizhake Kanichery <kevin.biju@clickhouse.com>"
+  ],
+  "meta-spec": {
+    "url": "http://pgxn.org/meta/spec.txt",
+    "version": "1.0.0"
+  },
+  "name": "pg_stat_ch",
+  "no_index": {
+    "directory": ["third_party", "test", "benchmark"]
+  },
+  "prereqs": {
+    "runtime": {
+      "requires": {
+        "PostgreSQL": "16.0.0"
+      }
+    }
+  },
+  "provides": {
+    "pg_stat_ch": {
+      "abstract": "PostgreSQL Query Telemetry Exporter to ClickHouse",
+      "docfile": "README.md",
+      "file": "pg_stat_ch.control",
+      "version": "0.1.7"
+    }
+  },
+  "resources": {
+    "bugtracker": {
+      "web": "https://github.com/clickhouse/pg_stat_ch/issues/"
+    },
+    "repository": {
+      "type": "git",
+      "url": "git://github.com/clickhouse/pg_stat_ch.git",
+      "web": "https://github.com/clickhouse/pg_stat_ch/"
+    }
+  },
+  "tags": [
+    "stats",
+    "statistics",
+    "metrics",
+    "clickhouse"
+  ],
+  "version": "0.1.7"
+}

@@ -32,3 +32,6 @@ Thumbs.db
 
 # Benchmark credentials
 benchmark/.env
+
+# Release artifacts
+pg_stat_ch-*.zip
