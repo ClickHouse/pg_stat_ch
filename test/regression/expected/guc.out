@@ -14,9 +14,12 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.debug_force_locked_overflow
  pg_stat_ch.enabled
  pg_stat_ch.flush_interval_ms
+ pg_stat_ch.hostname
  pg_stat_ch.log_min_elevel
+ pg_stat_ch.otel_endpoint
  pg_stat_ch.queue_capacity
-(13 rows)
+ pg_stat_ch.use_otel
+(16 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 

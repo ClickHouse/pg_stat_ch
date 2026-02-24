@@ -12,7 +12,7 @@ extern "C" {
 
 // GUC variable storage
 bool psch_enabled = true;
-bool psch_use_otel = true;
+bool psch_use_otel = false;
 char* psch_clickhouse_host = nullptr;
 int psch_clickhouse_port = 9000;
 char* psch_clickhouse_user = nullptr;
@@ -20,8 +20,8 @@ char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
 bool psch_clickhouse_use_tls = false;
 bool psch_clickhouse_skip_tls_verify = false;
-extern char* psch_otel_endpoint = nullptr;
-extern char* psch_hostname = nullptr;
+char* psch_otel_endpoint = nullptr;
+char* psch_hostname = nullptr;
 int psch_queue_capacity = 131072;
 int psch_flush_interval_ms = 200;
 int psch_batch_max = 200000;
@@ -165,7 +165,7 @@ void PschInitGuc(void) {
 
   DefineCustomStringVariable(
       "pg_stat_ch.otel_endpoint",
-      "ClickHouse server hostname.",
+      "OpenTelemetry gRPC endpoint (host:port).",
       nullptr,
       &psch_otel_endpoint,
       "localhost:4317",
@@ -177,7 +177,7 @@ void PschInitGuc(void) {
       "pg_stat_ch.hostname",
       "The hostname of the current machine.",
       nullptr,
-      &psch_otel_endpoint,
+      &psch_hostname,
       "",
       PGC_POSTMASTER,
       0,

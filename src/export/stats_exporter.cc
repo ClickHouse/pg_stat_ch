@@ -4,11 +4,10 @@ extern "C" {
 #include "postgres.h"
 }
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
-
-#include <clickhouse/client.h>
 
 #include "config/guc.h"
 #include "export/stats_exporter.h"
@@ -74,10 +73,11 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
 
 // Build and export stats (records, metrics, ClickHouse rows) from events
 void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter *exporter) {
-  elog(DEBUG1, "pg_stat_ch: BuildClickHouseBlock() called with %zu events", events.size());
+  elog(DEBUG1, "pg_stat_ch: ExportEventStats() called with %zu events", events.size());
+
+  exporter->BeginBatch();
 
   elog(DEBUG2, "pg_stat_ch: creating column objects");
-  clickhouse::Block block;
 
   // Basic columns
   elog(DEBUG3, "pg_stat_ch: creating col_ts_start");
@@ -152,6 +152,7 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter *expor
   for (const auto& ev : events) {
     elog(DEBUG2, "pg_stat_ch: processing event %zu: pid=%d, query_len=%u", event_idx, ev.pid,
          ev.query_len);
+    exporter->BeginRow();
 
     int64_t unix_us = ev.ts_start + kPostgresEpochOffsetUs;
     col_ts_start->Append(unix_us);

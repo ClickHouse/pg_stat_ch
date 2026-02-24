@@ -264,18 +264,18 @@ const char *def(const char *val, const char *default_) {
   return val && *val ? val : default_;
 }
 
-std::string_view GetAHostname(std::string_view def) {
-  string_view hostname = psch_hostname;
-  if (!hostname || !*hostname) hostname = getenv("HOSTNAME");
-  if (!hostname || !*hostname) hostname = def;
-  return hostname;
+const char* GetAHostname(const char* fallback) {
+  if (psch_hostname && *psch_hostname) return psch_hostname;
+  const char* env = getenv("HOSTNAME");
+  if (env && *env) return env;
+  return fallback;
 }
 
 bool OTelExporter::EstablishNewConnection() {
   try {
-    const string_view hostname = GetAHostname("postgres-primary");
-    const string_view endpoint = def(psch_otel_endpoint, "localhost:4317");
-    const string_view pgch_version = PG_STAT_CH_VERSION;
+    const std::string hostname = GetAHostname("postgres-primary");
+    const std::string endpoint = def(psch_otel_endpoint, "localhost:4317");
+    const std::string pgch_version = PG_STAT_CH_VERSION;
 
     // Resource (The "ID Card" for our service)
     auto resource_attributes = opentelemetry::sdk::resource::ResourceAttributes{
@@ -354,6 +354,6 @@ bool OTelExporter::CommitBatch() {
 
 }  // namespace
 
-std::unique_ptr<StatsExporter> MakeOTelExporter() {
+std::unique_ptr<StatsExporter> MakeOpenTelemetryExporter() {
   return std::make_unique<OTelExporter>();
 }

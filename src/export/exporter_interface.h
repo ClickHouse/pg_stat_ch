@@ -2,6 +2,7 @@
 #define PG_STAT_CH_SRC_EXPORT_BASIC_EXPORTER_H_
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -50,8 +51,11 @@ class StatsExporter {
   virtual void ResetFailures() = 0;
   virtual int NumExported() const = 0;
 
-  virtual ~StatsExporter() = 0;
+  virtual ~StatsExporter() = default;
 };
+
+inline StatsExporter::BasicColumn::~BasicColumn() = default;
+template<typename T> StatsExporter::Column<T>::~Column() = default;
 
 // Allows PG logging of exceptional cases without postgres.h
 void LogNegativeValue(const std::string &column_name, int64_t value);
