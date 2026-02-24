@@ -1,5 +1,5 @@
-#ifndef PG_STAT_CH_SRC_EXPORT_BASIC_EXPORTER_H_
-#define PG_STAT_CH_SRC_EXPORT_BASIC_EXPORTER_H_
+#ifndef PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_
+#define PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_
 
 #include <cstdint>
 #include <memory>
@@ -51,7 +51,7 @@ class StatsExporter {
   virtual void ResetFailures() = 0;
   virtual int NumExported() const = 0;
 
-  virtual ~StatsExporter() = default;
+  virtual ~StatsExporter() = 0;
 };
 
 inline StatsExporter::BasicColumn::~BasicColumn() = default;
@@ -75,4 +75,4 @@ void LogNegativeValue(const std::string &column_name, int64_t value);
 //   exporter->CommitBatch();  // Inserts or collects stats
 // } 
 
-#endif  // PG_STAT_CH_SRC_EXPORT_BASIC_EXPORTER_H_
+#endif  // PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_

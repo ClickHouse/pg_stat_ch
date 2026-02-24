@@ -157,7 +157,7 @@ class OTelExporter : public StatsExporter {
     OTelExporter* exp;
     string name;
     otel_shared_ptr<metrics::Histogram<uint64_t>> instrument;
-    uint64_t stash_val;
+    uint64_t stash_val = 0;
   };
 
   // 3. Counter Instrument Metric Column (for histograms of specific tag values)
@@ -194,6 +194,7 @@ class OTelExporter : public StatsExporter {
     RecordOnlyColumn(OTelExporter* e, string_view n) : exp(e), name(n) {}
 
     void Append(const T& val) final {
+      assert(exp->row_active && exp->current_log_record);
       exp->current_log_record->SetAttribute(name, NoStringViews(val));
     }
     void Crunch() final {} // No metrics to emit

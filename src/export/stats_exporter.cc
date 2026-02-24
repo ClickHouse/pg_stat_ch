@@ -290,7 +290,7 @@ int PschExportBatch(void) {
   if (!exporter->IsConnected()) {
     elog(DEBUG1, "pg_stat_ch: client is null, initializing");
     if (!exporter->EstablishNewConnection()) {
-      PschRecordExportFailure("Failed to connect to ClickHouse");
+      PschRecordExportFailure("Failed to connect to exporter backend");
       return 0;
     }
   }
@@ -316,12 +316,13 @@ int PschExportBatch(void) {
 }
 
 void PschResetRetryState(void) {
-  g_exporter.exporter->ResetFailures();
+  if (g_exporter.exporter)
+    g_exporter.exporter->ResetFailures();
 }
 
 int PschGetRetryDelayMs(void) {
   StatsExporter *exporter = g_exporter.exporter.get();
-  if (exporter && exporter->NumConsecutiveFailures() <= 0) {
+  if (!exporter || exporter->NumConsecutiveFailures() <= 0) {
     return 0;
   }
   // Exponential backoff: base * 2^(failures-1), capped at max
@@ -338,7 +339,7 @@ int PschGetConsecutiveFailures(void) {
 
 void PschExporterShutdown(void) {
   g_exporter.exporter.reset();
-  elog(LOG, "pg_stat_ch: ClickHouse exporter shutdown");
+  elog(LOG, "pg_stat_ch: statistics exporter shutdown");
 }
 
 }  // extern "C"
