@@ -8,7 +8,7 @@ extern "C" {
 
 #include "postgres.h"
 
-// Initialize the ClickHouse exporter (called once at bgworker startup)
+// Initialize the statistics exporter (called once at bgworker startup)
 bool PschExporterInit(void);
 
 // Export one batch. Returns number of events exported (0 = queue empty or error).

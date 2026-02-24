@@ -3,7 +3,7 @@
 
 #include <memory>
 
-#include "exporter_interface.h"
+#include "export/exporter_interface.h"
 
 std::unique_ptr<StatsExporter> MakeOpenTelemetryExporter();
 
