@@ -1,10 +1,9 @@
-# Findabsl.cmake - Bridge find_package(absl) to targets already built
-# by gRPC's bundled abseil (via opentelemetry-cpp FetchContent).
+# Findabsl.cmake - Bridge find_package(absl) to vendored abseil targets.
 #
 # clickhouse-cpp calls find_package(absl REQUIRED) when WITH_SYSTEM_ABSEIL=ON.
-# Since abseil was built as a subdirectory (not installed), there's no
-# abslConfig.cmake on disk. This Module-mode find script checks that the
-# required targets exist and sets absl_FOUND.
+# The vendored gRPC (fetched by opentelemetry-cpp) builds abseil as a
+# subdirectory, so there's no abslConfig.cmake on disk. This Module-mode
+# find script checks that the required target exists and sets absl_FOUND.
 
 if(TARGET absl::int128)
   set(absl_FOUND TRUE)

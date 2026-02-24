@@ -42,6 +42,10 @@ set(WITH_EXAMPLES OFF CACHE BOOL "Disable OTel examples" FORCE)
 set(WITH_FUNC_TESTS OFF CACHE BOOL "Disable OTel functional tests" FORCE)
 set(OPENTELEMETRY_INSTALL OFF CACHE BOOL "" FORCE)
 set(WITH_ABSEIL ON CACHE BOOL "Use Abseil for OTel" FORCE)
+# Always use vendored gRPC + abseil (never pick up system packages).
+# This prevents find_package(gRPC) from short-circuiting FetchContent
+# and leaving absl:: targets undefined.
+set(CMAKE_DISABLE_FIND_PACKAGE_gRPC TRUE)
 add_subdirectory(third_party/opentelemetry-cpp EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------------------------
