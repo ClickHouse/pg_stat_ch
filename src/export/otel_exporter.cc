@@ -15,6 +15,7 @@
 #include "config/guc.h"
 #include "export/exporter_interface.h"
 
+#include <cassert>
 #include <chrono>
 #include <map>
 
@@ -35,12 +36,12 @@ template<typename T> using otel_unique_ptr = nostd::unique_ptr<T>;
 class OTelExporter : public StatsExporter {
  public:
   void BeginBatch() final {
+    if (row_active) EndRow();  // Just in case
     columns.clear();
-    if (row_active) EndRow(); // Just in case
   }
 
   void BeginRow() final {
-    if (row_active) EndRow();
+    if (row_active) EndRow();  // We don't make the user call this
     current_row_tags.clear();
     current_log_record = logger->CreateLogRecord();
     row_active = true;
@@ -113,10 +114,10 @@ class OTelExporter : public StatsExporter {
     TagColumn(OTelExporter* e, string_view n) : exp(e), name(n) {}
     
     void Append(const T& val) final {
-      // Convert to string and store in the shared map for THIS row
-      exp->current_row_tags[name] = to_string(val); 
-      // Also put it in the log record so it's searchable!
+      // Always add values to the log record.
       exp->current_log_record->SetAttribute(name, val);
+      // Convert to string and store in the shared map for THIS row
+      exp->current_row_tags[name] = to_string(val);
     }
     void Crunch() final {} // Nothing to do, tags are passive at EndRow
 

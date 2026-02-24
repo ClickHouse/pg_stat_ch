@@ -15,12 +15,12 @@ class StatsExporter {
   class BasicColumn {
    public:
     virtual void Crunch() = 0;  // Implementation-defined processing helper.
-    virtual ~BasicColumn() = 0;
+    virtual ~BasicColumn() = default;
   };
   template<typename T> class Column : public BasicColumn {
    public:
     virtual void Append(const T &t) = 0;
-    virtual ~Column() = 0;
+    virtual ~Column() = default;
   };
 
  public:
@@ -51,11 +51,8 @@ class StatsExporter {
   virtual void ResetFailures() = 0;
   virtual int NumExported() const = 0;
 
-  virtual ~StatsExporter() = 0;
+  virtual ~StatsExporter() = default;
 };
-
-inline StatsExporter::BasicColumn::~BasicColumn() = default;
-template<typename T> StatsExporter::Column<T>::~Column() = default;
 
 // Allows PG logging of exceptional cases without postgres.h
 void LogNegativeValue(const std::string &column_name, int64_t value);
@@ -63,12 +60,12 @@ void LogNegativeValue(const std::string &column_name, int64_t value);
 // Expected usage:
 // void ProcessBatch(StatsExporter *exporter) {
 //   exporter->BeginBatch(); // no op or ClickHouse column reset
-//   auto *col_user = TagString("username");
-//   auto *col_rows = AddInt64Column("rows");
+//   auto col_user = exporter->TagString("username");
+//   auto col_rows = exporter->MetricUInt64("rows");
 // 
 //   for (const auto &ev : events) {
 //     exporter->BeginRow(); // no-op or initialize tag map
-//     col_user->Append(static_cast<int64_t>(ev.queryid));
+//     col_user->Append(ev.username);
 //     col_rows->Append(ev.rows);
 //   }
 // 
