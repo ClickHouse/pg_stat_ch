@@ -8,7 +8,7 @@
 | `tap` | Perl TAP tests (stress, concurrent, lifecycle) | PG built with `-Dtap_tests=enabled` ([see below](#tap-tests)) | `./scripts/run-tests.sh <pg_install> tap` |
 | `isolation` | Race condition tests | None | `mise run test:isolation` |
 | `stress` | High-load stress test with pgbench | None | `mise run test:stress` |
-| `clickhouse` | ClickHouse integration tests | Docker | `mise run test:clickhouse` |
+| `clickhouse` | ClickHouse integration tests | Docker + Docker Compose | `mise run test:clickhouse` |
 | `all` | Run all tests | None (skips TAP if unavailable) | `mise run test:all` |
 
 ## Running Tests
@@ -21,7 +21,7 @@ mise run test:all
 ./scripts/run-tests.sh 18 all
 ./scripts/run-tests.sh 17 regress
 
-# ClickHouse integration tests (requires Docker)
+# ClickHouse integration tests (requires Docker and Docker Compose)
 mise run clickhouse:start
 mise run test:clickhouse
 mise run clickhouse:stop

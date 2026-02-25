@@ -11,7 +11,7 @@ A PostgreSQL extension that captures per-query execution telemetry and exports i
 
 ## Quickstart
 
-Run local PostgreSQL + ClickHouse with schema preloaded:
+Run local PostgreSQL + ClickHouse with schema preloaded (requires Docker and Docker Compose):
 
 ```bash
 ./scripts/quickstart.sh up
