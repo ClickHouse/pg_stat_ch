@@ -8,7 +8,7 @@
 | `tap` | Perl TAP tests (stress, concurrent, lifecycle) | PG built with `-Dtap_tests=enabled` ([see below](#tap-tests)) | `./scripts/run-tests.sh <pg_install> tap` |
 | `isolation` | Race condition tests | None | `mise run test:isolation` |
 | `stress` | High-load stress test with pgbench | None | `mise run test:stress` |
-| `clickhouse` | ClickHouse integration tests | Docker + Docker Compose | `mise run test:clickhouse` |
+| `clickhouse` | ClickHouse integration tests | Docker + Docker Compose + TAP-enabled PG ([see setup guide](docker-setup.md)) | `./scripts/run-tests.sh ../postgres/install_tap clickhouse` |
 | `all` | Run all tests | None (skips TAP if unavailable) | `mise run test:all` |
 
 ## Running Tests
@@ -21,10 +21,9 @@ mise run test:all
 ./scripts/run-tests.sh 18 all
 ./scripts/run-tests.sh 17 regress
 
-# ClickHouse integration tests (requires Docker and Docker Compose)
-mise run clickhouse:start
-mise run test:clickhouse
-mise run clickhouse:stop
+# ClickHouse integration tests — see docs/docker-setup.md for prerequisites
+PERL5LIB="$HOME/perl5/lib/perl5" \
+    ./scripts/run-tests.sh ../postgres/install_tap clickhouse
 ```
 
 ## TAP Tests

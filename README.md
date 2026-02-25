@@ -219,7 +219,7 @@ mise run test:regress                      # SQL regression tests only
 ./scripts/run-tests.sh ../postgres/install_tap tap  # TAP tests with local PG build
 ```
 
-See [docs/testing.md](docs/testing.md) for test types, TAP test setup, and a full listing of test files.
+See [docs/testing.md](docs/testing.md) for test types, TAP test setup, and a full listing of test files. For ClickHouse tests, see [docs/docker-setup.md](docs/docker-setup.md) for Docker and TAP-enabled PostgreSQL setup.
 
 ## Troubleshooting
 
