@@ -5,6 +5,8 @@
 *.a
 .deps/
 build/
+CMakeCache.txt
+CMakeFiles/
 
 # Compile database
 compile_commands.json

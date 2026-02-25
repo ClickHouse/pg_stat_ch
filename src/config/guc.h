@@ -10,11 +10,14 @@ extern "C" {
 
 // GUC variables (defined in guc.cc)
 extern bool psch_enabled;
+extern bool psch_use_otel;
 extern char* psch_clickhouse_host;
 extern int psch_clickhouse_port;
 extern char* psch_clickhouse_user;
 extern char* psch_clickhouse_password;
 extern char* psch_clickhouse_database;
+extern char* psch_otel_endpoint;
+extern char* psch_hostname;
 extern int psch_queue_capacity;
 extern int psch_flush_interval_ms;
 extern int psch_batch_max;

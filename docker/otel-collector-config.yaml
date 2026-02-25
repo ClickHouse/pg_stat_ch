@@ -1,0 +1,29 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  file/logs:
+    path: /otel-data/logs.jsonl
+    format: json
+    flush_interval: 500ms
+  file/metrics:
+    path: /otel-data/metrics.jsonl
+    format: json
+    flush_interval: 500ms
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [file/logs]
+    metrics:
+      receivers: [otlp]
+      exporters: [file/metrics]
