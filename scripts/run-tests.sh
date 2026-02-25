@@ -17,7 +17,7 @@ usage() {
     echo "Usage: $0 <PG_VERSION|PG_PATH> [test_type] [test_filter]"
     echo "  PG_VERSION:  PostgreSQL version (16, 17, 18) - uses mise"
     echo "  PG_PATH:     Path to local PostgreSQL installation"
-    echo "  test_type:   regress, tap, isolation, stress, clickhouse, or all (default: all)"
+    echo "  test_type:   regress, tap, isolation, stress, clickhouse, otel, or all (default: all)"
     echo "  test_filter: (tap only) pattern to match test files, e.g., '021' for t/*021*.pl"
     echo ""
     echo "Examples:"
@@ -27,6 +27,7 @@ usage() {
     echo "  $0 ../postgres/install_tap tap 021  # Run only t/*021*.pl test"
     echo "  $0 18 stress                    # Run only stress test against PG 18"
     echo "  $0 18 clickhouse                # Run ClickHouse integration tests (requires Docker)"
+    echo "  $0 18 otel                      # Run OTel integration tests (requires Docker)"
     exit 1
 }
 
@@ -250,6 +251,68 @@ run_clickhouse() {
         t/010_clickhouse_export.pl t/011_clickhouse_reconnect.pl
 }
 
+# Run OTel integration tests
+run_otel() {
+    log_info "Running OTel integration tests..."
+
+    # Check if Docker is available
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker is required for OTel tests"
+        return 1
+    fi
+
+    # Check if OTel Collector is running, start if not
+    if ! curl -sf http://localhost:13133/ >/dev/null 2>&1; then
+        log_info "Starting OTel Collector container..."
+
+        export OTEL_DATA_DIR="${OTEL_DATA_DIR:-/tmp/psch-otel-data}"
+        mkdir -p "${OTEL_DATA_DIR}"
+        chmod 777 "${OTEL_DATA_DIR}"
+
+        docker compose -f docker/docker-compose.otel.yml up -d
+        # Wait for health check
+        for i in $(seq 1 30); do
+            if curl -sf http://localhost:13133/ >/dev/null 2>&1; then
+                break
+            fi
+            sleep 1
+        done
+
+        if ! curl -sf http://localhost:13133/ >/dev/null 2>&1; then
+            log_error "OTel Collector failed to start"
+            return 1
+        fi
+    fi
+
+    local perl_lib="${PG_LIB}/pgxs/src/test/perl"
+    if [[ ! -d "${perl_lib}" ]]; then
+        log_warn "PostgreSQL TAP test modules not found at ${perl_lib}"
+        log_warn "OTel tests require PostgreSQL built with --enable-tap-tests"
+        log_warn "Skipping OTel tests."
+        return 0
+    fi
+
+    local pg_regress="${PG_LIB}/pgxs/src/test/regress/pg_regress"
+    if [[ ! -x "${pg_regress}" ]]; then
+        log_warn "pg_regress not found at ${pg_regress}"
+        log_warn "Skipping OTel tests."
+        return 0
+    fi
+
+    # Clean up stale test data directories
+    rm -rf tmp_check
+
+    # Set env vars for the test helper module
+    export PROJECT_DIR="${PROJECT_DIR}"
+    export OTEL_DATA_DIR="${OTEL_DATA_DIR:-/tmp/psch-otel-data}"
+
+    # Run only OTel-related tests
+    PG_REGRESS="${pg_regress}" prove -v --timer \
+        -I "${perl_lib}" \
+        -I t \
+        t/024_otel_export.pl t/025_otel_reconnect.pl
+}
+
 # Main execution
 case "${TEST_TYPE}" in
     regress)
@@ -266,6 +329,9 @@ case "${TEST_TYPE}" in
         ;;
     clickhouse)
         run_clickhouse
+        ;;
+    otel)
+        run_otel
         ;;
     all)
         run_regress

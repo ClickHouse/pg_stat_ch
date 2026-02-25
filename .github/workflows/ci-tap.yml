@@ -96,11 +96,31 @@ jobs:
         run: |
           docker exec clickhouse-test clickhouse-client --multiquery < docker/init/00-schema.sql
 
+      - name: Start OTel Collector
+        run: |
+          export OTEL_DATA_DIR=/tmp/psch-otel-data
+          mkdir -p "$OTEL_DATA_DIR"
+          chmod 777 "$OTEL_DATA_DIR"
+          docker compose -f docker/docker-compose.otel.yml up -d
+          for i in {1..30}; do
+            if curl -sf http://localhost:13133/ >/dev/null 2>&1; then
+              echo "OTel Collector ready"
+              exit 0
+            fi
+            echo "Waiting for OTel Collector... ($i/30)"
+            sleep 1
+          done
+          echo "OTel Collector not ready after 30s"
+          docker logs psch-otel-collector
+          exit 1
+
       - name: Run TAP tests
         run: |
           export PATH="${{ env.PG_TAP_DIR }}/bin:$PATH"
           export PG_REGRESS="${{ env.PG_TAP_DIR }}/lib/postgresql/pgxs/src/test/regress/pg_regress"
           export PERL_LIB="${{ env.PG_TAP_DIR }}/lib/postgresql/pgxs/src/test/perl"
+          export OTEL_DATA_DIR=/tmp/psch-otel-data
+          export PROJECT_DIR="${{ github.workspace }}"
           prove -v --timer -I "$PERL_LIB" -I t t/*.pl
 
       - name: Upload logs on failure
@@ -113,3 +133,7 @@ jobs:
       - name: Cleanup ClickHouse
         if: always()
         run: docker rm -f clickhouse-test 2>/dev/null || true
+
+      - name: Cleanup OTel Collector
+        if: always()
+        run: docker compose -f docker/docker-compose.otel.yml down -v 2>/dev/null || true

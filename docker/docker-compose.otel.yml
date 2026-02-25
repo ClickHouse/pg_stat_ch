@@ -1,0 +1,10 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    container_name: psch-otel-collector
+    ports:
+      - "4317:4317"
+      - "13133:13133"
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ${OTEL_DATA_DIR:-/tmp/psch-otel-data}:/otel-data
