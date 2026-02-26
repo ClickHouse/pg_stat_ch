@@ -1,6 +1,6 @@
-// pg_stat_ch ClickHouse exporter
-#ifndef PG_STAT_CH_SRC_EXPORT_CLICKHOUSE_EXPORTER_H_
-#define PG_STAT_CH_SRC_EXPORT_CLICKHOUSE_EXPORTER_H_
+// pg_stat_ch statistics exporter
+#ifndef PG_STAT_CH_SRC_EXPORT_STATS_EXPORTER_H_
+#define PG_STAT_CH_SRC_EXPORT_STATS_EXPORTER_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -8,7 +8,7 @@ extern "C" {
 
 #include "postgres.h"
 
-// Initialize the ClickHouse exporter (called once at bgworker startup)
+// Initialize the statistics exporter (called once at bgworker startup)
 bool PschExporterInit(void);
 
 // Export one batch. Returns number of events exported (0 = queue empty or error).
@@ -26,4 +26,4 @@ int PschGetConsecutiveFailures(void);
 }
 #endif
 
-#endif  // PG_STAT_CH_SRC_EXPORT_CLICKHOUSE_EXPORTER_H_
+#endif  // PG_STAT_CH_SRC_EXPORT_STATS_EXPORTER_H_
