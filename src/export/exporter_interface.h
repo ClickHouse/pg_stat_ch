@@ -62,14 +62,14 @@ void LogNegativeValue(const std::string &column_name, int64_t value);
 //   exporter->BeginBatch(); // no op or ClickHouse column reset
 //   auto col_user = exporter->TagString("username");
 //   auto col_rows = exporter->MetricUInt64("rows");
-// 
+//
 //   for (const auto &ev : events) {
 //     exporter->BeginRow(); // no-op or initialize tag map
 //     col_user->Append(ev.username);
 //     col_rows->Append(ev.rows);
 //   }
-// 
+//
 //   exporter->CommitBatch();  // Inserts or collects stats
-// } 
+// }
 
 #endif  // PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_

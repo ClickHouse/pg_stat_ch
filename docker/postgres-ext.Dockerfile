@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/pg_stat_ch/build/pg_stat_ch.so /usr/lib/postgresql/18/lib/
-COPY --from=builder /build/pg_stat_ch/sql/pg_stat_ch--0.1.0.sql /usr/share/postgresql/18/extension/
+COPY --from=builder /build/pg_stat_ch/sql/pg_stat_ch--0.1.sql /usr/share/postgresql/18/extension/
 COPY --from=builder /build/pg_stat_ch/pg_stat_ch.control /usr/share/postgresql/18/extension/
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \

@@ -5,7 +5,7 @@
 #   GIT_VERSION - Version string from git describe, or fallback
 
 function(get_git_version output_var)
-  set(fallback_version "0.1.0")
+  set(fallback_version "0.1")
 
   find_package(Git QUIET)
 

@@ -72,7 +72,7 @@ mise run test:isolation     # Isolation tests (race conditions)
 **Source files:**
 - `src/pg_stat_ch.cc` - Main entry point with `_PG_init()` and SQL functions
 - `include/pg_stat_ch/pg_stat_ch.h` - Public header with version macro and declarations
-- `sql/pg_stat_ch--0.1.0.sql` - SQL function definitions
+- `sql/pg_stat_ch--0.1.sql` - SQL function definitions
 
 **Build system:**
 - CMake with presets (default=debug, release)
@@ -104,7 +104,7 @@ Two independent versions exist:
 | `default_version` | `pg_stat_ch.control` | PostgreSQL extension schema |
 
 - **Release workflow** uses `git describe --tags` for artifact naming
-- **Extension version** in `.control` must match SQL filename (e.g., `0.1.0` → `pg_stat_ch--0.1.0.sql`)
+- **Extension version** in `.control` must match SQL filename (e.g., `0.1` → `pg_stat_ch--0.1.sql`)
 - Only bump `default_version` when SQL interface changes (new functions, types, etc.)
 - Schema changes require a migration script: `pg_stat_ch--OLD--NEW.sql`
 
