@@ -12,11 +12,10 @@ extern "C" {
 #include <clickhouse/client.h>
 
 #include "config/guc.h"
-#include "export/stats_exporter.h"
 #include "export/exporter_interface.h"
+#include "export/stats_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
-
 
 namespace {
 
@@ -87,22 +86,23 @@ class ClickHouseExporter : public StatsExporter {
   int NumExported() const final { return exported_count; }
 
  private:
-  template<typename T, typename U> class ClickHouseColumn : public Column<T> {
+  template <typename T, typename U>
+  class ClickHouseColumn : public Column<T> {
    public:
-    template<typename... CH_Args>
-    ClickHouseColumn(ClickHouseExporter *exporter_, std::string_view name_, CH_Args&&... args):
-        exporter(exporter_), name(name_), ch_column(std::make_shared<U>(args...)) {}
+    template <typename... CH_Args>
+    ClickHouseColumn(ClickHouseExporter* exporter_, std::string_view name_, CH_Args&&... args)
+        : exporter(exporter_), name(name_), ch_column(std::make_shared<U>(args...)) {}
 
-    void Append(const T &t) final { ch_column->Append(t); }
+    void Append(const T& t) final { ch_column->Append(t); }
     void Crunch() final { exporter->block->AppendColumn(name, ch_column); }
 
    private:
-    ClickHouseExporter *const exporter;
+    ClickHouseExporter* const exporter;
     std::string name;
     const shared_ptr<U> ch_column;
   };
 
-  template<class T, typename U = typename T::DataType, typename... Args>
+  template <class T, typename U = typename T::DataType, typename... Args>
   shared_ptr<ClickHouseColumn<U, T>> Wrap(std::string_view name, Args&&... args) {
     auto col = std::make_shared<ClickHouseColumn<U, T>>(this, name, args...);
     columns.push_back(col);
@@ -122,7 +122,7 @@ bool ClickHouseExporter::CommitBatch() {
       elog(WARNING, "pg_stat_ch: Logic error: Block not built");
       return false;
     }
-    for (const auto &col : columns) {
+    for (const auto& col : columns) {
       col->Crunch();
     }
 
@@ -195,7 +195,7 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
 }
 
 // Build and export stats (records, metrics, ClickHouse rows) from events
-void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter *exporter) {
+void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
   elog(DEBUG1, "pg_stat_ch: ExportEventStats() called with %zu events", events.size());
 
   exporter->BeginBatch();
@@ -382,7 +382,6 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter *expor
   elog(DEBUG1, "pg_stat_ch: finished processing %zu events", event_idx);
 }
 
-
 bool ClickHouseExporter::EstablishNewConnection() {
   try {
     clickhouse::ClientOptions options;
@@ -442,7 +441,7 @@ bool PschExporterInit(void) {
 
 int PschExportBatch(void) {
   elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
-  StatsExporter *exporter = g_exporter.exporter.get();
+  StatsExporter* exporter = g_exporter.exporter.get();
 
   if (!exporter->IsConnected()) {
     elog(DEBUG1, "pg_stat_ch: client is null, initializing");
@@ -478,7 +477,7 @@ void PschResetRetryState(void) {
 }
 
 int PschGetRetryDelayMs(void) {
-  StatsExporter *exporter = g_exporter.exporter.get();
+  StatsExporter* exporter = g_exporter.exporter.get();
   if (!exporter || exporter->NumConsecutiveFailures() <= 0) {
     return 0;
   }

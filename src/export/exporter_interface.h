@@ -10,16 +10,18 @@ class StatsExporter {
  protected:
   using string = std::string;
   using string_view = std::string_view;
-  template<typename T> using shared_ptr = std::shared_ptr<T>;
+  template <typename T>
+  using shared_ptr = std::shared_ptr<T>;
 
   class BasicColumn {
    public:
     virtual void Crunch() = 0;  // Implementation-defined processing helper.
     virtual ~BasicColumn() = default;
   };
-  template<typename T> class Column : public BasicColumn {
+  template <typename T>
+  class Column : public BasicColumn {
    public:
-    virtual void Append(const T &t) = 0;
+    virtual void Append(const T& t) = 0;
     virtual ~Column() = default;
   };
 
@@ -55,7 +57,7 @@ class StatsExporter {
 };
 
 // Allows PG logging of exceptional cases without postgres.h
-void LogNegativeValue(const std::string &column_name, int64_t value);
+void LogNegativeValue(const std::string& column_name, int64_t value);
 
 // Expected usage:
 // void ProcessBatch(StatsExporter *exporter) {
