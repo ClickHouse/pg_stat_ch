@@ -83,6 +83,12 @@ sudo apt install cpanminus meson ninja-build
 cpanm --notest IPC::Run
 ```
 
+When `cpanm` runs without root it installs to `~/perl5`. Both the Meson configure step and the test runner need to find `IPC::Run` there, so add this to your shell profile (`~/.zshrc`, `~/.bash_profile`, etc.) and reload it:
+
+```bash
+export PERL5LIB="$HOME/perl5/lib/perl5${PERL5LIB:+:$PERL5LIB}"
+```
+
 Configure and build:
 
 ```bash
@@ -103,8 +109,5 @@ cmake --build build && cmake --install build
 Run the ClickHouse tests:
 
 ```bash
-PERL5LIB="$HOME/perl5/lib/perl5" \
-    ./scripts/run-tests.sh ../postgres/install_tap clickhouse
+./scripts/run-tests.sh ../postgres/install_tap clickhouse
 ```
-
-> **Note:** The `PERL5LIB` prefix is only needed if `cpanm` installed to `~/perl5` (the default when not running as root). If you installed system-wide with `sudo cpanm`, omit it.

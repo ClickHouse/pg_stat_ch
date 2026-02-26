@@ -32,10 +32,12 @@ TAP tests require PostgreSQL compiled with `-Dtap_tests=enabled` (Meson). Mise-i
 
 ### 1. Build PostgreSQL with TAP support
 
+See [docs/docker-setup.md](docker-setup.md) for prerequisites (`IPC::Run`, `PERL5LIB`, Meson).
+
 ```bash
 cd ../postgres
 meson setup build_tap --prefix=$(pwd)/install_tap -Dtap_tests=enabled
-ninja -C build_tap -j$(nproc)
+ninja -C build_tap
 ninja -C build_tap install
 ```
 
