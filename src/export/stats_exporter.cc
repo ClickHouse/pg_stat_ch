@@ -11,7 +11,7 @@ extern "C" {
 #include <clickhouse/client.h>
 
 #include "config/guc.h"
-#include "export/clickhouse_exporter.h"
+#include "export/stats_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
 
