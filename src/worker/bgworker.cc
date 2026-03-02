@@ -41,7 +41,7 @@ extern "C" {
 #include <csignal>
 
 #include "config/guc.h"
-#include "export/clickhouse_exporter.h"
+#include "export/stats_exporter.h"
 #include "worker/bgworker.h"
 
 // Custom wait event for pg_stat_activity visibility
@@ -164,7 +164,7 @@ static int CalculateSleepMs() {
 //
 // Note on blocking: If we're blocked in ClickHouse network I/O when a barrier
 // signal arrives, we can't process it until the I/O completes. The socket
-// timeouts configured in clickhouse_exporter.cc (30 seconds) bound this delay.
+// timeouts configured in stats_exporter.cc (30 seconds) bound this delay.
 static void RunExportCycle(uint32 wait_event) {
   int sleep_ms = CalculateSleepMs();
   (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
