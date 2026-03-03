@@ -9,14 +9,15 @@ extern "C" {
 #include <string>
 #include <vector>
 
+#include <clickhouse/client.h>
+
 #include "config/guc.h"
-#include "export/stats_exporter.h"
 #include "export/exporter_interface.h"
 #include "export/clickhouse_exporter.h"
 #include "export/otel_exporter.h"
+#include "export/stats_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
-
 
 namespace {
 
@@ -72,7 +73,7 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
 }
 
 // Build and export stats (records, metrics, ClickHouse rows) from events
-void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter *exporter) {
+void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
   elog(DEBUG1, "pg_stat_ch: ExportEventStats() called with %zu events", events.size());
 
   exporter->BeginBatch();
@@ -285,7 +286,7 @@ bool PschExporterInit(void) {
 
 int PschExportBatch(void) {
   elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
-  StatsExporter *exporter = g_exporter.exporter.get();
+  StatsExporter* exporter = g_exporter.exporter.get();
 
   if (!exporter->IsConnected()) {
     elog(DEBUG1, "pg_stat_ch: client is null, initializing");
@@ -321,7 +322,7 @@ void PschResetRetryState(void) {
 }
 
 int PschGetRetryDelayMs(void) {
-  StatsExporter *exporter = g_exporter.exporter.get();
+  StatsExporter* exporter = g_exporter.exporter.get();
   if (!exporter || exporter->NumConsecutiveFailures() <= 0) {
     return 0;
   }

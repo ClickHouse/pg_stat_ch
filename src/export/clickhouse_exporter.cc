@@ -74,11 +74,12 @@ class ClickHouseExporter : public StatsExporter {
   int NumExported() const final { return exported_count; }
 
  private:
-  template<typename T, typename U> class ClickHouseColumn : public Column<T> {
+  template <typename T, typename U>
+  class ClickHouseColumn : public Column<T> {
    public:
     template<typename... CH_Args>
-    ClickHouseColumn(ClickHouseExporter *exporter_, std::string_view name_, CH_Args&&... args):
-        exporter(exporter_), name(name_), ch_column(std::make_shared<U>(args...)) {}
+    ClickHouseColumn(ClickHouseExporter* exporter_, std::string_view name_, CH_Args&&... args)
+        : exporter(exporter_), name(name_), ch_column(std::make_shared<U>(args...)) {}
 
     void Append(const T &t) final { ch_column->Append(t); }
     void Crunch() final { exporter->block->AppendColumn(name, ch_column); }
@@ -102,6 +103,42 @@ class ClickHouseExporter : public StatsExporter {
   int consecutive_failures = 0;
   int exported_count = 0;
 };
+
+bool ClickHouseExporter::CommitBatch() {
+  try {
+    if (!block) {
+      elog(WARNING, "pg_stat_ch: Logic error: Block not built");
+      return false;
+    }
+    for (const auto &col : columns) {
+      col->Crunch();
+    }
+
+    if (!client && (!EstablishNewConnection() || !client)) {
+      elog(WARNING, "pg_stat_ch: Connection not established; bailing.");
+      return false;
+    }
+
+    elog(DEBUG1, "pg_stat_ch: Inserting Block to ClickHouse");
+    client->Insert("events_raw", *block);
+    elog(DEBUG1, "pg_stat_ch: insert completed");
+
+    // Success: reset retry state and record success timestamp
+    consecutive_failures = 0;
+    elog(DEBUG1, "pg_stat_ch: exported %d events to ClickHouse", exported_count);
+    return true;
+
+  } catch (const std::exception& ex) {
+    std::string err_msg = ex.what();
+    elog(WARNING, "pg_stat_ch: failed to insert to ClickHouse: %s", err_msg.c_str());
+
+    // Failure: increment counter, record error, reset client for reconnect
+    consecutive_failures++;
+    PschRecordExportFailure(err_msg.c_str());
+    client.reset();
+    return false;
+  }
+}
 
 bool ClickHouseExporter::EstablishNewConnection() {
   try {
@@ -146,42 +183,6 @@ bool ClickHouseExporter::EstablishNewConnection() {
   } catch (const std::exception& ex) {
     std::string err_msg = ex.what();
     elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s", err_msg.c_str());
-    client.reset();
-    return false;
-  }
-}
-
-bool ClickHouseExporter::CommitBatch() {
-  try {
-    if (!block) {
-      elog(WARNING, "pg_stat_ch: Logic error: Block not built");
-      return false;
-    }
-    for (const auto &col : columns) {
-      col->Crunch();
-    }
-
-    if (!client && (!EstablishNewConnection() || !client)) {
-      elog(WARNING, "pg_stat_ch: Connection not established; bailing.");
-      return false;
-    }
-
-    elog(DEBUG1, "pg_stat_ch: Inserting Block to ClickHouse");
-    client->Insert("events_raw", *block);
-    elog(DEBUG1, "pg_stat_ch: insert completed");
-
-    // Success: reset retry state and record success timestamp
-    consecutive_failures = 0;
-    elog(DEBUG1, "pg_stat_ch: exported %d events to ClickHouse", exported_count);
-    return true;
-
-  } catch (const std::exception& ex) {
-    std::string err_msg = ex.what();
-    elog(WARNING, "pg_stat_ch: failed to insert to ClickHouse: %s", err_msg.c_str());
-
-    // Failure: increment counter, record error, reset client for reconnect
-    consecutive_failures++;
-    PschRecordExportFailure(err_msg.c_str());
     client.reset();
     return false;
   }
