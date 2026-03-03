@@ -12,8 +12,8 @@ extern "C" {
 #include <clickhouse/client.h>
 
 #include "config/guc.h"
-#include "export/exporter_interface.h"
 #include "export/clickhouse_exporter.h"
+#include "export/exporter_interface.h"
 #include "export/otel_exporter.h"
 #include "export/stats_exporter.h"
 #include "queue/event.h"
@@ -263,12 +263,12 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
 }  // namespace
 
 // Used to report negative values, which are not supported by OTel.
-void LogNegativeValue(const std::string &column_name, int64_t value) {
+void LogNegativeValue(const std::string& column_name, int64_t value) {
   static std::chrono::steady_clock::time_point last_log = {};
   auto now = std::chrono::steady_clock::now();
   if (now - last_log > std::chrono::seconds(1)) {
-    elog(WARNING, "pg_stat_ch: Negative value %ld clamped to 0 for column `%s`", 
-         value, column_name.c_str());
+    elog(WARNING, "pg_stat_ch: Negative value %ld clamped to 0 for column `%s`", value,
+         column_name.c_str());
     last_log = now;
   }
 }

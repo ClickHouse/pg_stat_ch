@@ -77,20 +77,20 @@ class ClickHouseExporter : public StatsExporter {
   template <typename T, typename U>
   class ClickHouseColumn : public Column<T> {
    public:
-    template<typename... CH_Args>
+    template <typename... CH_Args>
     ClickHouseColumn(ClickHouseExporter* exporter_, std::string_view name_, CH_Args&&... args)
         : exporter(exporter_), name(name_), ch_column(std::make_shared<U>(args...)) {}
 
-    void Append(const T &t) final { ch_column->Append(t); }
+    void Append(const T& t) final { ch_column->Append(t); }
     void Crunch() final { exporter->block->AppendColumn(name, ch_column); }
 
    private:
-    ClickHouseExporter *const exporter;
+    ClickHouseExporter* const exporter;
     std::string name;
     const shared_ptr<U> ch_column;
   };
 
-  template<class T, typename U = typename T::DataType, typename... Args>
+  template <class T, typename U = typename T::DataType, typename... Args>
   shared_ptr<ClickHouseColumn<U, T>> Wrap(std::string_view name, Args&&... args) {
     auto col = std::make_shared<ClickHouseColumn<U, T>>(this, name, args...);
     columns.push_back(col);
@@ -110,7 +110,7 @@ bool ClickHouseExporter::CommitBatch() {
       elog(WARNING, "pg_stat_ch: Logic error: Block not built");
       return false;
     }
-    for (const auto &col : columns) {
+    for (const auto& col : columns) {
       col->Crunch();
     }
 
