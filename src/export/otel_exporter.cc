@@ -1,6 +1,4 @@
-#include "opentelemetry/logs/provider.h"
-#include "opentelemetry/metrics/meter.h"
-#include "opentelemetry/metrics/provider.h"
+#include <opentelemetry/common/key_value_iterable_view.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_exporter_options.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_factory.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_metric_exporter_factory.h>
@@ -10,7 +8,9 @@
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
-#include <opentelemetry/common/key_value_iterable_view.h>
+#include "opentelemetry/logs/provider.h"
+#include "opentelemetry/metrics/meter.h"
+#include "opentelemetry/metrics/provider.h"
 
 #include "config/guc.h"
 #include "export/exporter_interface.h"
@@ -30,18 +30,22 @@ namespace otlp = opentelemetry::exporter::otlp;
 namespace otel_common = opentelemetry::common;
 
 // Because Microsoft ruins everything
-template<typename T> using otel_shared_ptr = nostd::shared_ptr<T>;
-template<typename T> using otel_unique_ptr = nostd::unique_ptr<T>;
+template <typename T>
+using otel_shared_ptr = nostd::shared_ptr<T>;
+template <typename T>
+using otel_unique_ptr = nostd::unique_ptr<T>;
 
 class OTelExporter : public StatsExporter {
  public:
   void BeginBatch() final {
-    if (row_active) EndRow();  // Just in case
+    if (row_active)
+      EndRow();  // Just in case
     columns.clear();
   }
 
   void BeginRow() final {
-    if (row_active) EndRow();  // We don't make the user call this
+    if (row_active)
+      EndRow();  // We don't make the user call this
     current_row_tags.clear();
     current_log_record = logger->CreateLogRecord();
     row_active = true;
@@ -93,10 +97,11 @@ class OTelExporter : public StatsExporter {
 
  private:
   void EndRow() {
-    if (!row_active) return;
+    if (!row_active)
+      return;
 
     for (auto& col : columns) {
-      col->Crunch(); // Crunch happens for each row in OTel, not just the batch
+      col->Crunch();  // Crunch happens for each row in OTel, not just the batch
     }
 
     logger->EmitLogRecord(std::move(current_log_record));
@@ -109,21 +114,25 @@ class OTelExporter : public StatsExporter {
   // =====================================================================
 
   // No Instrument, Tag Column: Applies a tag to all metrics in the row.
-  template<typename T> class TagColumn : public Column<T> {
+  template <typename T>
+  class TagColumn : public Column<T> {
    public:
     TagColumn(OTelExporter* e, string_view n) : exp(e), name(n) {}
-    
+
     void Append(const T& val) final {
       // Always add values to the log record.
       exp->current_log_record->SetAttribute(name, val);
       // Convert to string and store in the shared map for THIS row
       exp->current_row_tags[name] = to_string(val);
     }
-    void Crunch() final {} // Nothing to do, tags are passive at EndRow
+    void Crunch() final {}  // Nothing to do, tags are passive at EndRow
 
-    static string to_string(const string &x) { return x; }
+    static string to_string(const string& x) { return x; }
     static string to_string(string_view x) { return string(x); }
-    template<typename U> static string to_string(U x) { return std::to_string(x); }
+    template <typename U>
+    static string to_string(U x) {
+      return std::to_string(x);
+    }
 
    private:
     OTelExporter* exp;
@@ -134,7 +143,7 @@ class OTelExporter : public StatsExporter {
   template <typename T>
   class HistogramColumn : public Column<T> {
    public:
-    HistogramColumn(OTelExporter* e, string_view n) 
+    HistogramColumn(OTelExporter* e, string_view n)
         : exp(e), name(n), instrument(exp->GetUnsignedHistogram(name)) {}
 
     void Append(const T& val) final {
@@ -146,13 +155,11 @@ class OTelExporter : public StatsExporter {
         LogNegativeValue(name, static_cast<int64_t>(val));
         stash_val = 0;
       } else {
-        stash_val = static_cast<uint64_t>(val); 
+        stash_val = static_cast<uint64_t>(val);
       }
     }
 
-    void Crunch() final {
-      instrument->Record(stash_val, exp->current_row_tags, {});
-    }
+    void Crunch() final { instrument->Record(stash_val, exp->current_row_tags, {}); }
 
    private:
     OTelExporter* exp;
@@ -164,8 +171,8 @@ class OTelExporter : public StatsExporter {
   // 3. Counter Instrument Metric Column (for histograms of specific tag values)
   class CounterColumn : public Column<string_view> {
    public:
-    CounterColumn(OTelExporter* e, string_view n):
-        exp(e), name(n), instrument(exp->GetUnsignedCounter(name + ".count")) {}
+    CounterColumn(OTelExporter* e, string_view n)
+        : exp(e), name(n), instrument(exp->GetUnsignedCounter(name + ".count")) {}
 
     void Append(const string_view& val) final {
       stash_val = std::string(val);
@@ -190,7 +197,8 @@ class OTelExporter : public StatsExporter {
 
   // 4. Record Only Data Column: No metrics, just logs.
   // (Note that all columns are put in records; these just do nothing else.)
-  template<typename T> class RecordOnlyColumn : public Column<T> {
+  template <typename T>
+  class RecordOnlyColumn : public Column<T> {
    public:
     RecordOnlyColumn(OTelExporter* e, string_view n) : exp(e), name(n) {}
 
@@ -198,9 +206,12 @@ class OTelExporter : public StatsExporter {
       assert(exp->row_active && exp->current_log_record);
       exp->current_log_record->SetAttribute(name, NoStringViews(val));
     }
-    void Crunch() final {} // No metrics to emit
+    void Crunch() final {}  // No metrics to emit
 
-    template<typename U> const U &NoStringViews(const U &x) { return x; }
+    template <typename U>
+    const U& NoStringViews(const U& x) {
+      return x;
+    }
     string NoStringViews(std::string_view x) { return string{x}; }
 
    private:
@@ -208,15 +219,15 @@ class OTelExporter : public StatsExporter {
     std::string name;
   };
 
-  template<typename T>
+  template <typename T>
   std::shared_ptr<T> Wrap(string_view name) {
     auto col = std::make_shared<T>(this, name);
-    columns.push_back(col); // Keep alive for the batch
+    columns.push_back(col);  // Keep alive for the batch
     return col;
   }
 
   otel_shared_ptr<metrics::Histogram<uint64_t>> GetUnsignedHistogram(std::string_view name) {
-    // Insert a nullptr placeholder. 
+    // Insert a nullptr placeholder.
     // 'inserted' is true if the key didn't exist.
     // 'it' points to the element (either new or existing).
     auto [it, inserted] = histogram_cache.insert(HistogramMap::value_type{name, nullptr});
@@ -246,11 +257,9 @@ class OTelExporter : public StatsExporter {
   int consecutive_failures = 0;
   int exported_count = 0;
 
-  using HistogramMap =
-      std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
+  using HistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
   HistogramMap histogram_cache;
-  using CounterMap =
-      std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
+  using CounterMap = std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
   CounterMap counter_cache;
 
   // Row state
@@ -269,7 +278,8 @@ const char *def(const char *val, const char *default_) {
 const char* GetAHostname(const char* fallback) {
   if (psch_hostname && *psch_hostname) return psch_hostname;
   const char* env = getenv("HOSTNAME");
-  if (env && *env) return env;
+  if (env && *env)
+    return env;
   return fallback;
 }
 
@@ -283,7 +293,7 @@ bool OTelExporter::EstablishNewConnection() {
     auto resource_attributes = opentelemetry::sdk::resource::ResourceAttributes{
         {"service.name", "pg_stat_ch"},
         {"service.version", pgch_version},
-        {"host.name", hostname} // Ideally fetch real hostname
+        {"host.name", hostname}  // Ideally fetch real hostname
     };
     auto resource = opentelemetry::sdk::resource::Resource::Create(resource_attributes);
 
@@ -298,14 +308,12 @@ bool OTelExporter::EstablishNewConnection() {
     reader_opts.export_timeout_millis = std::chrono::milliseconds(1000);
 
     metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
-        otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts),
-        reader_opts);
+        otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
 
     // Create the Provider with our Resource and add our Reader
     // Note: We use the ViewRegistry (default)
     metrics_provider = std::make_shared<metrics_sdk::MeterProvider>(
-        std::make_unique<metrics_sdk::ViewRegistry>(),
-        resource);
+        std::make_unique<metrics_sdk::ViewRegistry>(), resource);
     metrics_provider->AddMetricReader(metrics_reader);
 
     // Configure Logs
@@ -330,7 +338,6 @@ bool OTelExporter::EstablishNewConnection() {
     return false;
   }
 }
-
 
 bool OTelExporter::CommitBatch() {
   // 1. Finish the last row logic (as discussed)
