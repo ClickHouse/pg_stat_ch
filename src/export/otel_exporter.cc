@@ -252,7 +252,7 @@ class OTelExporter : public StatsExporter {
   using CounterMap =
       std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
   CounterMap counter_cache;
-  
+
   // Row state
   bool row_active = false;
   std::map<string, string> current_row_tags;
@@ -295,10 +295,10 @@ bool OTelExporter::EstablishNewConnection() {
     // Configure Reader (Manual Flush Mode)
     metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
     reader_opts.export_interval_millis = std::chrono::milliseconds::max();
-    reader_opts.export_timeout_millis = std::chrono::milliseconds(1000);   
+    reader_opts.export_timeout_millis = std::chrono::milliseconds(1000);
 
     metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
-        otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), 
+        otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts),
         reader_opts);
 
     // Create the Provider with our Resource and add our Reader
@@ -334,7 +334,7 @@ bool OTelExporter::EstablishNewConnection() {
 
 bool OTelExporter::CommitBatch() {
   // 1. Finish the last row logic (as discussed)
-  EndRow(); 
+  EndRow();
 
   // Flush Metrics (The Reader scrapes and sends)
   bool metrics_ok = metrics_reader->ForceFlush(std::chrono::seconds(1));

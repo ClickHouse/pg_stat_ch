@@ -270,8 +270,8 @@ void LogNegativeValue(const std::string &column_name, int64_t value) {
     elog(WARNING, "pg_stat_ch: Negative value %ld clamped to 0 for column `%s`", 
          value, column_name.c_str());
     last_log = now;
+    }
   }
-}
 
 extern "C" {
 
