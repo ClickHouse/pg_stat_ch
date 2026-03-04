@@ -12,6 +12,7 @@ extern "C" {
 
 // GUC variable storage
 bool psch_enabled = true;
+int psch_exporter_backend = PSCH_EXPORTER_CLICKHOUSE;
 char* psch_clickhouse_host = nullptr;
 int psch_clickhouse_port = 9000;
 char* psch_clickhouse_user = nullptr;
@@ -19,11 +20,21 @@ char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
 bool psch_clickhouse_use_tls = false;
 bool psch_clickhouse_skip_tls_verify = false;
+char* psch_otel_endpoint = nullptr;
 int psch_queue_capacity = 131072;
 int psch_flush_interval_ms = 200;
 int psch_batch_max = 200000;
 int psch_log_min_elevel = WARNING;
 bool psch_debug_force_locked_overflow = false;
+
+// Exporter backend options
+// clang-format off
+static const std::array<config_enum_entry, 3> exporter_backend_options = {{
+    {"clickhouse",    PSCH_EXPORTER_CLICKHOUSE,    false},
+    {"opentelemetry", PSCH_EXPORTER_OPENTELEMETRY, false},
+    {nullptr,         0,                           false},
+}};
+// clang-format on
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -78,6 +89,17 @@ void PschInitGuc(void) {
       PGC_SIGHUP,                                             // context
       0,                                                      // flags
       nullptr, nullptr, nullptr);                             // hooks
+
+  DefineCustomEnumVariable(
+      "pg_stat_ch.exporter_backend",
+      "Telemetry export backend.",
+      "Select 'clickhouse' (default) or 'opentelemetry' for OTLP gRPC export.",
+      &psch_exporter_backend,
+      PSCH_EXPORTER_CLICKHOUSE,
+      exporter_backend_options.data(),
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
 
   DefineCustomStringVariable(
       "pg_stat_ch.clickhouse_host",
@@ -146,6 +168,16 @@ void PschInitGuc(void) {
       nullptr,
       &psch_clickhouse_skip_tls_verify,
       false,
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.otel_endpoint",
+      "OpenTelemetry OTLP gRPC endpoint.",
+      nullptr,
+      &psch_otel_endpoint,
+      "localhost:4317",
       PGC_POSTMASTER,
       0,
       nullptr, nullptr, nullptr);
