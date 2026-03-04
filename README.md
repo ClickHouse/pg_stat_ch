@@ -11,7 +11,7 @@ A PostgreSQL extension that captures per-query execution telemetry and exports i
 
 ## Quickstart
 
-Run local PostgreSQL + ClickHouse with schema preloaded (requires Docker and Docker Compose):
+Run local PostgreSQL + ClickHouse with schema preloaded:
 
 ```bash
 ./scripts/quickstart.sh up
@@ -219,7 +219,7 @@ mise run test:regress                      # SQL regression tests only
 ./scripts/run-tests.sh ../postgres/install_tap tap  # TAP tests with local PG build
 ```
 
-See [docs/testing.md](docs/testing.md) for test types, TAP test setup, and a full listing of test files. For ClickHouse tests, see [docs/docker-setup.md](docs/docker-setup.md) for Docker and TAP-enabled PostgreSQL setup.
+See [docs/testing.md](docs/testing.md) for test types, TAP test setup, and a full listing of test files.
 
 ## Troubleshooting
 
