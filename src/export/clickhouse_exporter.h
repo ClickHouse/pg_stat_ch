@@ -2,8 +2,9 @@
 #ifndef PG_STAT_CH_SRC_EXPORT_CLICKHOUSE_EXPORTER_H_
 #define PG_STAT_CH_SRC_EXPORT_CLICKHOUSE_EXPORTER_H_
 
+#include "export/exporter_interface.h"
+
 #include <memory>
-#include "exporter_interface.h"
 
 std::unique_ptr<StatsExporter> MakeClickHouseExporter();
 

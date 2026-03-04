@@ -41,6 +41,7 @@ class OTelExporter : public StatsExporter {
     if (row_active)
       EndRow();  // Just in case
     columns.clear();
+    exported_count = 0;
   }
 
   void BeginRow() final {
