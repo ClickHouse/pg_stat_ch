@@ -85,6 +85,11 @@ fi
 # Export PATH so child processes find the right binaries
 export PATH="${PG_BIN}:${PATH}"
 
+# Prepend cpanm's local install dir to PERL5LIB if it exists (needed for IPC::Run)
+if [[ -d "${HOME}/perl5/lib/perl5" ]]; then
+    export PERL5LIB="${HOME}/perl5/lib/perl5${PERL5LIB:+:${PERL5LIB}}"
+fi
+
 # Project root
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_DIR}"

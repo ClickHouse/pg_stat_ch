@@ -49,7 +49,7 @@ subtest 'basic export' => sub {
     is($stats->{send_failures}, 0, 'No send failures');
 
     # Verify metrics arrived at the collector (Prometheus endpoint)
-    my $count = psch_get_otel_histogram_total('pg_stat_ch_duration_us');
+    my $count = psch_get_otel_histogram_total('pg_stat_ch_duration_us_unit');
     cmp_ok($count, '>=', 3, "duration_us metric has >= 3 observations (got $count)");
 };
 
@@ -97,24 +97,24 @@ subtest 'metric labels populated' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
     sleep(2);
 
-    # target_info carries resource attributes (set during EstablishNewConnection)
+    # service.name resource attribute is mapped to the job label by the Prometheus exporter
     my $prometheus_output = `curl -s 'http://localhost:9091/metrics' 2>/dev/null`;
-    like($prometheus_output, qr/service_name="pg_stat_ch"/,
-        'target_info has service_name=pg_stat_ch');
+    like($prometheus_output, qr/job="pg_stat_ch"/,
+        'metrics carry job="pg_stat_ch" label (from service.name resource attribute)');
 
     # db tag should appear as a label on duration_us observations
-    ok(psch_otel_metric_has_label('pg_stat_ch_duration_us', 'db', 'postgres'),
+    ok(psch_otel_metric_has_label('pg_stat_ch_duration_us_unit', 'db', 'postgres'),
         'duration_us metric has db="postgres" label');
 
     # rows metric captures how many rows were returned/affected
-    my $rows_count = psch_get_otel_histogram_total('pg_stat_ch_rows');
+    my $rows_count = psch_get_otel_histogram_total('pg_stat_ch_rows_unit');
     cmp_ok($rows_count, '>=', 1, "rows metric has observations (got $rows_count)");
 
     # duration_us should show meaningful wall-clock values (sum > 0)
     my $sum = 0;
     for my $line (split /\n/, $prometheus_output) {
         next if $line =~ /^#/;
-        if ($line =~ /^pg_stat_ch_duration_us_sum(?:\{[^}]*\})?\s+(\d+(?:\.\d+)?)/) {
+        if ($line =~ /^pg_stat_ch_duration_us_unit_sum(?:\{[^}]*\})?\s+(\d+(?:\.\d+)?)/) {
             $sum += $1;
         }
     }
