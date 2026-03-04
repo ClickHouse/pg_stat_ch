@@ -8,19 +8,13 @@ extern "C" {
 
 #include "postgres.h"
 
-// Exporter backend enum values
-#define PSCH_EXPORTER_CLICKHOUSE    0
-#define PSCH_EXPORTER_OPENTELEMETRY 1
-
 // GUC variables (defined in guc.cc)
 extern bool psch_enabled;
-extern int psch_exporter_backend;
 extern char* psch_clickhouse_host;
 extern int psch_clickhouse_port;
 extern char* psch_clickhouse_user;
 extern char* psch_clickhouse_password;
 extern char* psch_clickhouse_database;
-extern char* psch_otel_endpoint;
 extern int psch_queue_capacity;
 extern int psch_flush_interval_ms;
 extern int psch_batch_max;

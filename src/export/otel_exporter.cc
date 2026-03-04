@@ -12,15 +12,11 @@
 #include "opentelemetry/metrics/meter.h"
 #include "opentelemetry/metrics/provider.h"
 
-#include "config/guc.h"
 #include "export/exporter_interface.h"
 
 #include <cassert>
 #include <chrono>
-#include <cstdlib>
 #include <map>
-#include <type_traits>
-#include <unistd.h>
 
 namespace {
 
@@ -76,9 +72,7 @@ class OTelExporter : public StatsExporter {
   shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) final {
     return Wrap<HistogramColumn<uint64_t>>(name);
   }
-  shared_ptr<Column<string_view>> MetricFixedString(int len, string_view name) final {
-    // OTel has no fixed-length string concept; len is only meaningful for ClickHouse.
-    (void)len;
+  shared_ptr<Column<string_view>> MetricFixedString(int, string_view name) final {
     return Wrap<CounterColumn>(name);
   }
 
@@ -156,14 +150,13 @@ class OTelExporter : public StatsExporter {
       // Always add values to the log record.
       exp->current_log_record->SetAttribute(name, val);
       // Stash the value until later, when all tags have been gathered
-      if constexpr (std::is_signed_v<T>) {
-        if (val < 0) {
-          LogNegativeValue(name, static_cast<int64_t>(val));
-          stash_val = 0;
-          return;
-        }
+      // implicit cast from T (int32_t) to int64_t happens here
+      if (val < 0) {
+        LogNegativeValue(name, static_cast<int64_t>(val));
+        stash_val = 0;
+      } else {
+        stash_val = static_cast<uint64_t>(val);
       }
-      stash_val = static_cast<uint64_t>(val);
     }
 
     void Crunch() final { instrument->Record(stash_val, exp->current_row_tags, {}); }
@@ -187,21 +180,12 @@ class OTelExporter : public StatsExporter {
     }
 
     void Crunch() final {
-      // Temporarily inject this column's value into the shared tag map,
-      // then restore it after recording. Avoids copying the entire map.
-      auto& tags = exp->current_row_tags;
-      auto [it, inserted] = tags.emplace(name, stash_val);
-      std::string old_value;
-      if (!inserted) {
-        old_value = std::move(it->second);
-        it->second = stash_val;
-      }
-      instrument->Add(1, tags);
-      if (inserted) {
-        tags.erase(it);
-      } else {
-        it->second = std::move(old_value);
-      }
+      // 1. Copy the shared tags
+      auto tags_with_value = exp->current_row_tags;
+      // 2. Inject the string value as a tag for this specific metric
+      tags_with_value[name] = stash_val;
+      // 3. Increment counter for this tag combination
+      instrument->Add(1, tags_with_value);
     }
 
    private:
@@ -249,7 +233,7 @@ class OTelExporter : public StatsExporter {
     auto [it, inserted] = histogram_cache.insert(HistogramMap::value_type{name, nullptr});
     if (inserted) {
       // Only create the heavy OTel object if we actually inserted a new key
-      it->second = meter->CreateUInt64Histogram(it->first, it->first, "1");
+      it->second = meter->CreateUInt64Histogram(it->first, "description", "unit");
     }
     return it->second;
   }
@@ -257,7 +241,7 @@ class OTelExporter : public StatsExporter {
   otel_shared_ptr<metrics::Counter<uint64_t>> GetUnsignedCounter(std::string_view name) {
     auto [it, inserted] = counter_cache.insert(CounterMap::value_type{name, nullptr});
     if (inserted) {
-      it->second = meter->CreateUInt64Counter(it->first, it->first, "{count}");
+      it->second = meter->CreateUInt64Counter(it->first, "description", "unit");
     }
     return it->second;
   }
@@ -286,28 +270,25 @@ class OTelExporter : public StatsExporter {
   std::vector<shared_ptr<BasicColumn>> columns;
 };
 
-std::string ResolveHostname() {
-  // Prefer the POSIX gethostname(), fall back to HOSTNAME env var.
-  char buf[256];
-  if (gethostname(buf, sizeof(buf)) == 0) {
-    buf[sizeof(buf) - 1] = '\0';
-    return buf;
-  }
-  const char* env = std::getenv("HOSTNAME");
+const char* GetAHostname(const char* fallback) {
+  const char* env = getenv("HOSTNAME");
   if (env && *env)
     return env;
-  return "unknown";
+  return fallback;
 }
 
 bool OTelExporter::EstablishNewConnection() {
   try {
-    const std::string hostname = ResolveHostname();
-    const std::string endpoint = psch_otel_endpoint ? psch_otel_endpoint : "localhost:4317";
+    const std::string hostname = GetAHostname("postgres-primary");
+    const std::string endpoint = "localhost:4317";  // TODO: GUC
     const std::string pgch_version = PG_STAT_CH_VERSION;
 
     // Resource (The "ID Card" for our service)
     auto resource_attributes = opentelemetry::sdk::resource::ResourceAttributes{
-        {"service.name", "pg_stat_ch"}, {"service.version", pgch_version}, {"host.name", hostname}};
+        {"service.name", "pg_stat_ch"},
+        {"service.version", pgch_version},
+        {"host.name", hostname}  // Ideally fetch real hostname
+    };
     auto resource = opentelemetry::sdk::resource::Resource::Create(resource_attributes);
 
     // Configure Metrics

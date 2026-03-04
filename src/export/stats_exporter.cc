@@ -267,8 +267,8 @@ void LogNegativeValue(const std::string& column_name, int64_t value) {
   static std::chrono::steady_clock::time_point last_log = {};
   auto now = std::chrono::steady_clock::now();
   if (now - last_log > std::chrono::seconds(1)) {
-    elog(WARNING, "pg_stat_ch: Negative value " INT64_FORMAT " clamped to 0 for column `%s`", value,
-         column_name.c_str());
+    elog(WARNING, "pg_stat_ch: Negative value " INT64_FORMAT
+         " clamped to 0 for column `%s`", value, column_name.c_str());
     last_log = now;
   }
 }
@@ -276,7 +276,7 @@ void LogNegativeValue(const std::string& column_name, int64_t value) {
 extern "C" {
 
 bool PschExporterInit(void) {
-  if (psch_exporter_backend == PSCH_EXPORTER_OPENTELEMETRY) {
+  if (false) {  // TODO: GUC Plumbing
     g_exporter.exporter = MakeOpenTelemetryExporter();
   } else {
     g_exporter.exporter = MakeClickHouseExporter();
