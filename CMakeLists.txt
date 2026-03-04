@@ -108,3 +108,47 @@ install(TARGETS pg_stat_ch LIBRARY DESTINATION ${PostgreSQLServer_PKGLIB_DIR})
 install(FILES pg_stat_ch.control DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 file(GLOB SQL_FILES sql/pg_stat_ch--*.sql)
 install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
+
+# ---------------------------------------------------------------------------
+# C++ unit tests (opt-in; no running PostgreSQL or ClickHouse required)
+# Enable with: cmake -DPSCH_BUILD_UNIT_TESTS=ON
+# ---------------------------------------------------------------------------
+option(PSCH_BUILD_UNIT_TESTS "Build pg_stat_ch C++ unit tests" OFF)
+if(PSCH_BUILD_UNIT_TESTS)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.15.2
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  enable_testing()
+
+  add_executable(hostname_test
+    test/unit/hostname_test.cc
+    src/export/otel_exporter.cc
+  )
+  target_include_directories(hostname_test PRIVATE src include)
+  target_include_directories(hostname_test SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
+    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
+    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
+  )
+  target_compile_features(hostname_test PRIVATE cxx_std_17)
+  target_compile_definitions(hostname_test PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
+  target_link_libraries(hostname_test PRIVATE
+    GTest::gtest_main
+    PostgreSQLServer::PostgreSQLServer
+    opentelemetry_api
+    opentelemetry_sdk
+    opentelemetry_exporter_otlp_grpc_metrics
+    opentelemetry_exporter_otlp_grpc_log
+    opentelemetry_metrics
+    opentelemetry_logs
+  )
+  pg_stat_ch_set_warnings(hostname_test)
+
+  include(GoogleTest)
+  gtest_discover_tests(hostname_test)
+endif()

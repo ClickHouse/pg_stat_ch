@@ -5,6 +5,7 @@
 *.a
 .deps/
 build/
+build_unit/
 CMakeCache.txt
 CMakeFiles/
 

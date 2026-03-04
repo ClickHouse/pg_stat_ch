@@ -85,6 +85,10 @@ description = "Stop ClickHouse test container"
 run = "docker compose -f docker/docker-compose.test.yml logs -f"
 description = "View ClickHouse container logs"
 
+[tasks."test:unit"]
+run = "cmake -B build_unit -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config -DPSCH_BUILD_UNIT_TESTS=ON && cmake --build build_unit --target hostname_test && ctest --test-dir build_unit --output-on-failure"
+description = "Build and run C++ unit tests"
+
 [tasks."test:all"]
 run = "./scripts/run-tests.sh 18 all"
 depends = ["build", "install"]

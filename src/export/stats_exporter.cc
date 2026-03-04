@@ -276,7 +276,7 @@ void LogNegativeValue(const std::string& column_name, int64_t value) {
 extern "C" {
 
 bool PschExporterInit(void) {
-  if (false) {  // TODO: GUC Plumbing
+  if (psch_use_otel) {
     g_exporter.exporter = MakeOpenTelemetryExporter();
   } else {
     g_exporter.exporter = MakeClickHouseExporter();

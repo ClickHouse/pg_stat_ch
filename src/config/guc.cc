@@ -12,6 +12,7 @@ extern "C" {
 
 // GUC variable storage
 bool psch_enabled = true;
+bool psch_use_otel = false;
 char* psch_clickhouse_host = nullptr;
 int psch_clickhouse_port = 9000;
 char* psch_clickhouse_user = nullptr;
@@ -19,6 +20,8 @@ char* psch_clickhouse_password = nullptr;
 char* psch_clickhouse_database = nullptr;
 bool psch_clickhouse_use_tls = false;
 bool psch_clickhouse_skip_tls_verify = false;
+char* psch_otel_endpoint = nullptr;
+char* psch_hostname = nullptr;
 int psch_queue_capacity = 131072;
 int psch_flush_interval_ms = 200;
 int psch_batch_max = 200000;
@@ -78,6 +81,16 @@ void PschInitGuc(void) {
       PGC_SIGHUP,                                             // context
       0,                                                      // flags
       nullptr, nullptr, nullptr);                             // hooks
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.use_otel",
+      "Send metrics through OpenTelemetry instead of ClickHouse.",
+      "When enabled, stats will be sent to an OTel endpoint instead of ClickHouse.",
+      &psch_use_otel,
+      false,
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
 
   DefineCustomStringVariable(
       "pg_stat_ch.clickhouse_host",
@@ -146,6 +159,26 @@ void PschInitGuc(void) {
       nullptr,
       &psch_clickhouse_skip_tls_verify,
       false,
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.otel_endpoint",
+      "OpenTelemetry gRPC endpoint (host:port).",
+      nullptr,
+      &psch_otel_endpoint,
+      "localhost:4317",
+      PGC_POSTMASTER,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.hostname",
+      "Override the hostname of the current machine.",
+      nullptr,
+      &psch_hostname,
+      "",
       PGC_POSTMASTER,
       0,
       nullptr, nullptr, nullptr);
