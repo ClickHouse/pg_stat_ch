@@ -27,13 +27,15 @@ class GetAHostnameTest : public ::testing::Test {
 };
 
 TEST_F(GetAHostnameTest, GucTakesPrecedence) {
-  psch_hostname = const_cast<char*>("guc-host");
+  static char guc_host[] = "guc-host";
+  psch_hostname = guc_host;
   setenv("HOSTNAME", "env-host", /*overwrite=*/1);
   EXPECT_EQ(GetAHostname("fallback"), "guc-host");
 }
 
 TEST_F(GetAHostnameTest, EmptyGucFallsToEnv) {
-  psch_hostname = const_cast<char*>("");
+  static char empty_guc[] = "";
+  psch_hostname = empty_guc;
   setenv("HOSTNAME", "env-host", 1);
   EXPECT_EQ(GetAHostname("fallback"), "env-host");
 }
