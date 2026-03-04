@@ -16,8 +16,8 @@
 #include "export/exporter_interface.h"
 
 #include <cassert>
-#include <cstdlib>
 #include <chrono>
+#include <cstdlib>
 #include <map>
 #include <unistd.h>
 
@@ -273,13 +273,13 @@ class OTelExporter : public StatsExporter {
   std::vector<shared_ptr<BasicColumn>> columns;
 };
 
-
-const char *def(const char *val, const char *default_) {
+const char* def(const char* val, const char* default_) {
   return val && *val ? val : default_;
 }
 
 std::string GetAHostname(const char* fallback) {
-  if (psch_hostname && *psch_hostname) return psch_hostname;
+  if (psch_hostname && *psch_hostname)
+    return psch_hostname;
   const char* env = getenv("HOSTNAME");
   if (env && *env)
     return env;
