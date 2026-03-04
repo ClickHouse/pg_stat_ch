@@ -17,6 +17,12 @@ our @EXPORT = qw(
     psch_query_clickhouse_tsv
     psch_init_node_with_clickhouse
     psch_wait_for_export
+    psch_otelcol_available
+    psch_start_otelcol
+    psch_stop_otelcol
+    psch_init_node_with_otel
+    psch_get_otel_histogram_total
+    psch_otel_metric_has_label
 );
 
 # Initialize a PostgreSQL node with pg_stat_ch loaded
@@ -167,6 +173,102 @@ sub psch_wait_for_export {
     # Timeout - return current count anyway for diagnostic
     my $stats = psch_get_stats($node);
     return $stats->{exported};
+}
+
+# ============================================================================
+# OpenTelemetry Collector Integration Helpers
+# ============================================================================
+
+# Check if Docker is available and the OTel collector health endpoint responds
+sub psch_otelcol_available {
+    return 0 unless system("docker ps >/dev/null 2>&1") == 0;
+    my $result = `curl -sf 'http://localhost:13133/' 2>/dev/null`;
+    return $result =~ /Server available/;
+}
+
+# Start OTel collector container using docker compose
+sub psch_start_otelcol {
+    my $project_dir = $ENV{PROJECT_DIR} // '.';
+    my $compose_file = "$project_dir/docker/docker-compose.otel.yml";
+
+    system("docker compose -f $compose_file up -d") == 0
+        or die "Failed to start OTel collector container";
+
+    # Poll health check endpoint (up to 30 seconds)
+    for my $i (1..30) {
+        my $result = `curl -sf 'http://localhost:13133/' 2>/dev/null`;
+        return 1 if $result =~ /Server available/;
+        sleep(1);
+    }
+    die "OTel collector container failed to become healthy";
+}
+
+# Stop OTel collector container
+sub psch_stop_otelcol {
+    my $project_dir = $ENV{PROJECT_DIR} // '.';
+    my $compose_file = "$project_dir/docker/docker-compose.otel.yml";
+
+    system("docker compose -f $compose_file down -v");
+}
+
+# Initialize a node with OTel export enabled
+sub psch_init_node_with_otel {
+    my ($name, %opts) = @_;
+
+    my $queue_capacity    = $opts{queue_capacity}    // 65536;
+    my $flush_interval_ms = $opts{flush_interval_ms} // 100;   # Fast flush for tests
+    my $batch_max         = $opts{batch_max}         // 1000;
+    my $enabled           = $opts{enabled}           // 'on';
+    my $otel_endpoint     = $opts{otel_endpoint}     // 'localhost:4317';
+    my $hostname          = $opts{hostname}          // 'test-host';
+
+    my $node = PostgreSQL::Test::Cluster->new($name);
+    $node->init();
+    $node->append_conf('postgresql.conf', qq{
+shared_preload_libraries = 'pg_stat_ch'
+pg_stat_ch.enabled = $enabled
+pg_stat_ch.queue_capacity = $queue_capacity
+pg_stat_ch.flush_interval_ms = $flush_interval_ms
+pg_stat_ch.batch_max = $batch_max
+pg_stat_ch.use_otel = on
+pg_stat_ch.otel_endpoint = '$otel_endpoint'
+pg_stat_ch.hostname = '$hostname'
+});
+    $node->start();
+    $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');
+
+    return $node;
+}
+
+# Sum all _count values for a histogram metric family across all label sets.
+# The OTel collector Prometheus exporter creates one _count line per unique
+# label combination, so we sum them to get the total number of observations.
+#
+# $metric_base: the metric name without suffix, e.g. "pg_stat_ch_duration_us"
+# (the "pg_stat_ch_" prefix comes from namespace: pg_stat_ch in collector-config.yaml)
+sub psch_get_otel_histogram_total {
+    my ($metric_base) = @_;
+    my $output = `curl -s 'http://localhost:9091/metrics' 2>/dev/null`;
+    my $total = 0;
+    for my $line (split /\n/, $output) {
+        next if $line =~ /^#/;
+        # Match: metric_base_count{labels} VALUE  (labels optional)
+        if ($line =~ /^\Q${metric_base}\E_count(?:\{[^}]*\})?\s+(\d+(?:\.\d+)?)/) {
+            $total += $1;
+        }
+    }
+    return $total;
+}
+
+# Return true if any Prometheus metric line for $metric_base contains a label
+# with the given key=value pair. Useful for verifying TagString columns.
+#
+# Example: psch_otel_metric_has_label("pg_stat_ch_duration_us", "db", "postgres")
+sub psch_otel_metric_has_label {
+    my ($metric_base, $label_key, $label_val) = @_;
+    my $output = `curl -s 'http://localhost:9091/metrics' 2>/dev/null`;
+    # Look for any line of this metric family containing the label key="value"
+    return $output =~ /^\Q${metric_base}\E[{_][^#\n]*\Q${label_key}\E="\Q${label_val}\E"/m;
 }
 
 1;

@@ -85,6 +85,22 @@ description = "Stop ClickHouse test container"
 run = "docker compose -f docker/docker-compose.test.yml logs -f"
 description = "View ClickHouse container logs"
 
+[tasks."test:otel"]
+run = "./scripts/run-tests.sh ../postgres/install_tap otel"
+description = "Run OTel integration tests (requires Docker + TAP-enabled PG build)"
+
+[tasks."otel:start"]
+run = "docker compose -f docker/docker-compose.otel.yml up -d"
+description = "Start OTel collector test container"
+
+[tasks."otel:stop"]
+run = "docker compose -f docker/docker-compose.otel.yml down -v"
+description = "Stop OTel collector test container"
+
+[tasks."otel:logs"]
+run = "docker compose -f docker/docker-compose.otel.yml logs -f"
+description = "View OTel collector container logs"
+
 [tasks."test:all"]
 run = "./scripts/run-tests.sh 18 all"
 depends = ["build", "install"]
