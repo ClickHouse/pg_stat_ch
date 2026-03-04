@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <map>
+#include <string>
 #include <unistd.h>
 
 // Exposed with external linkage so unit tests can link against it directly.
