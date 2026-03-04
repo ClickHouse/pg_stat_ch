@@ -17,7 +17,25 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <map>
+#include <string>
+#include <unistd.h>
+
+// Exposed with external linkage so unit tests can link against it directly.
+std::string GetAHostname(const char* fallback) {
+  if (psch_hostname && *psch_hostname)
+    return psch_hostname;
+  const char* env = getenv("HOSTNAME");
+  if (env && *env)
+    return env;
+  char buf[256];
+  if (gethostname(buf, sizeof(buf)) == 0) {
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+  }
+  return fallback;
+}
 
 namespace {
 
@@ -271,23 +289,11 @@ class OTelExporter : public StatsExporter {
   std::vector<shared_ptr<BasicColumn>> columns;
 };
 
-
-const char *def(const char *val, const char *default_) {
-  return val && *val ? val : default_;
-}
-
-const char* GetAHostname(const char* fallback) {
-  if (psch_hostname && *psch_hostname) return psch_hostname;
-  const char* env = getenv("HOSTNAME");
-  if (env && *env)
-    return env;
-  return fallback;
-}
-
 bool OTelExporter::EstablishNewConnection() {
   try {
     const std::string hostname = GetAHostname("postgres-primary");
-    const std::string endpoint = def(psch_otel_endpoint, "localhost:4317");
+    const std::string endpoint =
+        (psch_otel_endpoint && *psch_otel_endpoint) ? psch_otel_endpoint : "localhost:4317";
     const std::string pgch_version = PG_STAT_CH_VERSION;
 
     // Resource (The "ID Card" for our service)
