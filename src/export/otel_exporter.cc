@@ -16,8 +16,10 @@
 #include "export/exporter_interface.h"
 
 #include <cassert>
+#include <cstdlib>
 #include <chrono>
 #include <map>
+#include <unistd.h>
 
 namespace {
 
@@ -276,11 +278,16 @@ const char *def(const char *val, const char *default_) {
   return val && *val ? val : default_;
 }
 
-const char* GetAHostname(const char* fallback) {
+std::string GetAHostname(const char* fallback) {
   if (psch_hostname && *psch_hostname) return psch_hostname;
   const char* env = getenv("HOSTNAME");
   if (env && *env)
     return env;
+  char buf[256];
+  if (gethostname(buf, sizeof(buf)) == 0) {
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+  }
   return fallback;
 }
 
