@@ -175,7 +175,7 @@ void PschInitGuc(void) {
 
   DefineCustomStringVariable(
       "pg_stat_ch.hostname",
-      "The hostname of the current machine.",
+      "Override the hostname of the current machine.",
       nullptr,
       &psch_hostname,
       "",
