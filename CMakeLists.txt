@@ -110,7 +110,7 @@ file(GLOB SQL_FILES sql/pg_stat_ch--*.sql)
 install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 
 # ---------------------------------------------------------------------------
-# C++ unit tests (opt-in; no PostgreSQL or OTel linkage required)
+# C++ unit tests (opt-in; no running PostgreSQL or ClickHouse required)
 # Enable with: cmake -DPSCH_BUILD_UNIT_TESTS=ON
 # ---------------------------------------------------------------------------
 option(PSCH_BUILD_UNIT_TESTS "Build pg_stat_ch C++ unit tests" OFF)
