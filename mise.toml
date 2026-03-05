@@ -89,6 +89,22 @@ description = "View ClickHouse container logs"
 run = "cmake -B build_unit -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config -DPSCH_BUILD_UNIT_TESTS=ON && cmake --build build_unit --target hostname_test && ctest --test-dir build_unit --output-on-failure"
 description = "Build and run C++ unit tests"
 
+[tasks."test:otel"]
+run = "./scripts/run-tests.sh ../postgres/install_tap otel"
+description = "Run OTel integration tests (requires Docker + TAP-enabled PG build)"
+
+[tasks."otel:start"]
+run = "docker compose -f docker/docker-compose.otel.yml up -d"
+description = "Start OTel collector test container"
+
+[tasks."otel:stop"]
+run = "docker compose -f docker/docker-compose.otel.yml down -v"
+description = "Stop OTel collector test container"
+
+[tasks."otel:logs"]
+run = "docker compose -f docker/docker-compose.otel.yml logs -f"
+description = "View OTel collector container logs"
+
 [tasks."test:all"]
 run = "./scripts/run-tests.sh 18 all"
 depends = ["build", "install"]
