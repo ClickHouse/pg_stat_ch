@@ -20,6 +20,7 @@ FROM postgres:18-bookworm AS builder
 RUN apt-get update \
     && PG_PKG_VERSION=$(dpkg-query -W -f='${Version}' postgresql-18) \
     && apt-get install -y --no-install-recommends \
+        ca-certificates \
         build-essential \
         cmake \
         ninja-build \
