@@ -52,9 +52,20 @@ gosu postgres postgres -D "$PGDATA" -k /var/run/postgresql &
 PG_PID=$!
 
 echo -n "Waiting for PostgreSQL..."
+PG_START_DEADLINE=$(($(date +%s) + 30))
 until gosu postgres pg_isready -U postgres -h /var/run/postgresql -q 2>/dev/null; do
     printf '.'
-    sleep 0.5
+    sleep 1
+    if ! kill -0 "$PG_PID" 2>/dev/null; then
+        echo
+        echo "ERROR: PostgreSQL process exited unexpectedly (magic block mismatch?)"
+        exit 1
+    fi
+    if [[ $(date +%s) -ge $PG_START_DEADLINE ]]; then
+        echo
+        echo "ERROR: PostgreSQL failed to start within 30s"
+        exit 1
+    fi
 done
 echo " ready. (PID $PG_PID)"
 
