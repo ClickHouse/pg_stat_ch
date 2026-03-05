@@ -84,16 +84,16 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   elog(DEBUG3, "pg_stat_ch: creating col_ts_start");
   auto col_ts_start = exporter->RecordDateTime("ts_start");
   elog(DEBUG3, "pg_stat_ch: col_ts_start created");
-  auto col_duration_us = exporter->MetricUInt64("duration_us");
+  auto col_duration_us = exporter->DbDurationColumn();
   // Use pre-resolved names from event (resolved at capture time in hooks)
-  auto col_db = exporter->TagString("db");
-  auto col_username = exporter->TagString("username");
+  auto col_db = exporter->DbNameColumn();
+  auto col_username = exporter->DbUserColumn();
   elog(DEBUG3, "pg_stat_ch: basic columns created");
   auto col_pid = exporter->RecordInt32("pid");
   auto col_query_id = exporter->RecordInt64("query_id");
-  auto col_cmd_type = exporter->RecordString("cmd_type");
+  auto col_cmd_type = exporter->DbOperationColumn();
   auto col_rows = exporter->MetricUInt64("rows");
-  auto col_query = exporter->RecordString("query");
+  auto col_query = exporter->DbQueryTextColumn();
   elog(DEBUG3, "pg_stat_ch: all basic columns created");
 
   // Buffer usage columns (hit/read are histograms, rest are records)

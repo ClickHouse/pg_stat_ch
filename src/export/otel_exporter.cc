@@ -119,6 +119,23 @@ class OTelExporter : public StatsExporter {
     return Wrap<RecordOnlyColumn<string_view>>(name);
   }
 
+  // Semantic columns
+  shared_ptr<Column<string>> DbNameColumn() final {
+    return Wrap<TagColumn<string>>("db.name");
+  }
+  shared_ptr<Column<string>> DbUserColumn() final {
+    return Wrap<TagColumn<string>>("db.user");
+  }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final {
+    return Wrap<DurationColumn>();
+  }
+  shared_ptr<Column<string>> DbOperationColumn() final {
+    return Wrap<TagColumn<string>>("db.operation.name");
+  }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final {
+    return Wrap<RecordOnlyColumn<string_view>>("db.query.text");
+  }
+
   bool EstablishNewConnection() final;
   bool IsConnected() const final { return metrics_provider && log_provider; }
   int NumConsecutiveFailures() const final { return consecutive_failures; }
@@ -269,10 +286,40 @@ class OTelExporter : public StatsExporter {
     std::string name;
   };
 
+  // 5. Duration Column: converts µs → seconds for OTel db.client.operation.duration histogram.
+  class DurationColumn : public Column<uint64_t> {
+   public:
+    explicit DurationColumn(OTelExporter* e)
+        : exp(e), instrument(exp->GetDoubleHistogram("db.client.operation.duration")) {}
+
+    void Append(const uint64_t& val) final {
+      exp->current_log_record->SetAttribute("duration_us", static_cast<int64_t>(val));
+      stash_val = val;
+    }
+
+    void Crunch() final {
+      double seconds = static_cast<double>(stash_val) / 1e6;
+      instrument->Record(seconds, exp->current_row_tags, {});
+    }
+
+   private:
+    OTelExporter* exp;
+    uint64_t stash_val = 0;
+    otel_shared_ptr<metrics::Histogram<double>> instrument;
+  };
+
   template <typename T>
   std::shared_ptr<T> Wrap(string_view name) {
     auto col = std::make_shared<T>(this, name);
     columns.push_back(col);  // Keep alive for the batch
+    return col;
+  }
+
+  // Wrap overload for column types that don't take a name (e.g. DurationColumn).
+  template <typename T>
+  std::shared_ptr<T> Wrap() {
+    auto col = std::make_shared<T>(this);
+    columns.push_back(col);
     return col;
   }
 
@@ -296,6 +343,14 @@ class OTelExporter : public StatsExporter {
     return it->second;
   }
 
+  otel_shared_ptr<metrics::Histogram<double>> GetDoubleHistogram(std::string_view name) {
+    auto [it, inserted] = double_histogram_cache.insert(DoubleHistogramMap::value_type{name, nullptr});
+    if (inserted) {
+      it->second = meter->CreateDoubleHistogram(it->first, "description", "s");
+    }
+    return it->second;
+  }
+
   // =====================================================================
   // OTel connection state
   // =====================================================================
@@ -309,6 +364,8 @@ class OTelExporter : public StatsExporter {
 
   using HistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
   HistogramMap histogram_cache;
+  using DoubleHistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<double>>, std::less<>>;
+  DoubleHistogramMap double_histogram_cache;
   using CounterMap = std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
   CounterMap counter_cache;
 

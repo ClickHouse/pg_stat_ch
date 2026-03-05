@@ -68,6 +68,13 @@ class ClickHouseExporter : public StatsExporter {
     return Wrap<clickhouse::ColumnString, string_view>(name);
   }
 
+  // Semantic columns
+  shared_ptr<Column<string>> DbNameColumn() final { return TagString("db"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return TagString("username"); }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return MetricUInt64("duration_us"); }
+  shared_ptr<Column<string>> DbOperationColumn() final { return TagString("cmd_type"); }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return RecordString("query"); }
+
   void BeginBatch() final {
     block = std::make_unique<clickhouse::Block>();
     columns.clear();
