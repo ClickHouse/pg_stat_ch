@@ -10,6 +10,7 @@ services:
     build:
       context: ..
       dockerfile: docker/perf.Dockerfile
+    image: psch-perf-pg:latest
     container_name: psch-perf-pg
     depends_on:
       otelcol:

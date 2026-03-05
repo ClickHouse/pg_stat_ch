@@ -136,6 +136,89 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build_unit --output-on-failure
 
+  bench-otel:
+    name: OTel Throughput Benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # BuildKit is needed for the type=gha cache backend used below.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # perf record inside the container needs paranoid <= 1.
+      - name: Allow perf profiling
+        run: sudo sysctl kernel.perf_event_paranoid=1
+
+      # Build the benchmark image with GHA layer cache.
+      # The Dockerfile is structured so that the slow gRPC/OTel dep-compilation
+      # layer is cached separately from the fast pg_stat_ch source layer, so
+      # only changed .cc files are recompiled on subsequent runs.
+      - name: Build benchmark image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/perf.Dockerfile
+          tags: psch-perf-pg:latest
+          load: true
+          cache-from: type=gha,scope=perf-image
+          cache-to: type=gha,scope=perf-image,mode=max
+
+      - name: Run OTel benchmark
+        run: |
+          mkdir -p docker/perf-results
+          # --no-build: image was pre-built above and tagged psch-perf-pg:latest
+          # (matching the image: field in docker-compose.perf.yml).
+          # || true: bench exits 141 (SIGPIPE) when Docker closes the log stream
+          # after the container exits normally; we validate success via log grep below.
+          docker compose -f docker/docker-compose.perf.yml up \
+            --no-build \
+            --abort-on-container-exit \
+            --exit-code-from pg-perf \
+            2>&1 | tee /tmp/bench-output.log || true
+
+          # Require the queue to have drained cleanly.
+          grep -q "Queue drained" /tmp/bench-output.log \
+            || { echo "ERROR: queue did not drain — benchmark did not complete"; exit 1; }
+
+      - name: Publish results to job summary
+        if: always()
+        run: |
+          strip_prefix() { sed 's/^[^|]*|[[:space:]]*//' "$@"; }
+          {
+            echo "## OTel Throughput Benchmark"
+            echo ""
+            echo "### Summary"
+            echo '```'
+            grep "psch-perf-pg" /tmp/bench-output.log \
+              | strip_prefix \
+              | sed -n '/--- Summary ---/,/Restoring GUCs/p' \
+              | grep -v "Restoring"
+            echo '```'
+            if grep -qE '^\s+[0-9]+\.[0-9]+%' docker/perf-results/bench-otel-perf.txt 2>/dev/null; then
+              echo ""
+              echo "### Top Hotspots"
+              echo '```'
+              grep -E '^\s+[0-9]+\.[0-9]+%' docker/perf-results/bench-otel-perf.txt | head -15
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: docker/perf-results/
+          if-no-files-found: warn
+
+      - name: Cleanup containers
+        if: always()
+        run: docker compose -f docker/docker-compose.perf.yml down --volumes 2>/dev/null || true
+
   lint:
     name: Code Style
     runs-on: ubuntu-24.04
