@@ -2,9 +2,9 @@
 #include <opentelemetry/exporters/otlp/otlp_grpc_exporter_options.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_factory.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_metric_exporter_factory.h>
-#include <opentelemetry/sdk/logs/logger_provider.h>
 #include <opentelemetry/sdk/logs/batch_log_record_processor_factory.h>
 #include <opentelemetry/sdk/logs/batch_log_record_processor_options.h>
+#include <opentelemetry/sdk/logs/logger_provider.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
@@ -198,6 +198,30 @@ class OTelExporter : public StatsExporter {
     uint64_t stash_val = 0;
   };
 
+  // View over current_row_tags that appends one extra K/V pair without copying the map.
+  class MapPlusExtraPairView : public otel_common::KeyValueIterable {
+   public:
+    MapPlusExtraPairView(const absl::flat_hash_map<string, string>& base,
+                         nostd::string_view extra_key, nostd::string_view extra_val)
+        : base_(base), extra_key_(extra_key), extra_val_(extra_val) {}
+
+    bool ForEachKeyValue(nostd::function_ref<bool(nostd::string_view, otel_common::AttributeValue)>
+                             callback) const noexcept override {
+      for (const auto& [k, v] : base_) {
+        if (!callback(k, nostd::string_view(v)))
+          return false;
+      }
+      return callback(extra_key_, extra_val_);
+    }
+
+    size_t size() const noexcept override { return base_.size() + 1; }
+
+   private:
+    const absl::flat_hash_map<string, string>& base_;
+    nostd::string_view extra_key_;
+    nostd::string_view extra_val_;
+  };
+
   // 3. Counter Instrument Metric Column (for histograms of specific tag values)
   class CounterColumn : public Column<string_view> {
    public:
@@ -210,10 +234,8 @@ class OTelExporter : public StatsExporter {
     }
 
     void Crunch() final {
-      // TODO: Construct a KeyValueIterable enclosing the map + <k,v> instead
-      absl::flat_hash_map<string, string> tags_with_value = exp->current_row_tags;
-      tags_with_value[name] = stash_val;
-      instrument->Add(1, tags_with_value);
+      MapPlusExtraPairView view(exp->current_row_tags, name, stash_val);
+      instrument->Add(1, view);
     }
 
    private:
@@ -320,10 +342,8 @@ bool OTelExporter::EstablishNewConnection() {
 
     // Configure Reader (async periodic export — does not block bgworker)
     metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
-    reader_opts.export_interval_millis =
-        std::chrono::milliseconds(psch_otel_metric_interval_ms);
-    reader_opts.export_timeout_millis =
-        std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
+    reader_opts.export_interval_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms);
+    reader_opts.export_timeout_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
 
     metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
         otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
