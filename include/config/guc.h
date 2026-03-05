@@ -18,6 +18,10 @@ extern int psch_queue_capacity;
 extern int psch_flush_interval_ms;
 extern int psch_batch_max;
 extern int psch_log_min_elevel;
+extern int psch_otel_log_queue_size;
+extern int psch_otel_log_batch_size;
+extern int psch_otel_log_delay_ms;
+extern int psch_otel_metric_interval_ms;
 extern bool psch_debug_force_locked_overflow;
 
 #endif  // PG_STAT_CH_GUC_H

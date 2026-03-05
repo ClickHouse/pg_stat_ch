@@ -3,8 +3,8 @@
 #include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_factory.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_metric_exporter_factory.h>
 #include <opentelemetry/sdk/logs/logger_provider.h>
-#include <opentelemetry/sdk/logs/simple_log_record_processor.h>
-#include <opentelemetry/sdk/logs/simple_log_record_processor_factory.h>
+#include <opentelemetry/sdk/logs/batch_log_record_processor_factory.h>
+#include <opentelemetry/sdk/logs/batch_log_record_processor_options.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
@@ -15,9 +15,10 @@
 #include "config/guc.h"
 #include "export/exporter_interface.h"
 
+#include <absl/container/flat_hash_map.h>
+
 #include <cassert>
 #include <chrono>
-#include <map>
 
 namespace {
 
@@ -77,11 +78,20 @@ class OTelExporter : public StatsExporter {
     return Wrap<CounterColumn>(name);
   }
 
+  shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
+    return Wrap<RecordOnlyColumn<int16_t>>(name);
+  }
   shared_ptr<Column<int32_t>> RecordInt32(string_view name) final {
     return Wrap<RecordOnlyColumn<int32_t>>(name);
   }
   shared_ptr<Column<int64_t>> RecordInt64(string_view name) final {
     return Wrap<RecordOnlyColumn<int64_t>>(name);
+  }
+  shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) final {
+    return Wrap<RecordOnlyColumn<uint8_t>>(name);
+  }
+  shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) final {
+    return Wrap<RecordOnlyColumn<uint64_t>>(name);
   }
   shared_ptr<Column<int64_t>> RecordDateTime(string_view name) final {
     return Wrap<RecordOnlyColumn<int64_t>>(name);
@@ -181,11 +191,9 @@ class OTelExporter : public StatsExporter {
     }
 
     void Crunch() final {
-      // 1. Copy the shared tags
-      auto tags_with_value = exp->current_row_tags;
-      // 2. Inject the string value as a tag for this specific metric
+      // Copy tags + inject the string value as a tag for this specific metric
+      absl::flat_hash_map<string, string> tags_with_value = exp->current_row_tags;
       tags_with_value[name] = stash_val;
-      // 3. Increment counter for this tag combination
       instrument->Add(1, tags_with_value);
     }
 
@@ -265,7 +273,7 @@ class OTelExporter : public StatsExporter {
 
   // Row state
   bool row_active = false;
-  std::map<string, string> current_row_tags;
+  absl::flat_hash_map<string, string> current_row_tags;
   otel_unique_ptr<logs::LogRecord> current_log_record;
 
   std::vector<shared_ptr<BasicColumn>> columns;
@@ -303,10 +311,12 @@ bool OTelExporter::EstablishNewConnection() {
     otlp::OtlpGrpcMetricExporterOptions metric_opts;
     metric_opts.endpoint = endpoint;
 
-    // Configure Reader (Manual Flush Mode)
+    // Configure Reader (async periodic export — does not block bgworker)
     metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
-    reader_opts.export_interval_millis = std::chrono::milliseconds::max();
-    reader_opts.export_timeout_millis = std::chrono::milliseconds(1000);
+    reader_opts.export_interval_millis =
+        std::chrono::milliseconds(psch_otel_metric_interval_ms);
+    reader_opts.export_timeout_millis =
+        std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
 
     metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
         otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
@@ -322,10 +332,15 @@ bool OTelExporter::EstablishNewConnection() {
     otlp::OtlpGrpcLogRecordExporterOptions log_opts;
     log_opts.endpoint = endpoint;
 
-    // Create Logger Provider WITH the same Resource
+    // Create Logger Provider with batch processor for throughput
+    logs_sdk::BatchLogRecordProcessorOptions batch_opts;
+    batch_opts.max_queue_size = psch_otel_log_queue_size;
+    batch_opts.max_export_batch_size = psch_otel_log_batch_size;
+    batch_opts.schedule_delay_millis = std::chrono::milliseconds(psch_otel_log_delay_ms);
+
     log_provider = std::make_shared<logs_sdk::LoggerProvider>(
-        logs_sdk::SimpleLogRecordProcessorFactory::Create(
-            otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts)),
+        logs_sdk::BatchLogRecordProcessorFactory::Create(
+            otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts), batch_opts),
         resource);
 
     // Get Instruments
@@ -341,25 +356,25 @@ bool OTelExporter::EstablishNewConnection() {
 }
 
 bool OTelExporter::CommitBatch() {
-  // 1. Finish the last row logic (as discussed)
   EndRow();
 
-  // Flush Metrics (The Reader scrapes and sends)
-  bool metrics_ok = metrics_reader->ForceFlush(std::chrono::seconds(1));
+  // Both metrics and logs are exported asynchronously by background threads:
+  //   - PeriodicExportingMetricReader: exports histograms every metric_interval_ms
+  //   - BatchLogRecordProcessor: exports log batches every log_delay_ms
+  //
+  // We do NOT call ForceFlush here. ForceFlush blocks until the background
+  // thread finishes its current gRPC export, which stalls dequeuing for seconds
+  // and causes shmem queue overflow. Instead, EmitLogRecord() just enqueues to
+  // the batch processor's internal buffer (non-blocking), and the bgworker
+  // loops immediately back to dequeue more events.
+  //
+  // Trade-off: if the batch processor's internal queue fills up (gRPC slower
+  // than event rate), it silently drops log records. This is acceptable for
+  // best-effort telemetry — the alternative (blocking) causes shmem drops which
+  // lose events before they're even processed.
 
-  // Flush Logs (The Provider pushes the Processor to send)
-  bool logs_ok = log_provider->ForceFlush(std::chrono::seconds(1));
-
-  // Only count it as a success if both pipelines are healthy.
-  if (metrics_ok && logs_ok) {
-    ResetFailures();
-    return true;
-  } else {
-    consecutive_failures++;
-    // PschLog(LogLevel::Warning, "pg_stat_ch: OTel export failed "
-    //         "(Metrics: %d, Logs: %d)", metrics_ok, logs_ok);
-    return false;
-  }
+  ResetFailures();
+  return true;
 }
 
 }  // namespace

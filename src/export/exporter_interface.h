@@ -38,8 +38,11 @@ class StatsExporter {
   virtual shared_ptr<Column<string_view>> MetricFixedString(int len, string_view name) = 0;
 
   // Records: Data columns you wouldn't want to filter by.
+  virtual shared_ptr<Column<int16_t>> RecordInt16(string_view name) = 0;
   virtual shared_ptr<Column<int32_t>> RecordInt32(string_view name) = 0;
   virtual shared_ptr<Column<int64_t>> RecordInt64(string_view name) = 0;
+  virtual shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) = 0;
+  virtual shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) = 0;
   virtual shared_ptr<Column<int64_t>> RecordDateTime(string_view name) = 0;
   virtual shared_ptr<Column<string_view>> RecordString(string_view name) = 0;
 

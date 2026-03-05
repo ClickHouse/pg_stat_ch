@@ -96,51 +96,51 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   auto col_query = exporter->RecordString("query");
   elog(DEBUG3, "pg_stat_ch: all basic columns created");
 
-  // Buffer usage columns
+  // Buffer usage columns (hit/read are histograms, rest are records)
   auto col_shared_blks_hit = exporter->MetricInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->MetricInt64("shared_blks_read");
-  auto col_shared_blks_dirtied = exporter->MetricInt64("shared_blks_dirtied");
-  auto col_shared_blks_written = exporter->MetricInt64("shared_blks_written");
-  auto col_local_blks_hit = exporter->MetricInt64("local_blks_hit");
-  auto col_local_blks_read = exporter->MetricInt64("local_blks_read");
-  auto col_local_blks_dirtied = exporter->MetricInt64("local_blks_dirtied");
-  auto col_local_blks_written = exporter->MetricInt64("local_blks_written");
-  auto col_temp_blks_read = exporter->MetricInt64("temp_blks_read");
-  auto col_temp_blks_written = exporter->MetricInt64("temp_blks_written");
+  auto col_shared_blks_dirtied = exporter->RecordInt64("shared_blks_dirtied");
+  auto col_shared_blks_written = exporter->RecordInt64("shared_blks_written");
+  auto col_local_blks_hit = exporter->RecordInt64("local_blks_hit");
+  auto col_local_blks_read = exporter->RecordInt64("local_blks_read");
+  auto col_local_blks_dirtied = exporter->RecordInt64("local_blks_dirtied");
+  auto col_local_blks_written = exporter->RecordInt64("local_blks_written");
+  auto col_temp_blks_read = exporter->RecordInt64("temp_blks_read");
+  auto col_temp_blks_written = exporter->RecordInt64("temp_blks_written");
 
-  // I/O timing columns
-  auto col_shared_blk_read_time_us = exporter->MetricInt64("shared_blk_read_time_us");
-  auto col_shared_blk_write_time_us = exporter->MetricInt64("shared_blk_write_time_us");
-  auto col_local_blk_read_time_us = exporter->MetricInt64("local_blk_read_time_us");
-  auto col_local_blk_write_time_us = exporter->MetricInt64("local_blk_write_time_us");
-  auto col_temp_blk_read_time_us = exporter->MetricInt64("temp_blk_read_time_us");
-  auto col_temp_blk_write_time_us = exporter->MetricInt64("temp_blk_write_time_us");
+  // I/O timing columns (records — rarely non-zero)
+  auto col_shared_blk_read_time_us = exporter->RecordInt64("shared_blk_read_time_us");
+  auto col_shared_blk_write_time_us = exporter->RecordInt64("shared_blk_write_time_us");
+  auto col_local_blk_read_time_us = exporter->RecordInt64("local_blk_read_time_us");
+  auto col_local_blk_write_time_us = exporter->RecordInt64("local_blk_write_time_us");
+  auto col_temp_blk_read_time_us = exporter->RecordInt64("temp_blk_read_time_us");
+  auto col_temp_blk_write_time_us = exporter->RecordInt64("temp_blk_write_time_us");
 
-  // WAL usage columns
-  auto col_wal_records = exporter->MetricInt64("wal_records");
-  auto col_wal_fpi = exporter->MetricInt64("wal_fpi");
-  auto col_wal_bytes = exporter->MetricUInt64("wal_bytes");
+  // WAL usage columns (records — rarely non-zero for reads)
+  auto col_wal_records = exporter->RecordInt64("wal_records");
+  auto col_wal_fpi = exporter->RecordInt64("wal_fpi");
+  auto col_wal_bytes = exporter->RecordUInt64("wal_bytes");
 
-  // CPU time columns
-  auto col_cpu_user_time_us = exporter->MetricInt64("cpu_user_time_us");
-  auto col_cpu_sys_time_us = exporter->MetricInt64("cpu_sys_time_us");
+  // CPU time columns (records)
+  auto col_cpu_user_time_us = exporter->RecordInt64("cpu_user_time_us");
+  auto col_cpu_sys_time_us = exporter->RecordInt64("cpu_sys_time_us");
 
-  // JIT columns
-  auto col_jit_functions = exporter->MetricInt32("jit_functions");
-  auto col_jit_generation_time_us = exporter->MetricInt32("jit_generation_time_us");
-  auto col_jit_deform_time_us = exporter->MetricInt32("jit_deform_time_us");
-  auto col_jit_inlining_time_us = exporter->MetricInt32("jit_inlining_time_us");
-  auto col_jit_optimization_time_us = exporter->MetricInt32("jit_optimization_time_us");
-  auto col_jit_emission_time_us = exporter->MetricInt32("jit_emission_time_us");
+  // JIT columns (records — rarely non-zero)
+  auto col_jit_functions = exporter->RecordInt32("jit_functions");
+  auto col_jit_generation_time_us = exporter->RecordInt32("jit_generation_time_us");
+  auto col_jit_deform_time_us = exporter->RecordInt32("jit_deform_time_us");
+  auto col_jit_inlining_time_us = exporter->RecordInt32("jit_inlining_time_us");
+  auto col_jit_optimization_time_us = exporter->RecordInt32("jit_optimization_time_us");
+  auto col_jit_emission_time_us = exporter->RecordInt32("jit_emission_time_us");
 
-  // Parallel worker columns
-  auto col_parallel_workers_planned = exporter->MetricInt16("parallel_workers_planned");
-  auto col_parallel_workers_launched = exporter->MetricInt16("parallel_workers_launched");
+  // Parallel worker columns (records)
+  auto col_parallel_workers_planned = exporter->RecordInt16("parallel_workers_planned");
+  auto col_parallel_workers_launched = exporter->RecordInt16("parallel_workers_launched");
 
   elog(DEBUG3, "pg_stat_ch: creating error columns");
-  // Error columns
+  // Error columns (records)
   auto col_err_sqlstate = exporter->MetricFixedString(5, "err_sqlstate");
-  auto col_err_elevel = exporter->MetricUInt8("err_elevel");
+  auto col_err_elevel = exporter->RecordUInt8("err_elevel");
   auto col_err_message = exporter->RecordString("err_message");
   elog(DEBUG3, "pg_stat_ch: error columns created");
 
