@@ -5,11 +5,6 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./otel/collector-config.yaml:/etc/otelcol-contrib/config.yaml
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
 
   pg-perf:
     build:
@@ -18,7 +13,7 @@ services:
     container_name: psch-perf-pg
     depends_on:
       otelcol:
-        condition: service_healthy
+        condition: service_started
     environment:
       OTEL_ENDPOINT: "otelcol:4317"
       OTEL_HEALTH: "http://otelcol:13133"
