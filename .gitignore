@@ -36,5 +36,8 @@ Thumbs.db
 # Benchmark credentials
 benchmark/.env
 
+# Perf benchmark output files
+docker/perf-results/
+
 # Release artifacts
 pg_stat_ch-*.zip
