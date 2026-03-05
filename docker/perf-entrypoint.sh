@@ -33,7 +33,7 @@ gosu postgres initdb \
     --encoding=UTF8 \
     --locale=C \
     --no-instructions \
-    -q
+    2>/dev/null
 echo " done."
 
 # Configure pg_stat_ch with OTel export
@@ -65,6 +65,14 @@ gosu postgres psql -U postgres -h /var/run/postgresql \
 echo -n "Initializing pgbench schema..."
 gosu postgres pgbench -U postgres -h /var/run/postgresql -i -q postgres 2>/dev/null
 echo " done."
+
+# --- Wait for OTel collector ---
+echo -n "Waiting for OTel collector at $OTEL_HEALTH..."
+until curl -sf "$OTEL_HEALTH" >/dev/null 2>&1; do
+    printf '.'
+    sleep 1
+done
+echo " ready."
 
 # --- Run the benchmark ---
 # Use Unix socket so bench-otel.sh psql calls don't need a password.
