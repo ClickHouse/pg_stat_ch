@@ -416,10 +416,18 @@ bool OTelExporter::EstablishNewConnection() {
     otlp::OtlpGrpcLogRecordExporterOptions log_opts;
     log_opts.endpoint = endpoint;
 
-    // Create Logger Provider with batch processor for throughput
+    // Create Logger Provider with batch processor for throughput.
+    // Cap max_export_batch_size by the byte budget: even at the minimum variable-field
+    // size the fixed overhead alone can push a large batch over the gRPC 4 MiB default.
+    // DequeueEvents already enforces the byte budget on the producer side; this caps
+    // the SDK's internal batch size as a second line of defence.
+    static constexpr size_t kOtelMinBytesPerRecord = 1200;  // fixed overhead only
+    size_t batch_size_by_bytes =
+        static_cast<size_t>(psch_otel_log_max_bytes) / kOtelMinBytesPerRecord;
     logs_sdk::BatchLogRecordProcessorOptions batch_opts;
     batch_opts.max_queue_size = psch_otel_log_queue_size;
-    batch_opts.max_export_batch_size = psch_otel_log_batch_size;
+    batch_opts.max_export_batch_size =
+        std::min(static_cast<size_t>(psch_otel_log_batch_size), batch_size_by_bytes);
     batch_opts.schedule_delay_millis = std::chrono::milliseconds(psch_otel_log_delay_ms);
 
     log_provider = std::make_shared<logs_sdk::LoggerProvider>(

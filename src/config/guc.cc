@@ -28,6 +28,7 @@ int psch_batch_max = 200000;
 int psch_log_min_elevel = WARNING;
 int psch_otel_log_queue_size = 65536;
 int psch_otel_log_batch_size = 8192;
+int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 MiB
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
 bool psch_debug_force_locked_overflow = false;
@@ -242,6 +243,19 @@ void PschInitGuc(void) {
       1, 131072,          // min, max
       PGC_POSTMASTER,
       0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.otel_log_max_bytes",
+      "Maximum gRPC message size (bytes) for OTel log export.",
+      "Each gRPC ExportLogs call is capped at this many serialized bytes. "
+      "The gRPC default is 4 MiB; this default leaves a safety margin. "
+      "Only used when use_otel is enabled.",
+      &psch_otel_log_max_bytes,
+      3 * 1024 * 1024,        // bootValue: 3 MiB
+      65536, 64 * 1024 * 1024,  // min: 64 KiB, max: 64 MiB
+      PGC_POSTMASTER,
+      GUC_UNIT_BYTE,
       nullptr, nullptr, nullptr);
 
   DefineCustomIntVariable(
