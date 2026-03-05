@@ -11,19 +11,22 @@
 #   source layer — real src/ + include/ → only the 9 pg_stat_ch .cc files
 #                 recompile; invalidated on every source edit (fast).
 
-FROM debian:bookworm AS builder
+# Use the same base image as the runtime stage so postgresql-server-dev-18
+# is pinned to exactly the same PostgreSQL minor version.  Building against
+# a different minor version produces a .so with a mismatched magic block that
+# PostgreSQL refuses to load ("missing magic block" FATAL at startup).
+FROM postgres:18-bookworm AS builder
 
-RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
-    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
-    && apt-get update && apt-get install -y \
+RUN apt-get update \
+    && PG_PKG_VERSION=$(dpkg-query -W -f='${Version}' postgresql-18) \
+    && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
         ninja-build \
         git \
-        postgresql-server-dev-18 \
         libssl-dev \
         zlib1g-dev \
+        "postgresql-server-dev-18=${PG_PKG_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/pg_stat_ch
