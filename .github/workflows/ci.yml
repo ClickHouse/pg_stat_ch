@@ -189,6 +189,10 @@ jobs:
             echo "::warning::Queue did not fully drain within the timeout — the bgworker could not keep up with benchmark load. This is a throughput signal, not a benchmark failure."
           fi
 
+          # perf data files are written by root inside the container; make them
+          # readable by the runner before the upload and summary steps.
+          sudo chmod -R a+r docker/perf-results/
+
       - name: Publish results to job summary
         if: always()
         run: |
