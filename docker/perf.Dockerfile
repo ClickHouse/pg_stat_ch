@@ -76,8 +76,12 @@ COPY src/ src/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
 
-# Only the 9 pg_stat_ch .cc files need recompiling; all dep targets are cached.
-RUN cmake --build build --parallel 2
+# Touch sources so cmake sees them as newer than the stub objects compiled in
+# the deps layer.  Without this, git checkout timestamps (set before the docker
+# build starts) can predate the cmake artifacts, causing cmake to skip
+# recompilation and leave the empty stub .so in place ("missing magic block").
+RUN find src include -name '*.cc' -o -name '*.h' | xargs touch \
+    && cmake --build build --parallel 2
 
 # ---- Runtime ----
 FROM postgres:18-bookworm
