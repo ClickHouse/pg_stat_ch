@@ -320,5 +320,5 @@ printf "Send failures:    %12s\n" "$(comma "$fail")"
 printf "Peak queue usage: %11s%%\n" "$PEAK_USAGE"
 printf "Avg drain rate:   %12s events/sec\n" "$(comma "$AVG_DRAIN")"
 printf "Wall time:        %11ss\n" "$WALL_TIME"
-echo
+echo "--- End of Summary ---"
 
