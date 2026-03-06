@@ -36,12 +36,10 @@ trap cleanup EXIT
 echo "Building benchmark image..."
 $COMPOSE build pg-perf
 
-# Run — pg-perf exits when the bench finishes; otelcol is stopped by cleanup
-$COMPOSE up \
-    --no-build \
-    --abort-on-container-exit \
-    --exit-code-from pg-perf \
-    -- "$@" 2>&1 || true
+# Run — docker compose run (not up) forwards positional args to the entrypoint.
+# otelcol is started automatically via depends_on and torn down by the cleanup trap.
+BENCH_EXIT=0
+$COMPOSE run --rm pg-perf "$@" || BENCH_EXIT=$?
 
 # Show a summary of any perf report produced
 echo
@@ -54,3 +52,5 @@ fi
 if [[ -f "$RESULTS_DIR/bench-otel-flame.svg" ]]; then
     echo "Flamegraph  : $RESULTS_DIR/bench-otel-flame.svg"
 fi
+
+exit "$BENCH_EXIT"

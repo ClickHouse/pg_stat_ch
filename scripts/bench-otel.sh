@@ -197,6 +197,13 @@ cleanup() {
   kill "$SAMPLER_PID" 2>/dev/null || true
   wait "$SAMPLER_PID" 2>/dev/null || true
   rm -f "$BENCH_SCRIPT" "$PEAK_FILE" "$DRAIN_FILE" /tmp/bench-otel-sampler.pid
+
+  # Restore GUCs configured for this benchmark so they don't persist
+  if command -v psql >/dev/null 2>&1; then
+    psql -p "$PGPORT" -d postgres -Atqc "ALTER SYSTEM RESET pg_stat_ch.flush_interval_ms;" || true
+    psql -p "$PGPORT" -d postgres -Atqc "ALTER SYSTEM RESET pg_stat_ch.batch_max;" || true
+    psql -p "$PGPORT" -d postgres -Atqc "SELECT pg_reload_conf();" || true
+  fi
 }
 trap cleanup EXIT
 
@@ -219,7 +226,6 @@ fi
 
 # Wait for pgbench to finish
 wait "$PGBENCH_PID" || true
-PGBENCH_DONE=$(date +%s.%N)
 
 echo
 bold "pgbench finished. Waiting for queue to drain (up to ${DRAIN_TIMEOUT}s)..."; echo
@@ -264,7 +270,7 @@ if [[ -f bench-otel-perf.data ]]; then
     echo
     bold "--- Top 15 Hotspots ---"; echo
     # Extract overhead lines (skip headers), print top 15
-    grep -E '^\s+[0-9]+\.[0-9]+%' bench-otel-perf.txt | head -15
+    grep -E '^\s+[0-9]+\.[0-9]+%' bench-otel-perf.txt | head -15 || true
     echo
     echo "Full report: bench-otel-perf.txt"
   fi
@@ -284,8 +290,8 @@ if [[ -f bench-otel-perf.data ]]; then
 fi
 
 # --- Final stats ---
-stats=$(get_stats)
-IFS='|' read -r enq drop exp fail qsz qcap usage <<< "$stats"
+stats=$(get_stats) || true
+IFS='|' read -r enq drop exp fail qsz qcap usage <<< "${stats:-0|0|0|0|0|0|0}"
 
 WALL_TIME=$(awk "BEGIN { printf \"%.1f\", $WALL_END - $WALL_START }")
 DROP_RATE=$(awk "BEGIN { if ($enq > 0) printf \"%.2f\", ($drop / $enq) * 100; else print \"0.00\" }")
@@ -314,11 +320,5 @@ printf "Send failures:    %12s\n" "$(comma "$fail")"
 printf "Peak queue usage: %11s%%\n" "$PEAK_USAGE"
 printf "Avg drain rate:   %12s events/sec\n" "$(comma "$AVG_DRAIN")"
 printf "Wall time:        %11ss\n" "$WALL_TIME"
-echo
+echo "--- End of Summary ---"
 
-# --- Restore GUCs ---
-echo -n "Restoring GUCs... "
-psql -XAtqc "ALTER SYSTEM RESET pg_stat_ch.flush_interval_ms"
-psql -XAtqc "ALTER SYSTEM RESET pg_stat_ch.batch_max"
-psql -XAtqc "SELECT pg_reload_conf()"
-green "done"; echo

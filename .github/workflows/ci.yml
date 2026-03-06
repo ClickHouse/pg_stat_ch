@@ -136,6 +136,105 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build_unit --output-on-failure
 
+  bench-otel:
+    name: OTel Throughput Benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # BuildKit is needed for the type=gha cache backend used below.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # perf record inside the container needs paranoid <= 1.
+      - name: Allow perf profiling
+        run: sudo sysctl kernel.perf_event_paranoid=1
+
+      # Build the benchmark image with GHA layer cache.
+      # The Dockerfile is structured so that the slow gRPC/OTel dep-compilation
+      # layer is cached separately from the fast pg_stat_ch source layer, so
+      # only changed .cc files are recompiled on subsequent runs.
+      - name: Build benchmark image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/perf.Dockerfile
+          tags: psch-perf-pg:latest
+          load: true
+          cache-from: type=gha,scope=perf-image
+          cache-to: type=gha,scope=perf-image,mode=max
+
+      - name: Run OTel benchmark
+        run: |
+          mkdir -p docker/perf-results
+          # --no-build: image was pre-built above and tagged psch-perf-pg:latest
+          # (matching the image: field in docker-compose.perf.yml).
+          # || true: bench exits 141 (SIGPIPE) when Docker closes the log stream
+          # after the container exits normally; we validate success via log grep below.
+          docker compose -f docker/docker-compose.perf.yml up \
+            --no-build \
+            --abort-on-container-exit \
+            --exit-code-from pg-perf \
+            2>&1 | tee /tmp/bench-output.log || true
+
+          # Verify the benchmark ran to completion (perf report was produced).
+          # A drain timeout is a known throughput signal, not a benchmark failure;
+          # full drain correctness is validated by the regression/isolation tests.
+          grep -q "Top 15 Hotspots" /tmp/bench-output.log \
+            || { echo "ERROR: benchmark did not complete (no perf report produced)"; exit 1; }
+          if grep -q "Drain timeout" /tmp/bench-output.log; then
+            echo "::warning::Queue did not fully drain within the timeout — the bgworker could not keep up with benchmark load. This is a throughput signal, not a benchmark failure."
+          fi
+
+          # perf data files are written by root inside the container; make them
+          # readable by the runner before the upload and summary steps.
+          sudo chmod -R a+r docker/perf-results/
+
+      - name: Publish results to job summary
+        if: always()
+        run: |
+          strip_prefix() { sed 's/^[^|]*|[[:space:]]*//' "$@"; }
+          strip_ansi()   { sed 's/\x1b\[[0-9;]*m//g' "$@"; }
+          {
+            echo "## OTel Throughput Benchmark"
+            echo ""
+            if grep -q "Drain timeout" /tmp/bench-output.log 2>/dev/null; then
+              echo "> [!WARNING]"
+              echo "> Queue did not fully drain — the bgworker could not keep up with benchmark load. This is a throughput signal, not a benchmark failure."
+              echo ""
+            fi
+            echo "### Summary"
+            echo '```'
+            grep "psch-perf-pg" /tmp/bench-output.log \
+              | strip_prefix \
+              | strip_ansi \
+              | awk '/--- Summary ---/{p=1; next} /--- End of Summary ---/{exit} p' \
+              || echo "(summary not available)"
+            echo '```'
+            if grep -qE '^\s+[0-9]+\.[0-9]+%' docker/perf-results/bench-otel-perf.txt 2>/dev/null; then
+              echo ""
+              echo "### Top Hotspots"
+              echo '```'
+              grep -E '^\s+[0-9]+\.[0-9]+%' docker/perf-results/bench-otel-perf.txt | head -15 || echo "(Not available)"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: docker/perf-results/
+          if-no-files-found: warn
+
+      - name: Cleanup containers
+        if: always()
+        run: docker compose -f docker/docker-compose.perf.yml down --volumes 2>/dev/null || true
+
   lint:
     name: Code Style
     runs-on: ubuntu-24.04

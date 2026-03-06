@@ -20,6 +20,7 @@ FROM postgres:18-bookworm AS builder
 RUN apt-get update \
     && PG_PKG_VERSION=$(dpkg-query -W -f='${Version}' postgresql-18) \
     && apt-get install -y --no-install-recommends \
+        ca-certificates \
         build-essential \
         cmake \
         ninja-build \
@@ -36,38 +37,17 @@ COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY third_party/ third_party/
 
-# Create empty stub sources so cmake configure + dep compilation can run
-# without the real source files.  Empty .cc files compile to empty .o files
-# and link into a placeholder shared library — all we need to warm the cache.
-RUN mkdir -p \
-        src/config \
-        src/export \
-        src/hooks \
-        src/queue \
-        src/worker \
-        include/config \
-        include/export \
-        include/hooks \
-        include/pg_stat_ch \
-        include/queue \
-        include/worker \
-    && touch \
-        src/pg_stat_ch.cc \
-        src/config/guc.cc \
-        src/export/clickhouse_exporter.cc \
-        src/export/otel_exporter.cc \
-        src/export/stats_exporter.cc \
-        src/hooks/hooks.cc \
-        src/queue/local_batch.cc \
-        src/queue/shmem.cc \
-        src/worker/bgworker.cc \
-    && touch pg_stat_ch.control
+# One empty stub is enough for cmake to configure the pg_stat_ch target and
+# build all third-party deps.  The source layer re-runs cmake configure, which
+# re-evaluates file(GLOB_RECURSE SOURCES src/*.cc) against the real files, so
+# the stub list never needs to be kept in sync with the actual source tree.
+RUN mkdir -p src include \
+    && touch src/stub.cc pg_stat_ch.control
 
 # RelWithDebInfo: optimized but with debug symbols for perf/flamegraph.
-# This step compiles all 2000+ gRPC/OTel/protobuf dependency targets.
-# It is expensive (~5 min) but cached as long as the files above don't change.
+# Compiles all 2000+ gRPC/OTel/protobuf dep targets (~40 min, heavily cached).
 RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_OPENSSL=ON \
-    && cmake --build build --parallel 2
+    && cmake --build build --parallel $(nproc)
 
 # ── Source layer (invalidated on every source edit, but fast ~30 s) ──
 COPY include/ include/
@@ -75,8 +55,12 @@ COPY src/ src/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
 
-# Only the 9 pg_stat_ch .cc files need recompiling; all dep targets are cached.
-RUN cmake --build build --parallel 2
+# Re-run configure so file(GLOB_RECURSE) picks up the real source list.
+# FetchContent skips re-population (populated state is cached in the build dir).
+# Touch sources so ninja sees them as newer than the stub objects.
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_OPENSSL=ON \
+    && find src include -name '*.cc' -o -name '*.h' | xargs touch \
+    && cmake --build build --parallel $(nproc)
 
 # ---- Runtime ----
 FROM postgres:18-bookworm
