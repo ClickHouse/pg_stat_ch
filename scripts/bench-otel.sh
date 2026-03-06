@@ -271,7 +271,7 @@ if [[ -f bench-otel-perf.data ]]; then
     echo
     bold "--- Top 15 Hotspots ---"; echo
     # Extract overhead lines (skip headers), print top 15
-    grep -E '^\s+[0-9]+\.[0-9]+%' bench-otel-perf.txt | head -15
+    grep -E '^\s+[0-9]+\.[0-9]+%' bench-otel-perf.txt | head -15 || true
     echo
     echo "Full report: bench-otel-perf.txt"
   fi
