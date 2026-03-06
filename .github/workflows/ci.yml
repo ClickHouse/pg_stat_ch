@@ -197,6 +197,7 @@ jobs:
         if: always()
         run: |
           strip_prefix() { sed 's/^[^|]*|[[:space:]]*//' "$@"; }
+          strip_ansi()   { sed 's/\x1b\[[0-9;]*m//g' "$@"; }
           {
             echo "## OTel Throughput Benchmark"
             echo ""
@@ -204,8 +205,9 @@ jobs:
             echo '```'
             grep "psch-perf-pg" /tmp/bench-output.log \
               | strip_prefix \
+              | strip_ansi \
               | sed -n '/--- Summary ---/,/Restoring GUCs/p' \
-              | grep -v "Restoring"
+              | grep -v "Restoring" || true
             echo '```'
             if grep -qE '^\s+[0-9]+\.[0-9]+%' docker/perf-results/bench-otel-perf.txt 2>/dev/null; then
               echo ""
