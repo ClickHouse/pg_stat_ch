@@ -79,9 +79,15 @@ echo " done."
 
 # --- Wait for OTel collector ---
 echo -n "Waiting for OTel collector at $OTEL_HEALTH..."
+OTEL_START_DEADLINE=$(($(date +%s) + 60))
 until curl -sf "$OTEL_HEALTH" >/dev/null 2>&1; do
     printf '.'
     sleep 1
+    if [[ $(date +%s) -ge $OTEL_START_DEADLINE ]]; then
+        echo
+        echo "ERROR: OTel collector failed to become healthy within 60s"
+        exit 1
+    fi
 done
 echo " ready."
 
@@ -94,8 +100,8 @@ export OTEL_HEALTH
 export OTEL_ENDPOINT
 
 cd "$RESULTS_DIR"
-bench-otel.sh "$@"
-BENCH_EXIT=$?
+BENCH_EXIT=0
+bench-otel.sh "$@" || BENCH_EXIT=$?
 
 # --- Shutdown ---
 gosu postgres pg_ctl -D "$PGDATA" stop -m fast 2>/dev/null || kill -TERM "$PG_PID"
