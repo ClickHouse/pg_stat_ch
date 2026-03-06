@@ -211,8 +211,7 @@ jobs:
             grep "psch-perf-pg" /tmp/bench-output.log \
               | strip_prefix \
               | strip_ansi \
-              | sed -n '/--- Summary ---/,/Restoring GUCs/p' \
-              | grep -v "Restoring" \
+              | awk '/--- Summary ---/{p=1; next} p' \
               || echo "(summary not available)"
             echo '```'
             if grep -qE '^\s+[0-9]+\.[0-9]+%' docker/perf-results/bench-otel-perf.txt 2>/dev/null; then

@@ -37,21 +37,15 @@ COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY third_party/ third_party/
 
-# Create empty stub sources so cmake configure + dep compilation can run
-# without the real source files.  Empty .cc files compile to empty .o files
-# and link into a placeholder shared library — all we need to warm the cache.
+# Create empty stub sources so cmake can configure and compile all third-party
+# deps (gRPC, OTel, protobuf, abseil) without the real pg_stat_ch sources.
+# The stub list does NOT need to exactly match the real source tree: the source
+# layer re-runs cmake configure, which re-evaluates file(GLOB_RECURSE) against
+# the real files, so new .cc files are picked up automatically.
 RUN mkdir -p \
-        src/config \
-        src/export \
-        src/hooks \
-        src/queue \
-        src/worker \
-        include/config \
-        include/export \
-        include/hooks \
-        include/pg_stat_ch \
-        include/queue \
-        include/worker \
+        src/config src/export src/hooks src/queue src/worker \
+        include/config include/export include/hooks \
+        include/pg_stat_ch include/queue include/worker \
     && touch \
         src/pg_stat_ch.cc \
         src/config/guc.cc \
@@ -65,10 +59,9 @@ RUN mkdir -p \
     && touch pg_stat_ch.control
 
 # RelWithDebInfo: optimized but with debug symbols for perf/flamegraph.
-# This step compiles all 2000+ gRPC/OTel/protobuf dependency targets.
-# It is expensive (~5 min) but cached as long as the files above don't change.
+# Compiles all 2000+ gRPC/OTel/protobuf dep targets (~40 min, heavily cached).
 RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_OPENSSL=ON \
-    && cmake --build build --parallel 2
+    && cmake --build build --parallel $(nproc)
 
 # ── Source layer (invalidated on every source edit, but fast ~30 s) ──
 COPY include/ include/
@@ -76,12 +69,12 @@ COPY src/ src/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
 
-# Touch sources so cmake sees them as newer than the stub objects compiled in
-# the deps layer.  Without this, git checkout timestamps (set before the docker
-# build starts) can predate the cmake artifacts, causing cmake to skip
-# recompilation and leave the empty stub .so in place ("missing magic block").
-RUN find src include -name '*.cc' -o -name '*.h' | xargs touch \
-    && cmake --build build --parallel 2
+# Re-run configure so file(GLOB_RECURSE) picks up the real source list.
+# FetchContent skips re-population (populated state is cached in the build dir).
+# Touch sources so ninja sees them as newer than the stub objects.
+RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_OPENSSL=ON \
+    && find src include -name '*.cc' -o -name '*.h' | xargs touch \
+    && cmake --build build --parallel $(nproc)
 
 # ---- Runtime ----
 FROM postgres:18-bookworm

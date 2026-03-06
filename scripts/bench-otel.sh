@@ -226,7 +226,6 @@ fi
 
 # Wait for pgbench to finish
 wait "$PGBENCH_PID" || true
-PGBENCH_DONE=$(date +%s.%N)
 
 echo
 bold "pgbench finished. Waiting for queue to drain (up to ${DRAIN_TIMEOUT}s)..."; echo
