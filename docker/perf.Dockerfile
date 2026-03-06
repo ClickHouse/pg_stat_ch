@@ -37,26 +37,12 @@ COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY third_party/ third_party/
 
-# Create empty stub sources so cmake can configure and compile all third-party
-# deps (gRPC, OTel, protobuf, abseil) without the real pg_stat_ch sources.
-# The stub list does NOT need to exactly match the real source tree: the source
-# layer re-runs cmake configure, which re-evaluates file(GLOB_RECURSE) against
-# the real files, so new .cc files are picked up automatically.
-RUN mkdir -p \
-        src/config src/export src/hooks src/queue src/worker \
-        include/config include/export include/hooks \
-        include/pg_stat_ch include/queue include/worker \
-    && touch \
-        src/pg_stat_ch.cc \
-        src/config/guc.cc \
-        src/export/clickhouse_exporter.cc \
-        src/export/otel_exporter.cc \
-        src/export/stats_exporter.cc \
-        src/hooks/hooks.cc \
-        src/queue/local_batch.cc \
-        src/queue/shmem.cc \
-        src/worker/bgworker.cc \
-    && touch pg_stat_ch.control
+# One empty stub is enough for cmake to configure the pg_stat_ch target and
+# build all third-party deps.  The source layer re-runs cmake configure, which
+# re-evaluates file(GLOB_RECURSE SOURCES src/*.cc) against the real files, so
+# the stub list never needs to be kept in sync with the actual source tree.
+RUN mkdir -p src include \
+    && touch src/stub.cc pg_stat_ch.control
 
 # RelWithDebInfo: optimized but with debug symbols for perf/flamegraph.
 # Compiles all 2000+ gRPC/OTel/protobuf dep targets (~40 min, heavily cached).
