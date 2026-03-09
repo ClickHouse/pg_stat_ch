@@ -75,6 +75,7 @@ static bool check_psch_queue_capacity(int* newval, void** extra [[maybe_unused]]
   return true;
 }
 
+// When adding a GUC here, also update test/regression/expected/guc.out.
 void PschInitGuc(void) {
   // clang-format off
   DefineCustomBoolVariable(
