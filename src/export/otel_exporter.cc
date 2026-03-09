@@ -120,15 +120,9 @@ class OTelExporter : public StatsExporter {
   }
 
   // Semantic columns
-  shared_ptr<Column<string>> DbNameColumn() final {
-    return Wrap<TagColumn<string>>("db.name");
-  }
-  shared_ptr<Column<string>> DbUserColumn() final {
-    return Wrap<TagColumn<string>>("db.user");
-  }
-  shared_ptr<Column<uint64_t>> DbDurationColumn() final {
-    return Wrap<DurationColumn>();
-  }
+  shared_ptr<Column<string>> DbNameColumn() final { return Wrap<TagColumn<string>>("db.name"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return Wrap<TagColumn<string>>("db.user"); }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return Wrap<DurationColumn>(); }
   shared_ptr<Column<string>> DbOperationColumn() final {
     return Wrap<TagColumn<string>>("db.operation.name");
   }
@@ -344,7 +338,8 @@ class OTelExporter : public StatsExporter {
   }
 
   otel_shared_ptr<metrics::Histogram<double>> GetDoubleHistogram(std::string_view name) {
-    auto [it, inserted] = double_histogram_cache.insert(DoubleHistogramMap::value_type{name, nullptr});
+    auto [it, inserted] =
+        double_histogram_cache.insert(DoubleHistogramMap::value_type{name, nullptr});
     if (inserted) {
       it->second = meter->CreateDoubleHistogram(it->first, "description", "s");
     }
@@ -364,7 +359,8 @@ class OTelExporter : public StatsExporter {
 
   using HistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
   HistogramMap histogram_cache;
-  using DoubleHistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<double>>, std::less<>>;
+  using DoubleHistogramMap =
+      std::map<string, otel_shared_ptr<metrics::Histogram<double>>, std::less<>>;
   DoubleHistogramMap double_histogram_cache;
   using CounterMap = std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
   CounterMap counter_cache;
