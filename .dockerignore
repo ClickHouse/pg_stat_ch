@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+build_unit/
 *.o
 *.so
 *.dylib
@@ -41,3 +42,6 @@ Thumbs.db
 # Benchmark credentials
 benchmark/.env
 benchmark/loadgen/
+
+# Local benchmark output (perf .data files can be hundreds of MB)
+docker/perf-results/
