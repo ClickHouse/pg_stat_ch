@@ -2,6 +2,7 @@
 #include <opentelemetry/exporters/otlp/otlp_grpc_exporter_options.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_factory.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_metric_exporter_factory.h>
+#include <opentelemetry/sdk/common/global_log_handler.h>
 #include <opentelemetry/sdk/logs/batch_log_record_processor_factory.h>
 #include <opentelemetry/sdk/logs/batch_log_record_processor_options.h>
 #include <opentelemetry/sdk/logs/logger_provider.h>
@@ -48,6 +49,27 @@ namespace metrics_sdk = opentelemetry::sdk::metrics;
 namespace nostd = opentelemetry::nostd;
 namespace otlp = opentelemetry::exporter::otlp;
 namespace otel_common = opentelemetry::common;
+namespace otel_internal_log = opentelemetry::sdk::common::internal_log;
+
+// Installed as the OTel SDK's global log handler during EstablishNewConnection.
+// Fires on the SDK's background export thread — must not call any PG functions.
+// Increments the exporter's consecutive_failures counter on Error-level events
+// so that failures are visible through pg_stat_ch's stats view.
+class PschOtelLogHandler : public otel_internal_log::LogHandler {
+ public:
+  explicit PschOtelLogHandler(std::atomic<int>* failures) : failures_(failures) {}
+
+  void Handle(otel_internal_log::LogLevel level, const char* /*file*/, int /*line*/,
+              const char* /*msg*/,
+              const opentelemetry::sdk::common::AttributeMap& /*attrs*/) noexcept override {
+    if (level == otel_internal_log::LogLevel::Error) {
+      failures_->fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+ private:
+  std::atomic<int>* failures_;
+};
 
 // Because Microsoft ruins everything
 template <typename T>
@@ -132,9 +154,20 @@ class OTelExporter : public StatsExporter {
 
   bool EstablishNewConnection() final;
   bool IsConnected() const final { return metrics_provider && log_provider; }
-  int NumConsecutiveFailures() const final { return consecutive_failures; }
-  void ResetFailures() final { consecutive_failures = 0; }
   int NumExported() const final { return exported_count; }
+
+  // The OTel SDK manages reconnection to the collector internally via gRPC
+  // retry. The bgworker must not call EstablishNewConnection() on failure or
+  // apply exponential backoff — that would fight the SDK's own retry logic.
+  bool SupportsReconnection() const final { return false; }
+
+  ~OTelExporter() override {
+    // Prevent the log handler from holding a dangling pointer to our
+    // consecutive_failures after we are destroyed.
+    otel_internal_log::GlobalLogHandler::SetLogHandler(
+        nostd::shared_ptr<otel_internal_log::LogHandler>(
+            new otel_internal_log::DefaultLogHandler()));
+  }
 
  private:
   void EndRow() {
@@ -354,7 +387,6 @@ class OTelExporter : public StatsExporter {
   shared_ptr<metrics_sdk::MeterProvider> metrics_provider;
   shared_ptr<metrics_sdk::MetricReader> metrics_reader;
   shared_ptr<logs_sdk::LoggerProvider> log_provider;
-  int consecutive_failures = 0;
   int exported_count = 0;
 
   using HistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
@@ -375,6 +407,14 @@ class OTelExporter : public StatsExporter {
 
 bool OTelExporter::EstablishNewConnection() {
   try {
+    // Install error handler before creating any provider. The handler fires on
+    // the SDK's background export thread and increments consecutive_failures so
+    // SDK errors surface through pg_stat_ch's stats view. It must not call any
+    // PG functions (LWLock, elog, etc.).
+    otel_internal_log::GlobalLogHandler::SetLogHandler(
+        nostd::shared_ptr<otel_internal_log::LogHandler>(
+            new PschOtelLogHandler(&consecutive_failures)));
+
     const std::string hostname = GetAHostname("postgres-primary");
     const std::string endpoint =
         (psch_otel_endpoint && *psch_otel_endpoint) ? psch_otel_endpoint : "localhost:4317";
@@ -446,22 +486,24 @@ bool OTelExporter::EstablishNewConnection() {
 bool OTelExporter::CommitBatch() {
   EndRow();
 
-  // Both metrics and logs are exported asynchronously by background threads:
-  //   - PeriodicExportingMetricReader: exports histograms every metric_interval_ms
-  //   - BatchLogRecordProcessor: exports log batches every log_delay_ms
+  // Fire-and-forget: EmitLogRecord() enqueues to the BatchLogRecordProcessor's
+  // internal buffer (non-blocking). The SDK's background thread drains it
+  // asynchronously — we do not know here whether any given batch will succeed.
   //
-  // We do NOT call ForceFlush here. ForceFlush blocks until the background
-  // thread finishes its current gRPC export, which stalls dequeuing for seconds
-  // and causes shmem queue overflow. Instead, EmitLogRecord() just enqueues to
-  // the batch processor's internal buffer (non-blocking), and the bgworker
-  // loops immediately back to dequeue more events.
+  // We do NOT call ForceFlush. ForceFlush blocks until the background thread
+  // finishes its current gRPC export, stalling dequeuing for seconds and
+  // causing shmem queue overflow.
+  //
+  // Failure visibility: PschOtelLogHandler (installed in EstablishNewConnection)
+  // increments consecutive_failures on SDK Error events from the background
+  // thread. Since SupportsReconnection() returns false, the bgworker never
+  // calls EstablishNewConnection() in response — the OTel SDK manages gRPC
+  // reconnection internally. The counter is informational only (stats view).
   //
   // Trade-off: if the batch processor's internal queue fills up (gRPC slower
   // than event rate), it silently drops log records. This is acceptable for
-  // best-effort telemetry — the alternative (blocking) causes shmem drops which
-  // lose events before they're even processed.
-
-  ResetFailures();
+  // best-effort telemetry — blocking causes shmem drops which lose events
+  // before they are even processed.
   return true;
 }
 

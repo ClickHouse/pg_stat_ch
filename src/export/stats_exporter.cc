@@ -288,7 +288,7 @@ int PschExportBatch(void) {
   elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
   StatsExporter* exporter = g_exporter.exporter.get();
 
-  if (!exporter->IsConnected()) {
+  if (exporter->SupportsReconnection() && !exporter->IsConnected()) {
     elog(DEBUG1, "pg_stat_ch: client is null, initializing");
     if (!exporter->EstablishNewConnection()) {
       PschRecordExportFailure("Failed to connect to exporter backend");
@@ -323,7 +323,7 @@ void PschResetRetryState(void) {
 
 int PschGetRetryDelayMs(void) {
   StatsExporter* exporter = g_exporter.exporter.get();
-  if (!exporter || exporter->NumConsecutiveFailures() <= 0) {
+  if (!exporter || !exporter->SupportsReconnection() || exporter->NumConsecutiveFailures() <= 0) {
     return 0;
   }
   // Exponential backoff: base * 2^(failures-1), capped at max

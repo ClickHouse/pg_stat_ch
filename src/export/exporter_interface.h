@@ -1,6 +1,7 @@
 #ifndef PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_
 #define PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -12,6 +13,12 @@ class StatsExporter {
   using string_view = std::string_view;
   template <typename T>
   using shared_ptr = std::shared_ptr<T>;
+
+  // Consecutive export failures, updated by the implementation.
+  // Stored in the base class so implementations don't duplicate it, and so
+  // that asynchronous error handlers (e.g. OTel GlobalLogHandler) can
+  // increment it safely from a background thread.
+  std::atomic<int> consecutive_failures{0};
 
   class BasicColumn {
    public:
@@ -72,9 +79,17 @@ class StatsExporter {
 
   virtual bool EstablishNewConnection() = 0;
   virtual bool IsConnected() const = 0;
-  virtual int NumConsecutiveFailures() const = 0;
-  virtual void ResetFailures() = 0;
   virtual int NumExported() const = 0;
+
+  // Whether this backend supports re-establishing a broken connection.
+  // Returns false for OTel: the SDK manages reconnection to the collector
+  // internally, so the bgworker should not call EstablishNewConnection() after
+  // an error or apply exponential backoff — that would fight the SDK's own
+  // retry logic.
+  virtual bool SupportsReconnection() const { return true; }
+
+  int NumConsecutiveFailures() const { return consecutive_failures.load(); }
+  void ResetFailures() { consecutive_failures.store(0); }
 
   virtual ~StatsExporter() = default;
 };

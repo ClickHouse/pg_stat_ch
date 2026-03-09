@@ -85,8 +85,6 @@ class ClickHouseExporter : public StatsExporter {
 
   bool EstablishNewConnection() final;
   bool IsConnected() const final { return (bool)client; }
-  int NumConsecutiveFailures() const final { return consecutive_failures; }
-  void ResetFailures() final { consecutive_failures = 0; }
   int NumExported() const final { return exported_count; }
 
  private:
@@ -116,7 +114,6 @@ class ClickHouseExporter : public StatsExporter {
   std::unique_ptr<clickhouse::Client> client;
   std::unique_ptr<clickhouse::Block> block;
   std::vector<shared_ptr<BasicColumn>> columns;
-  int consecutive_failures = 0;
   int exported_count = 0;
 };
 
@@ -140,7 +137,7 @@ bool ClickHouseExporter::CommitBatch() {
     elog(DEBUG1, "pg_stat_ch: insert completed");
 
     // Success: reset retry state and record success timestamp
-    consecutive_failures = 0;
+    consecutive_failures.store(0);
     elog(DEBUG1, "pg_stat_ch: exported %d events to ClickHouse", exported_count);
     return true;
 
@@ -149,7 +146,7 @@ bool ClickHouseExporter::CommitBatch() {
     elog(WARNING, "pg_stat_ch: failed to insert to ClickHouse: %s", err_msg.c_str());
 
     // Failure: increment counter, record error, reset client for reconnect
-    consecutive_failures++;
+    ++consecutive_failures;
     PschRecordExportFailure(err_msg.c_str());
     client.reset();
     return false;
