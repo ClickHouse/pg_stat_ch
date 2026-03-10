@@ -2,9 +2,9 @@
 #include <opentelemetry/exporters/otlp/otlp_grpc_exporter_options.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_factory.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_metric_exporter_factory.h>
+#include <opentelemetry/sdk/logs/batch_log_record_processor_factory.h>
+#include <opentelemetry/sdk/logs/batch_log_record_processor_options.h>
 #include <opentelemetry/sdk/logs/logger_provider.h>
-#include <opentelemetry/sdk/logs/simple_log_record_processor.h>
-#include <opentelemetry/sdk/logs/simple_log_record_processor_factory.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
@@ -14,6 +14,8 @@
 
 #include "config/guc.h"
 #include "export/exporter_interface.h"
+
+#include <absl/container/flat_hash_map.h>
 
 #include <cassert>
 #include <chrono>
@@ -95,17 +97,37 @@ class OTelExporter : public StatsExporter {
     return Wrap<CounterColumn>(name);
   }
 
+  shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
+    return Wrap<RecordOnlyColumn<int16_t>>(name);
+  }
   shared_ptr<Column<int32_t>> RecordInt32(string_view name) final {
     return Wrap<RecordOnlyColumn<int32_t>>(name);
   }
   shared_ptr<Column<int64_t>> RecordInt64(string_view name) final {
     return Wrap<RecordOnlyColumn<int64_t>>(name);
   }
+  shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) final {
+    return Wrap<RecordOnlyColumn<uint8_t>>(name);
+  }
+  shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) final {
+    return Wrap<RecordOnlyColumn<uint64_t>>(name);
+  }
   shared_ptr<Column<int64_t>> RecordDateTime(string_view name) final {
     return Wrap<RecordOnlyColumn<int64_t>>(name);
   }
   shared_ptr<Column<string_view>> RecordString(string_view name) final {
     return Wrap<RecordOnlyColumn<string_view>>(name);
+  }
+
+  // Semantic columns
+  shared_ptr<Column<string>> DbNameColumn() final { return Wrap<TagColumn<string>>("db.name"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return Wrap<TagColumn<string>>("db.user"); }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return Wrap<DurationColumn>(); }
+  shared_ptr<Column<string>> DbOperationColumn() final {
+    return Wrap<TagColumn<string>>("db.operation.name");
+  }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final {
+    return Wrap<RecordOnlyColumn<string_view>>("db.query.text");
   }
 
   bool EstablishNewConnection() final;
@@ -187,6 +209,30 @@ class OTelExporter : public StatsExporter {
     uint64_t stash_val = 0;
   };
 
+  // View over current_row_tags that appends one extra K/V pair without copying the map.
+  class MapPlusExtraPairView : public otel_common::KeyValueIterable {
+   public:
+    MapPlusExtraPairView(const absl::flat_hash_map<string, string>& base,
+                         nostd::string_view extra_key, nostd::string_view extra_val)
+        : base_(base), extra_key_(extra_key), extra_val_(extra_val) {}
+
+    bool ForEachKeyValue(nostd::function_ref<bool(nostd::string_view, otel_common::AttributeValue)>
+                             callback) const noexcept override {
+      for (const auto& [k, v] : base_) {
+        if (!callback(k, nostd::string_view(v)))
+          return false;
+      }
+      return callback(extra_key_, extra_val_);
+    }
+
+    size_t size() const noexcept override { return base_.size() + 1; }
+
+   private:
+    const absl::flat_hash_map<string, string>& base_;
+    nostd::string_view extra_key_;
+    nostd::string_view extra_val_;
+  };
+
   // 3. Counter Instrument Metric Column (for histograms of specific tag values)
   class CounterColumn : public Column<string_view> {
    public:
@@ -199,12 +245,8 @@ class OTelExporter : public StatsExporter {
     }
 
     void Crunch() final {
-      // 1. Copy the shared tags
-      auto tags_with_value = exp->current_row_tags;
-      // 2. Inject the string value as a tag for this specific metric
-      tags_with_value[name] = stash_val;
-      // 3. Increment counter for this tag combination
-      instrument->Add(1, tags_with_value);
+      MapPlusExtraPairView view(exp->current_row_tags, name, stash_val);
+      instrument->Add(1, view);
     }
 
    private:
@@ -238,10 +280,40 @@ class OTelExporter : public StatsExporter {
     std::string name;
   };
 
+  // 5. Duration Column: converts µs → seconds for OTel db.client.operation.duration histogram.
+  class DurationColumn : public Column<uint64_t> {
+   public:
+    explicit DurationColumn(OTelExporter* e)
+        : exp(e), instrument(exp->GetDoubleHistogram("db.client.operation.duration")) {}
+
+    void Append(const uint64_t& val) final {
+      exp->current_log_record->SetAttribute("duration_us", static_cast<int64_t>(val));
+      stash_val = val;
+    }
+
+    void Crunch() final {
+      double seconds = static_cast<double>(stash_val) / 1e6;
+      instrument->Record(seconds, exp->current_row_tags, {});
+    }
+
+   private:
+    OTelExporter* exp;
+    uint64_t stash_val = 0;
+    otel_shared_ptr<metrics::Histogram<double>> instrument;
+  };
+
   template <typename T>
   std::shared_ptr<T> Wrap(string_view name) {
     auto col = std::make_shared<T>(this, name);
     columns.push_back(col);  // Keep alive for the batch
+    return col;
+  }
+
+  // Wrap overload for column types that don't take a name (e.g. DurationColumn).
+  template <typename T>
+  std::shared_ptr<T> Wrap() {
+    auto col = std::make_shared<T>(this);
+    columns.push_back(col);
     return col;
   }
 
@@ -265,6 +337,15 @@ class OTelExporter : public StatsExporter {
     return it->second;
   }
 
+  otel_shared_ptr<metrics::Histogram<double>> GetDoubleHistogram(std::string_view name) {
+    auto [it, inserted] =
+        double_histogram_cache.insert(DoubleHistogramMap::value_type{name, nullptr});
+    if (inserted) {
+      it->second = meter->CreateDoubleHistogram(it->first, "description", "s");
+    }
+    return it->second;
+  }
+
   // =====================================================================
   // OTel connection state
   // =====================================================================
@@ -278,12 +359,15 @@ class OTelExporter : public StatsExporter {
 
   using HistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
   HistogramMap histogram_cache;
+  using DoubleHistogramMap =
+      std::map<string, otel_shared_ptr<metrics::Histogram<double>>, std::less<>>;
+  DoubleHistogramMap double_histogram_cache;
   using CounterMap = std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
   CounterMap counter_cache;
 
   // Row state
   bool row_active = false;
-  std::map<string, string> current_row_tags;
+  absl::flat_hash_map<string, string> current_row_tags;
   otel_unique_ptr<logs::LogRecord> current_log_record;
 
   std::vector<shared_ptr<BasicColumn>> columns;
@@ -309,10 +393,10 @@ bool OTelExporter::EstablishNewConnection() {
     otlp::OtlpGrpcMetricExporterOptions metric_opts;
     metric_opts.endpoint = endpoint;
 
-    // Configure Reader (Manual Flush Mode)
+    // Configure Reader (async periodic export — does not block bgworker)
     metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
-    reader_opts.export_interval_millis = std::chrono::milliseconds::max();
-    reader_opts.export_timeout_millis = std::chrono::milliseconds(1000);
+    reader_opts.export_interval_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms);
+    reader_opts.export_timeout_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
 
     metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
         otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
@@ -328,10 +412,23 @@ bool OTelExporter::EstablishNewConnection() {
     otlp::OtlpGrpcLogRecordExporterOptions log_opts;
     log_opts.endpoint = endpoint;
 
-    // Create Logger Provider WITH the same Resource
+    // Create Logger Provider with batch processor for throughput.
+    // Cap max_export_batch_size by the byte budget: even at the minimum variable-field
+    // size the fixed overhead alone can push a large batch over the gRPC 4 MiB default.
+    // DequeueEvents already enforces the byte budget on the producer side; this caps
+    // the SDK's internal batch size as a second line of defence.
+    static constexpr size_t kOtelMinBytesPerRecord = 1200;  // fixed overhead only
+    size_t batch_size_by_bytes =
+        static_cast<size_t>(psch_otel_log_max_bytes) / kOtelMinBytesPerRecord;
+    logs_sdk::BatchLogRecordProcessorOptions batch_opts;
+    batch_opts.max_queue_size = psch_otel_log_queue_size;
+    batch_opts.max_export_batch_size =
+        std::min(static_cast<size_t>(psch_otel_log_batch_size), batch_size_by_bytes);
+    batch_opts.schedule_delay_millis = std::chrono::milliseconds(psch_otel_log_delay_ms);
+
     log_provider = std::make_shared<logs_sdk::LoggerProvider>(
-        logs_sdk::SimpleLogRecordProcessorFactory::Create(
-            otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts)),
+        logs_sdk::BatchLogRecordProcessorFactory::Create(
+            otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts), batch_opts),
         resource);
 
     // Get Instruments
@@ -347,25 +444,25 @@ bool OTelExporter::EstablishNewConnection() {
 }
 
 bool OTelExporter::CommitBatch() {
-  // 1. Finish the last row logic (as discussed)
   EndRow();
 
-  // Flush Metrics (The Reader scrapes and sends)
-  bool metrics_ok = metrics_reader->ForceFlush(std::chrono::seconds(1));
+  // Both metrics and logs are exported asynchronously by background threads:
+  //   - PeriodicExportingMetricReader: exports histograms every metric_interval_ms
+  //   - BatchLogRecordProcessor: exports log batches every log_delay_ms
+  //
+  // We do NOT call ForceFlush here. ForceFlush blocks until the background
+  // thread finishes its current gRPC export, which stalls dequeuing for seconds
+  // and causes shmem queue overflow. Instead, EmitLogRecord() just enqueues to
+  // the batch processor's internal buffer (non-blocking), and the bgworker
+  // loops immediately back to dequeue more events.
+  //
+  // Trade-off: if the batch processor's internal queue fills up (gRPC slower
+  // than event rate), it silently drops log records. This is acceptable for
+  // best-effort telemetry — the alternative (blocking) causes shmem drops which
+  // lose events before they're even processed.
 
-  // Flush Logs (The Provider pushes the Processor to send)
-  bool logs_ok = log_provider->ForceFlush(std::chrono::seconds(1));
-
-  // Only count it as a success if both pipelines are healthy.
-  if (metrics_ok && logs_ok) {
-    ResetFailures();
-    return true;
-  } else {
-    consecutive_failures++;
-    // PschLog(LogLevel::Warning, "pg_stat_ch: OTel export failed "
-    //         "(Metrics: %d, Logs: %d)", metrics_ok, logs_ok);
-    return false;
-  }
+  ResetFailures();
+  return true;
 }
 
 }  // namespace

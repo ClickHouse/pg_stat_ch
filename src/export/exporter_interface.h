@@ -38,10 +38,33 @@ class StatsExporter {
   virtual shared_ptr<Column<string_view>> MetricFixedString(int len, string_view name) = 0;
 
   // Records: Data columns you wouldn't want to filter by.
+  virtual shared_ptr<Column<int16_t>> RecordInt16(string_view name) = 0;
   virtual shared_ptr<Column<int32_t>> RecordInt32(string_view name) = 0;
   virtual shared_ptr<Column<int64_t>> RecordInt64(string_view name) = 0;
+  virtual shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) = 0;
+  virtual shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) = 0;
   virtual shared_ptr<Column<int64_t>> RecordDateTime(string_view name) = 0;
   virtual shared_ptr<Column<string_view>> RecordString(string_view name) = 0;
+
+  // ===========================================================================
+  // Semantic columns: name, unit, and instrument type may vary by backend.
+  // Add a column here only when its behavior meaningfully differs across
+  // exporters (e.g. OTel semconv requires a different name, unit, or
+  // instrument). Pure virtuals enforce explicit handling in every exporter.
+  // ===========================================================================
+
+  // Database name. CH: TagString "db"; OTel semconv: "db.name" tag.
+  virtual shared_ptr<Column<string>> DbNameColumn() = 0;
+  // Authenticated user. CH: TagString "username"; OTel semconv: "db.user" tag.
+  virtual shared_ptr<Column<string>> DbUserColumn() = 0;
+  // Query duration. Caller appends microseconds. CH: MetricUInt64 "duration_us";
+  // OTel: converts to seconds, records as Histogram<double> "db.client.operation.duration".
+  virtual shared_ptr<Column<uint64_t>> DbDurationColumn() = 0;
+  // SQL command type. CH: RecordString "cmd_type"; OTel: TagString "db.operation.name"
+  // (used as a dimension on the duration histogram).
+  virtual shared_ptr<Column<string>> DbOperationColumn() = 0;
+  // Query text. CH: RecordString "query"; OTel semconv: "db.query.text".
+  virtual shared_ptr<Column<string_view>> DbQueryTextColumn() = 0;
 
   virtual void BeginBatch() = 0;
   virtual void BeginRow() = 0;

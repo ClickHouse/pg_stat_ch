@@ -46,11 +46,20 @@ class ClickHouseExporter : public StatsExporter {
   }
 
   // Records... you guessed it
+  shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
+    return Wrap<clickhouse::ColumnInt16>(name);
+  }
   shared_ptr<Column<int32_t>> RecordInt32(string_view name) final {
     return Wrap<clickhouse::ColumnInt32>(name);
   }
   shared_ptr<Column<int64_t>> RecordInt64(string_view name) final {
     return Wrap<clickhouse::ColumnInt64>(name);
+  }
+  shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) final {
+    return Wrap<clickhouse::ColumnUInt8>(name);
+  }
+  shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) final {
+    return Wrap<clickhouse::ColumnUInt64>(name);
   }
   shared_ptr<Column<int64_t>> RecordDateTime(string_view name) final {
     return Wrap<clickhouse::ColumnDateTime64, int64_t>(name, 6);
@@ -58,6 +67,13 @@ class ClickHouseExporter : public StatsExporter {
   shared_ptr<Column<string_view>> RecordString(string_view name) final {
     return Wrap<clickhouse::ColumnString, string_view>(name);
   }
+
+  // Semantic columns
+  shared_ptr<Column<string>> DbNameColumn() final { return TagString("db"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return TagString("username"); }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return MetricUInt64("duration_us"); }
+  shared_ptr<Column<string>> DbOperationColumn() final { return TagString("cmd_type"); }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return RecordString("query"); }
 
   void BeginBatch() final {
     block = std::make_unique<clickhouse::Block>();

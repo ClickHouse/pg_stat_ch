@@ -17,9 +17,14 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.hostname
  pg_stat_ch.log_min_elevel
  pg_stat_ch.otel_endpoint
+ pg_stat_ch.otel_log_batch_size
+ pg_stat_ch.otel_log_delay_ms
+ pg_stat_ch.otel_log_max_bytes
+ pg_stat_ch.otel_log_queue_size
+ pg_stat_ch.otel_metric_interval_ms
  pg_stat_ch.queue_capacity
  pg_stat_ch.use_otel
-(16 rows)
+(21 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 

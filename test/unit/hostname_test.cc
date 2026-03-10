@@ -4,9 +4,15 @@
 #include <cstdlib>
 #include <string>
 
-// GUC stubs (defined in guc.cc in the extension; not linked here)
+// GUC stubs — only the variables referenced by otel_exporter.cc are needed here.
+// The full definitions live in src/config/guc.cc (requires the PostgreSQL server).
 char* psch_hostname = nullptr;
 char* psch_otel_endpoint = nullptr;
+int psch_otel_log_queue_size = 4096;
+int psch_otel_log_batch_size = 512;
+int psch_otel_log_max_bytes = 4194304;
+int psch_otel_log_delay_ms = 200;
+int psch_otel_metric_interval_ms = 5000;
 
 // Stub out the PG-dependent log helper declared in exporter_interface.h
 void LogNegativeValue(const std::string&, int64_t) {}
