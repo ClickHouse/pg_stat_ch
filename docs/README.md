@@ -5,22 +5,25 @@ and hosted at [TBD](TO DO)
 
 ## Running locally
 
+To run the docs locally, you will need the Mintlify CLI tool installed.
+
 Run the following command to install the CLI:
 
-<CodeGroup>
-  ```bash npm theme={null}
-  npm i -g mint
-  ```
 
-  ```bash pnpm theme={null}
-  pnpm add -g mint
-  ```
-</CodeGroup>
+```bash
+npm i -g mint
+```
 
-Start the development server from this directory:
+Or
+
+```bash
+pnpm add -g mint
+```
+
+Start the development server from the `docs` directory of the repository:
 
 ```bash
 mint dev
 ```
 
-The site will be available at `http://localhost:3000`.
+The site will launch in your browser at `http://localhost:3000`.
