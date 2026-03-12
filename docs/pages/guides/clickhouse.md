@@ -1,4 +1,6 @@
-# ClickHouse Setup & Schema Guide
+---
+title: ClickHouse Setup & Schema Guide
+---
 
 ## Quick Start (Docker)
 

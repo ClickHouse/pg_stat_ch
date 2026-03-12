@@ -1,4 +1,6 @@
-# Testing Guide
+---
+title: Testing Guide
+---
 
 ## Test Types
 

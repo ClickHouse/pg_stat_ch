@@ -1,0 +1,21 @@
+---
+title: Quick Start
+description: Build, install, and connect pg_stat_ch in minutes
+---
+
+<Steps titleSize="h2">
+  <Step title="Build and install">
+    ```bash
+    mise run build
+    mise run install
+    ```
+  </Step>
+  <Step title="Load the extension">
+    ```sql
+    CREATE EXTENSION pg_stat_ch;
+    ```
+  </Step>
+  <Step title="Set up ClickHouse">
+    See the [ClickHouse setup guide](/pages/guides/clickhouse) for the required schema and Docker quick-start.
+  </Step>
+</Steps>
