@@ -1,5 +1,6 @@
 ---
 title: ClickHouse Setup & Schema Guide
+description: Schema, materialized views, and Docker setup for the ClickHouse backend
 ---
 
 ## Quick Start (Docker)
