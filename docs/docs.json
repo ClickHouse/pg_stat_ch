@@ -1,0 +1,72 @@
+{
+  "name": "pg_stat_ch",
+  "theme": "almond",
+  "colors": {
+    "primary": "#1c1c1c",
+    "light": "#333431",
+    "dark": "#fdff75"
+  },
+  "background": {
+    "color": {
+      "dark": "#1D1D1D",
+      "light": "#FFFFFF"
+    }
+  },
+  "css": "/assets/styles.css",
+  "favicon": "/assets/favicon.svg",
+  "logo": {
+    "light": "/assets/logo_light.png",
+    "dark": "/assets/logo_dark.png"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "anchors": [
+          {
+            "anchor": "pg_stat_ch",
+            "icon": "book-open",
+            "groups": [
+              {
+                "group": "Get started",
+                "icon": "rocket",
+                "pages": ["pages/get-started/introduction", "pages/get-started/quick-start"]
+              },
+              {
+                "group": "Guides",
+                "icon": "lightbulb",
+                "pages": ["pages/guides/clickhouse", "pages/guides/testing"]
+              },
+              {
+                "group": "Reference",
+                "icon": "folder",
+                "pages": ["pages/reference/hooks", "pages/reference/version-compatibility", "pages/reference/troubleshooting"]
+              }
+            ]
+          },
+          {
+            "anchor": "Release post",
+            "icon": "arrow-up-right-from-square",
+            "href": "https://clickhouse.com/blog/pg_stat_ch-postgres-extension-stats-to-clickhouse"
+          },
+          {
+            "anchor": "ClickHouse Docs",
+            "icon": "arrow-up-right-from-square",
+            "href": "https://clickhouse.com/docs"
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/ClickHouse/pg_stat_ch"
+      }
+    ]
+  },
+  "footerSocials": {
+    "github": "https://github.com/ClickHouse/pg_stat_ch"
+  }
+}

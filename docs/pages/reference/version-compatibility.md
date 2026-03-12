@@ -1,4 +1,6 @@
-# PostgreSQL Version Compatibility
+---
+title: PostgreSQL Version Compatibility
+---
 
 This document details the features available in each PostgreSQL version supported by pg_stat_ch.
 
