@@ -1,5 +1,6 @@
 ---
 title: PostgreSQL Hooks Architecture
+description: How pg_stat_ch hooks into the query lifecycle to capture telemetry
 ---
 
 pg_stat_ch uses PostgreSQL's extensibility hooks to capture query telemetry without modifying the database server. This document explains each hook, what data it captures, and how the capture pipeline works.
