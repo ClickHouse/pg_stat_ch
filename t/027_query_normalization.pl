@@ -6,6 +6,7 @@ use strict;
 use warnings;
 use lib 't';
 
+use PostgreSQL::Test::BackgroundPsql;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -29,31 +30,38 @@ my $node = psch_init_node_with_clickhouse('normalize',
     batch_max => 100
 );
 
-# Helper: run a query, flush, and return the captured query text from ClickHouse.
-# Uses queryid to identify the specific query.
+# Helper: run a query, flush, and return the most recent non-extension query.
 sub get_captured_query {
     my ($node, $sql) = @_;
 
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
-    $node->safe_psql('postgres', $sql);
-    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+    my $session = $node->background_psql('postgres', on_error_stop => 1);
+    my ($stdout, $ret) = $session->query('SELECT pg_backend_pid()');
+    die "failed to get backend pid" unless $ret == 0;
+    my ($pid) = $stdout =~ /(\d+)/;
+    die "backend pid missing from psql output: $stdout" unless defined $pid;
+
+    ($stdout, $ret) = $session->query($sql);
+    die "query failed unexpectedly: $sql" unless $ret == 0;
+
+    ($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+    die "flush failed unexpectedly" unless $ret == 0;
+    $session->quit();
+
     psch_wait_for_export($node, 1, 10);
 
-    # Small delay for ClickHouse to process the insert
-    sleep(1);
-
-    # Get the most recent non-extension query (skip pg_stat_ch internal queries)
-    my $captured = psch_query_clickhouse(
+    return psch_wait_for_clickhouse_query(
         "SELECT query FROM pg_stat_ch.events_raw " .
-        "WHERE query NOT LIKE '%pg_stat_ch%' " .
+        "WHERE pid = $pid " .
+        "AND query NOT LIKE '%pg_stat_ch%' " .
         "AND query NOT LIKE '%pg_extension%' " .
         "AND query != '' " .
-        "ORDER BY ts_start DESC LIMIT 1"
+        "ORDER BY ts_start DESC LIMIT 1",
+        sub { $_[0] ne '' },
+        10
     );
-    chomp($captured);
-    return $captured;
 }
 
 # ---------------------------------------------------------------------------
@@ -167,18 +175,31 @@ subtest 'multi-statement normalization' => sub {
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
-    # Run two separate statements that each have constants
-    $node->safe_psql('postgres', "SELECT * FROM test_norm WHERE id = 77");
-    $node->safe_psql('postgres', "SELECT * FROM test_norm WHERE val = 'multi_test'");
-    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
-    psch_wait_for_export($node, 2, 10);
-    sleep(1);
+    my $session = $node->background_psql('postgres', on_error_stop => 1);
+    my ($stdout, $ret) = $session->query('SELECT pg_backend_pid()');
+    is($ret, 0, 'Can determine backend pid for multi-statement test');
+    my ($pid) = $stdout =~ /(\d+)/;
+    ok(defined $pid, 'Backend pid captured for multi-statement test');
 
-    my $all_queries = psch_query_clickhouse(
-        "SELECT query FROM pg_stat_ch.events_raw " .
-        "WHERE query LIKE '%test_norm%' " .
+    # Run two separate statements that each have constants in the same backend.
+    ($stdout, $ret) = $session->query("SELECT * FROM test_norm WHERE id = 77");
+    is($ret, 0, 'First statement succeeds');
+    ($stdout, $ret) = $session->query("SELECT * FROM test_norm WHERE val = 'multi_test'");
+    is($ret, 0, 'Second statement succeeds');
+    ($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+    is($ret, 0, 'Flush succeeds');
+    $session->quit();
+
+    psch_wait_for_export($node, 2, 10);
+
+    my $all_queries = psch_wait_for_clickhouse_query(
+        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%test_norm%' " .
         "AND query NOT LIKE '%pg_stat_ch%' " .
-        "ORDER BY ts_start DESC"
+        "AND query != ''",
+        sub { $_[0] ne '' },
+        10
     );
     unlike($all_queries, qr/\b77\b/, 'First statement constant normalized');
     unlike($all_queries, qr/multi_test/, 'Second statement constant normalized');

@@ -7,6 +7,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "lib/stringinfo.h"
 #include "nodes/queryjumble.h"
 #include "parser/scanner.h"
 }
@@ -39,6 +40,7 @@ static void FillInConstantLengths(JumbleState* jstate, const char* query, int qu
   locs = jstate->clocations;
 
   yyscanner = scanner_init(query, &yyextra, &ScanKeywords, ScanKeywordTokens);
+  yyextra.escape_string_warning = false;
 
   for (int i = 0; i < jstate->clocations_count; i++) {
     int loc;
@@ -88,22 +90,17 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
     return nullptr;
   }
 
-  char* norm_query;
   int query_len = *query_len_p;
-  int norm_query_buflen;
   int len_to_wrt;
   int quer_loc = 0;
-  int n_quer_loc = 0;
   int last_off = 0;
   int last_tok_len = 0;
   int num_constants_replaced = 0;
+  StringInfoData norm_query;
 
   FillInConstantLengths(jstate, query, query_loc);
 
-  // Allow for $N symbols to be longer than replaced constants.
-  // A constant is at least 1 byte; $N is at most 11 bytes (INT_MAX).
-  norm_query_buflen = query_len + (jstate->clocations_count * 10);
-  norm_query = static_cast<char*>(palloc(norm_query_buflen + 1));
+  initStringInfoExt(&norm_query, Max(query_len + 1, 32));
 
   for (int i = 0; i < jstate->clocations_count; i++) {
     int off;
@@ -126,13 +123,12 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
     // Copy the chunk between last constant and this one
     len_to_wrt = off - last_off - last_tok_len;
     Assert(len_to_wrt >= 0);
-    memcpy(norm_query + n_quer_loc, query + quer_loc, len_to_wrt);
-    n_quer_loc += len_to_wrt;
+    appendBinaryStringInfo(&norm_query, query + quer_loc, len_to_wrt);
 
     // Insert $N placeholder (and squashed-list comment if applicable)
-    n_quer_loc += sprintf(norm_query + n_quer_loc, "$%d%s",
-                          num_constants_replaced + 1 + jstate->highest_extern_param_id,
-                          jstate->clocations[i].squashed ? " /*, ... */" : "");
+    appendStringInfo(&norm_query, "$%d%s",
+                     num_constants_replaced + 1 + jstate->highest_extern_param_id,
+                     jstate->clocations[i].squashed ? " /*, ... */" : "");
     num_constants_replaced++;
 
     quer_loc = off + tok_len;
@@ -143,12 +139,8 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
   // Copy remaining query text after the last constant
   len_to_wrt = query_len - quer_loc;
   Assert(len_to_wrt >= 0);
-  memcpy(norm_query + n_quer_loc, query + quer_loc, len_to_wrt);
-  n_quer_loc += len_to_wrt;
+  appendBinaryStringInfo(&norm_query, query + quer_loc, len_to_wrt);
 
-  Assert(n_quer_loc <= norm_query_buflen);
-  norm_query[n_quer_loc] = '\0';
-
-  *query_len_p = n_quer_loc;
-  return norm_query;
+  *query_len_p = norm_query.len;
+  return norm_query.data;
 }
