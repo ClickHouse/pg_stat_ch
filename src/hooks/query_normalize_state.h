@@ -6,10 +6,14 @@
 // 2. ExecutorEnd / ProcessUtility later need the same statement text for the
 //    exported event, but they no longer have JumbleState, so they call
 //    PschCopyNormalizedQueryForStatement().
-// 3. emit_log_hook only has debug_query_string plus cursor position, so error
-//    capture falls back to PschCopyNormalizedQueryForLog().
-// 4. Cleanup paths call the Forget helpers so normalized text cannot leak into
-//    an unrelated later statement on the same backend.
+// 3. Cleanup paths call PschForgetNormalizedQueryForStatement() when execution
+//    exits without producing a normal event.
+//
+// We intentionally keep this registry scoped to executor/utility capture only.
+// emit_log_hook does not get stmt_location/stmt_len, so reconstructing a
+// normalized statement there required fuzzy matching and more backend-local
+// state. Error events now omit query text instead of trying to recover it from
+// this registry.
 //
 // Example:
 //   SELECT 1; SELECT 2;
@@ -40,19 +44,19 @@ struct PschNormalizedQueryState {
 //
 // Called from post_parse_analyze_hook immediately after PschNormalizeQuery()
 // succeeds. We have to save the normalized text here because JumbleState only
-// exists at parse time.
+// exists at parse time, but the actual event is built later in ExecutorEnd or
+// ProcessUtility.
 //
 // The key is "statement identity", not just query text:
 // - source_text identifies which SQL string we parsed
 // - stmt_location / stmt_len identify which statement inside that string
-// - query_id helps error-log matching when we only have debug_query_string
 //
 // Example:
 //   source_text = "SELECT 1; SELECT 2"
 //   stmt_location/stm_len distinguish the first SELECT from the second.
 void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const char* source_text,
-                                 int64 query_id, int stmt_location, int stmt_len,
-                                 char* normalized_query, int normalized_len);
+                                 int stmt_location, int stmt_len, char* normalized_query,
+                                 int normalized_len);
 
 // Copy normalized text for one exact statement match.
 //
@@ -72,22 +76,6 @@ bool PschCopyNormalizedQueryForStatement(PschNormalizedQueryState* state, char* 
                                          size_t dst_size, uint16* out_len, const char* source_text,
                                          int stmt_location, int stmt_len, bool consume);
 
-// Best-effort lookup for emit_log_hook.
-//
-// Error capture does not get stmt_location/stm_len directly. Instead it has the
-// full source string, current queryId, and sometimes a cursor position inside
-// the failing statement. This helper first tries to match by cursor position
-// within the source text, then falls back to a unique query_id/source_text
-// match.
-//
-// Example:
-//   debug_query_string = "SELECT 1/0"
-//   cursorpos points at the "/" token, so we can still recover the normalized
-//   "SELECT $1/$2" text for the error event.
-bool PschCopyNormalizedQueryForLog(PschNormalizedQueryState* state, char* dst, size_t dst_size,
-                                   uint16* out_len, const char* source_text, int64 query_id,
-                                   int cursorpos);
-
 // Forget one pending normalized entry by exact statement identity.
 //
 // Called on executor / utility early-return paths that skipped normal event
@@ -95,17 +83,5 @@ bool PschCopyNormalizedQueryForLog(PschNormalizedQueryState* state, char* dst, s
 // normalized text by accident" cleanup path.
 void PschForgetNormalizedQueryForStatement(PschNormalizedQueryState* state, const char* source_text,
                                            int stmt_location, int stmt_len);
-
-// Forget every pending normalized entry for one source string.
-//
-// Called after an aborting error. If a statement errors out before ExecutorEnd
-// or ProcessUtility consumes the entry, the backend may go on to execute a new
-// query in the same session. Clearing everything for that source string prevents
-// stale placeholders from being attached to the next event.
-//
-// Example:
-//   "SELECT 1/0" errors, then the client sends "SELECT current_database()".
-//   The old normalized entry must be gone before the follow-up statement runs.
-void PschForgetNormalizedQueriesForSource(PschNormalizedQueryState* state, const char* source_text);
 
 #endif  // PG_STAT_CH_SRC_HOOKS_QUERY_NORMALIZE_STATE_H_

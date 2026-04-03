@@ -488,7 +488,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
 extern "C" {
 
 // Remove a pending normalized entry for one statement when execution exits
-// without CopyQueryText consuming it.
+// without building a normal executor/utility event from it.
 static void ForgetNormalizedStatement(const char* source_text, int stmt_location, int stmt_len) {
   PschForgetNormalizedQueryForStatement(&backend_state.normalized_queries, source_text,
                                         stmt_location, stmt_len);
@@ -510,8 +510,6 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* 
   const char* source_text = pstate->p_sourcetext;
   const int stmt_location = query->stmt_location;
   const int stmt_len = query->stmt_len;
-  const int64 query_id = query->queryId;
-
   const char* query_text = source_text;
   int query_loc = stmt_location;
   int query_len = stmt_len;
@@ -521,12 +519,12 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* 
   query_text = CleanQuerytext(query_text, &query_loc, &query_len);
 
   // Allocate in TopMemoryContext so the normalized text survives until
-  // ExecutorEnd/ProcessUtility or an error event consumes it.
+  // ExecutorEnd or ProcessUtility copies it into the exported event.
   MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
   char* normalized_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
   if (normalized_query != nullptr) {
-    PschRememberNormalizedQuery(&backend_state.normalized_queries, source_text, query_id,
-                                stmt_location, stmt_len, normalized_query, query_len);
+    PschRememberNormalizedQuery(&backend_state.normalized_queries, source_text, stmt_location,
+                                stmt_len, normalized_query, query_len);
   }
   MemoryContextSwitchTo(oldcxt);
 }
@@ -857,7 +855,12 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 }
 
 // Build and enqueue an error event from ErrorData.
-// Uses normalized query text when available to avoid leaking literal values.
+//
+// We intentionally leave event.query empty here. emit_log_hook only exposes
+// debug_query_string and cursor position, not the exact statement identity used
+// by ExecutorEnd/ProcessUtility, so reconstructing normalized SQL required
+// fuzzy matching and extra backend-local state. Error events still carry the
+// message, SQLSTATE, and client/session metadata.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
   InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
@@ -868,21 +871,6 @@ static void CaptureLogEvent(ErrorData* edata) {
   if (edata->message != nullptr) {
     event.err_message_len =
         static_cast<uint16>(CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
-  }
-
-  // Use normalized query when we can identify the current statement. For
-  // aborting errors, clear any normalized state for the current query string
-  // afterwards so it cannot leak into the next statement on the same backend.
-  if (PschCopyNormalizedQueryForLog(&backend_state.normalized_queries, event.query,
-                                    sizeof(event.query), &event.query_len, debug_query_string,
-                                    pgstat_get_my_query_id(), edata->cursorpos)) {
-  } else if (debug_query_string != nullptr && debug_query_string[0] != '\0') {
-    event.query_len =
-        static_cast<uint16>(CopyTrimmed(event.query, PSCH_MAX_QUERY_LEN, debug_query_string));
-  }
-
-  if (edata->elevel >= ERROR) {
-    PschForgetNormalizedQueriesForSource(&backend_state.normalized_queries, debug_query_string);
   }
 
   CopyClientContext(&event);

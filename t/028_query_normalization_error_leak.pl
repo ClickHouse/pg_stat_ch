@@ -45,16 +45,32 @@ subtest 'failed constant-bearing query does not poison next constant-free query'
     is($ret, 0, 'Flush succeeds in the same backend session');
     $session->quit();
 
-    my $captured_count = psch_wait_for_clickhouse_query(
+    my $error_count = psch_wait_for_clickhouse_query(
         "SELECT count() FROM pg_stat_ch.events_raw " .
-        "WHERE query NOT LIKE '%pg_stat_ch%' " .
-        "AND query NOT LIKE '%pg_extension%' " .
-        "AND query != ''",
-        sub { $_[0] >= 2 },
+        "WHERE err_message != ''",
+        sub { $_[0] >= 1 },
         10
     );
-    cmp_ok($captured_count, '>=', 2,
-        'Captured both the error event and the following successful statement');
+    cmp_ok($error_count, '>=', 1, 'Captured the error event');
+
+    my $success_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw " .
+        "WHERE err_message = '' " .
+        "AND query NOT LIKE '%pg_stat_ch%' " .
+        "AND query NOT LIKE '%pg_extension%' " .
+        "AND query != ''",
+        sub { $_[0] >= 1 },
+        10
+    );
+    cmp_ok($success_count, '>=', 1,
+        'Captured the following successful statement with query text');
+
+    my $error_query = psch_query_clickhouse(
+        "SELECT query FROM pg_stat_ch.events_raw " .
+        "WHERE err_message != '' " .
+        "ORDER BY ts_start DESC LIMIT 1"
+    );
+    is($error_query, '', 'Error events do not attempt to export query text');
 
     my $q = psch_wait_for_clickhouse_query(
         "SELECT query FROM pg_stat_ch.events_raw " .
