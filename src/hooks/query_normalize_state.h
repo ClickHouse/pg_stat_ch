@@ -34,6 +34,22 @@ extern "C" {
 #include "postgres.h"
 }
 
+// Exact statement identity for the normalization registry.
+//
+// The hash is a fast prefilter for executor/utility lookups. We still fall
+// back to bytewise source-text comparison after the hash/offset checks, so
+// collisions cannot attach the wrong normalized query text.
+struct PschStatementKey {
+  const char* source_text;
+  size_t source_text_len;
+  size_t statement_hash;
+  int stmt_location;
+  int stmt_len;
+};
+
+// Build a statement key from PostgreSQL's source string plus statement slice.
+PschStatementKey PschMakeStatementKey(const char* source_text, int stmt_location, int stmt_len);
+
 struct PschNormalizedQueryEntry;
 
 struct PschNormalizedQueryState {
@@ -54,9 +70,8 @@ struct PschNormalizedQueryState {
 // Example:
 //   source_text = "SELECT 1; SELECT 2"
 //   stmt_location/stm_len distinguish the first SELECT from the second.
-void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const char* source_text,
-                                 int stmt_location, int stmt_len, char* normalized_query,
-                                 int normalized_len);
+void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const PschStatementKey& key,
+                                 char* normalized_query, int normalized_len);
 
 // Copy normalized text for one exact statement match.
 //
@@ -73,15 +88,15 @@ void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const char* so
 //   A plpgsql function caches "SELECT child(depth - 1) + 42 WHERE 7 = 7".
 //   The first and third executions should both see the same normalized form.
 bool PschCopyNormalizedQueryForStatement(PschNormalizedQueryState* state, char* dst,
-                                         size_t dst_size, uint16* out_len, const char* source_text,
-                                         int stmt_location, int stmt_len, bool consume);
+                                         size_t dst_size, uint16* out_len,
+                                         const PschStatementKey& key, bool consume);
 
 // Forget one pending normalized entry by exact statement identity.
 //
 // Called on executor / utility early-return paths that skipped normal event
 // construction. This is the "we are done with this statement, do not reuse its
 // normalized text by accident" cleanup path.
-void PschForgetNormalizedQueryForStatement(PschNormalizedQueryState* state, const char* source_text,
-                                           int stmt_location, int stmt_len);
+void PschForgetNormalizedQueryForStatement(PschNormalizedQueryState* state,
+                                           const PschStatementKey& key);
 
 #endif  // PG_STAT_CH_SRC_HOOKS_QUERY_NORMALIZE_STATE_H_

@@ -383,9 +383,10 @@ static void CopyRawStatementText(PschEvent* event, const char* query_text, int s
 // statement only.
 static void CopyQueryText(PschEvent* event, const char* query_text, int stmt_location,
                           int stmt_len) {
+  const PschStatementKey statement_key = PschMakeStatementKey(query_text, stmt_location, stmt_len);
   if (PschCopyNormalizedQueryForStatement(&backend_state.normalized_queries, event->query,
-                                          sizeof(event->query), &event->query_len, query_text,
-                                          stmt_location, stmt_len, false)) {
+                                          sizeof(event->query), &event->query_len, statement_key,
+                                          false)) {
     return;
   }
 
@@ -490,8 +491,8 @@ extern "C" {
 // Remove a pending normalized entry for one statement when execution exits
 // without building a normal executor/utility event from it.
 static void ForgetNormalizedStatement(const char* source_text, int stmt_location, int stmt_len) {
-  PschForgetNormalizedQueryForStatement(&backend_state.normalized_queries, source_text,
-                                        stmt_location, stmt_len);
+  const PschStatementKey statement_key = PschMakeStatementKey(source_text, stmt_location, stmt_len);
+  PschForgetNormalizedQueryForStatement(&backend_state.normalized_queries, statement_key);
 }
 
 // post_parse_analyze_hook — normalize query text at parse time.
@@ -523,8 +524,10 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* 
   MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
   char* normalized_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
   if (normalized_query != nullptr) {
-    PschRememberNormalizedQuery(&backend_state.normalized_queries, source_text, stmt_location,
-                                stmt_len, normalized_query, query_len);
+    const PschStatementKey statement_key =
+        PschMakeStatementKey(source_text, stmt_location, stmt_len);
+    PschRememberNormalizedQuery(&backend_state.normalized_queries, statement_key, normalized_query,
+                                query_len);
   }
   MemoryContextSwitchTo(oldcxt);
 }
