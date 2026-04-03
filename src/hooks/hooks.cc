@@ -358,15 +358,15 @@ static void CopyClientContext(PschEvent* event) {
 // stmt_len. CleanQuerytext trims that down to just the current statement, but
 // it does not parameterize literals. This helper is the raw-text fallback when
 // we have no normalized entry for the statement.
-static void CopyRawStatementText(PschEvent* event, const char* query_text, int stmt_location,
-                                 int stmt_len) {
-  if (query_text == nullptr) {
+static void CopyRawStatementText(PschEvent* event, const PschStatementKey& statement_key) {
+  if (statement_key.source_text == nullptr) {
     return;
   }
 
-  if (stmt_location >= 0) {
-    int query_loc = stmt_location;
-    int query_len = stmt_len;
+  const char* query_text = statement_key.source_text;
+  if (statement_key.stmt_location >= 0) {
+    int query_loc = statement_key.stmt_location;
+    int query_len = statement_key.stmt_len;
     query_text = CleanQuerytext(query_text, &query_loc, &query_len);
   }
 
@@ -381,16 +381,14 @@ static void CopyRawStatementText(PschEvent* event, const char* query_text, int s
 // normalized entry stashed at parse time. If no match exists, it falls back to
 // CopyRawStatementText, which preserves the literal SQL text for the current
 // statement only.
-static void CopyQueryText(PschEvent* event, const char* query_text, int stmt_location,
-                          int stmt_len) {
-  const PschStatementKey statement_key = PschMakeStatementKey(query_text, stmt_location, stmt_len);
+static void CopyQueryText(PschEvent* event, const PschStatementKey& statement_key) {
   if (PschCopyNormalizedQueryForStatement(&backend_state.normalized_queries, event->query,
                                           sizeof(event->query), &event->query_len, statement_key,
                                           false)) {
     return;
   }
 
-  CopyRawStatementText(event, query_text, stmt_location, stmt_len);
+  CopyRawStatementText(event, statement_key);
 }
 
 // Resolve database and user names, using the session cache when available.
@@ -482,8 +480,10 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
   CopyJitInstrumentation(event, query_desc);
   CopyParallelWorkerInfo(event, query_desc);
   CopyClientContext(event);
-  CopyQueryText(event, query_desc->sourceText, query_desc->plannedstmt->stmt_location,
-                query_desc->plannedstmt->stmt_len);
+  const PschStatementKey statement_key =
+      PschMakeStatementKey(query_desc->sourceText, query_desc->plannedstmt->stmt_location,
+                           query_desc->plannedstmt->stmt_len);
+  CopyQueryText(event, statement_key);
 }
 
 extern "C" {
@@ -693,7 +693,8 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
   CopyIoTiming(event, bufusage);
   CopyWalUsage(event, walusage);
   CopyClientContext(event);
-  CopyQueryText(event, queryString, stmt_location, stmt_len);
+  const PschStatementKey statement_key = PschMakeStatementKey(queryString, stmt_location, stmt_len);
+  CopyQueryText(event, statement_key);
 }
 
 // Helper macro to call ProcessUtility (previous hook or standard)
