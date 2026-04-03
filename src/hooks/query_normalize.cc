@@ -83,8 +83,7 @@ static void FillInConstantLengths(JumbleState* jstate, const char* query, int qu
   scanner_finish(yyscanner);
 }
 
-char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p,
-                         JumbleState* jstate) {
+char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, JumbleState* jstate) {
   if (jstate == nullptr || jstate->clocations_count <= 0) {
     return nullptr;
   }
@@ -131,10 +130,9 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p,
     n_quer_loc += len_to_wrt;
 
     // Insert $N placeholder (and squashed-list comment if applicable)
-    n_quer_loc +=
-        sprintf(norm_query + n_quer_loc, "$%d%s",
-                num_constants_replaced + 1 + jstate->highest_extern_param_id,
-                jstate->clocations[i].squashed ? " /*, ... */" : "");
+    n_quer_loc += sprintf(norm_query + n_quer_loc, "$%d%s",
+                          num_constants_replaced + 1 + jstate->highest_extern_param_id,
+                          jstate->clocations[i].squashed ? " /*, ... */" : "");
     num_constants_replaced++;
 
     quer_loc = off + tok_len;
