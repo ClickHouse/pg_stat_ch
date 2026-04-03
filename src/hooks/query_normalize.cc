@@ -24,6 +24,29 @@ static int CompLocation(const void* a, const void* b) {
   return (l > r) ? 1 : 0;
 }
 
+#if PG_VERSION_NUM >= 180000
+static bool IsSquashedConstant(const LocationLen* loc) {
+  return loc->squashed;
+}
+
+static bool ShouldPreserveExternalParam(const JumbleState* jstate, int index) {
+  return jstate->clocations[index].extern_param && !jstate->has_squashed_lists;
+}
+#else
+static bool IsSquashedConstant(const LocationLen* /* loc */) {
+  return false;
+}
+
+static bool ShouldPreserveExternalParam(const JumbleState* /* jstate */, int /* index */) {
+  return false;
+}
+#endif
+
+static void InitNormalizedQueryBuffer(StringInfoData* norm_query, int query_len) {
+  initStringInfo(norm_query);
+  enlargeStringInfo(norm_query, Max(query_len, 32));
+}
+
 // Populate the length field of LocationLen entries using the PostgreSQL lexer.
 // Core only provides locations; we need to lex the query to find token lengths.
 // Ported from pg_stat_statements fill_in_constant_lengths().
@@ -52,7 +75,7 @@ static void FillInConstantLengths(JumbleState* jstate, const char* query, int qu
       continue;
     }
 
-    if (locs[i].squashed) {
+    if (IsSquashedConstant(&locs[i])) {
       continue;
     }
 
@@ -100,7 +123,7 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
 
   FillInConstantLengths(jstate, query, query_loc);
 
-  initStringInfoExt(&norm_query, Max(query_len + 1, 32));
+  InitNormalizedQueryBuffer(&norm_query, query_len + 1);
 
   for (int i = 0; i < jstate->clocations_count; i++) {
     int off;
@@ -108,7 +131,7 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
 
     // If we have an external param at this location but no squashed lists,
     // skip it so the original $N text is preserved.
-    if (jstate->clocations[i].extern_param && !jstate->has_squashed_lists) {
+    if (ShouldPreserveExternalParam(jstate, i)) {
       continue;
     }
 
@@ -128,7 +151,7 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
     // Insert $N placeholder (and squashed-list comment if applicable)
     appendStringInfo(&norm_query, "$%d%s",
                      num_constants_replaced + 1 + jstate->highest_extern_param_id,
-                     jstate->clocations[i].squashed ? " /*, ... */" : "");
+                     IsSquashedConstant(&jstate->clocations[i]) ? " /*, ... */" : "");
     num_constants_replaced++;
 
     quer_loc = off + tok_len;
