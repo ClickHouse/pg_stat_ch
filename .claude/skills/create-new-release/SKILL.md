@@ -26,20 +26,23 @@ Create and push a new semantic version release tag.
    - **minor**: `v1.2.3` → `v1.3.0`
    - **major**: `v1.2.3` → `v2.0.0`
 
-5. **Validate current commit exists on remote**:
+5. **Verify META.json version matches the new tag**:
+   Read `META.json` and check that both `version` and `provides.pg_stat_ch.version` match the new version (without the `v` prefix). If they don't match, abort and tell the user to update `META.json` first — PGXN uses this file for the release version.
+
+6. **Validate current commit exists on remote**:
    ```bash
    git fetch origin
    git branch -r --contains HEAD
    ```
    If no remote branch contains HEAD, abort with an error asking the user to push their commits first.
 
-6. **Create and push the tag**:
+7. **Create and push the tag**:
    ```bash
    git tag -a <new_version> -m "Release <new_version>"
    git push origin <new_version>
    ```
 
-7. **Report success** with the new tag name.
+8. **Report success** with the new tag name.
 
 ## Version Parsing
 
