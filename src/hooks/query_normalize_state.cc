@@ -1,6 +1,7 @@
 // Statement-scoped normalized query registry.
 
 #include <cstddef>
+#include <cstring>
 
 extern "C" {
 #include "postgres.h"
@@ -12,6 +13,8 @@ extern "C" {
 
 struct PschNormalizedQueryEntry {
   const char* source_text;
+  char* source_text_copy;
+  size_t source_text_len;
   int64 query_id;
   int stmt_location;
   int stmt_len;
@@ -20,15 +23,29 @@ struct PschNormalizedQueryEntry {
   PschNormalizedQueryEntry* next;
 };
 
+static bool SourceTextMatch(const PschNormalizedQueryEntry* entry, const char* source_text) {
+  if (entry == nullptr || source_text == nullptr) {
+    return false;
+  }
+
+  if (entry->source_text == source_text) {
+    return true;
+  }
+
+  size_t source_text_len = strlen(source_text);
+  return entry->source_text_len == source_text_len &&
+         memcmp(entry->source_text_copy, source_text, source_text_len) == 0;
+}
+
 static bool ExactStatementMatch(const PschNormalizedQueryEntry* entry, const char* source_text,
                                 int stmt_location, int stmt_len) {
-  return entry->source_text == source_text && entry->stmt_location == stmt_location &&
+  return SourceTextMatch(entry, source_text) && entry->stmt_location == stmt_location &&
          entry->stmt_len == stmt_len;
 }
 
 static bool CursorMatch(const PschNormalizedQueryEntry* entry, const char* source_text,
                         int cursorpos) {
-  if (source_text == nullptr || cursorpos <= 0 || entry->source_text != source_text) {
+  if (source_text == nullptr || cursorpos <= 0 || !SourceTextMatch(entry, source_text)) {
     return false;
   }
 
@@ -53,6 +70,7 @@ static void RemoveEntry(PschNormalizedQueryState* state, PschNormalizedQueryEntr
     state->head = entry->next;
   }
 
+  pfree(entry->source_text_copy);
   pfree(entry->normalized_query);
   pfree(entry);
 }
@@ -82,8 +100,9 @@ void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const char* so
       continue;
     }
 
-    pfree(entry->normalized_query);
+    entry->source_text = source_text;
     entry->query_id = query_id;
+    pfree(entry->normalized_query);
     entry->normalized_query = normalized_query;
     entry->normalized_len = normalized_len;
     return;
@@ -92,6 +111,8 @@ void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const char* so
   PschNormalizedQueryEntry* entry =
       static_cast<PschNormalizedQueryEntry*>(MemoryContextAlloc(TopMemoryContext, sizeof(*entry)));
   entry->source_text = source_text;
+  entry->source_text_copy = MemoryContextStrdup(TopMemoryContext, source_text);
+  entry->source_text_len = strlen(source_text);
   entry->query_id = query_id;
   entry->stmt_location = stmt_location;
   entry->stmt_len = stmt_len;
@@ -152,7 +173,7 @@ static PschNormalizedQueryEntry* FindUniqueMatch(PschNormalizedQueryState* state
   PschNormalizedQueryEntry* match = nullptr;
 
   for (PschNormalizedQueryEntry* entry = state->head; entry != nullptr; entry = entry->next) {
-    if (entry->source_text != source_text) {
+    if (!SourceTextMatch(entry, source_text)) {
       continue;
     }
 
@@ -225,7 +246,7 @@ void PschForgetNormalizedQueriesForSource(PschNormalizedQueryState* state,
   PschNormalizedQueryEntry* entry = state->head;
   while (entry != nullptr) {
     PschNormalizedQueryEntry* next = entry->next;
-    if (entry->source_text == source_text) {
+    if (SourceTextMatch(entry, source_text)) {
       RemoveEntry(state, prev, entry);
     } else {
       prev = entry;

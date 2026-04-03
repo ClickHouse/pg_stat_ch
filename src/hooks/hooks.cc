@@ -352,6 +352,12 @@ static void CopyClientContext(PschEvent* event) {
   }
 }
 
+// Copy the original SQL text for one statement into the event buffer.
+//
+// PostgreSQL can hand us a multi-statement source string plus stmt_location /
+// stmt_len. CleanQuerytext trims that down to just the current statement, but
+// it does not parameterize literals. This helper is the raw-text fallback when
+// we have no normalized entry for the statement.
 static void CopyRawStatementText(PschEvent* event, const char* query_text, int stmt_location,
                                  int stmt_len) {
   if (query_text == nullptr) {
@@ -367,14 +373,19 @@ static void CopyRawStatementText(PschEvent* event, const char* query_text, int s
   event->query_len = static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
 }
 
-// Copy query text into event, preferring the normalized (parameterized) form.
-// If normalization produced a result for this exact statement, use it.
-// Otherwise fall back to the raw statement text.
+// Copy query text into the event buffer, preferring a previously normalized
+// form from post_parse_analyze_hook.
+//
+// The normalized registry is keyed by statement identity and reused across
+// repeated executions of cached plans, so this helper first looks up the
+// normalized entry stashed at parse time. If no match exists, it falls back to
+// CopyRawStatementText, which preserves the literal SQL text for the current
+// statement only.
 static void CopyQueryText(PschEvent* event, const char* query_text, int stmt_location,
                           int stmt_len) {
   if (PschCopyNormalizedQueryForStatement(&backend_state.normalized_queries, event->query,
                                           sizeof(event->query), &event->query_len, query_text,
-                                          stmt_location, stmt_len, true)) {
+                                          stmt_location, stmt_len, false)) {
     return;
   }
 
@@ -476,6 +487,8 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
 
 extern "C" {
 
+// Remove a pending normalized entry for one statement when execution exits
+// without CopyQueryText consuming it.
 static void ForgetNormalizedStatement(const char* source_text, int stmt_location, int stmt_len) {
   PschForgetNormalizedQueryForStatement(&backend_state.normalized_queries, source_text,
                                         stmt_location, stmt_len);
@@ -503,7 +516,8 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* 
   int query_loc = stmt_location;
   int query_len = stmt_len;
 
-  // CleanQuerytext extracts the relevant portion for multi-statement strings.
+  // CleanQuerytext slices a multi-statement source string down to the current
+  // statement before we replace literal constants with placeholders.
   query_text = CleanQuerytext(query_text, &query_loc, &query_len);
 
   // Allocate in TopMemoryContext so the normalized text survives until
