@@ -21,6 +21,8 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 
+#include "parser/analyze.h"
+
 #if PG_VERSION_NUM >= 140000
 #include "nodes/queryjumble.h"
 #endif
@@ -32,10 +34,12 @@ extern "C" {
 
 #include "config/guc.h"
 #include "hooks/hooks.h"
+#include "hooks/query_normalize.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
 
 // Previous hook values for chaining
+static post_parse_analyze_hook_type prev_post_parse_analyze = nullptr;
 static ExecutorStart_hook_type prev_executor_start = nullptr;
 static ExecutorRun_hook_type prev_executor_run = nullptr;
 static ExecutorFinish_hook_type prev_executor_finish = nullptr;
@@ -60,6 +64,12 @@ static TimestampTz query_start_ts = 0;
 
 // System initialization flag - set after hooks are installed and shmem is ready
 static bool system_init = false;
+
+// Per-backend normalized query text. Set by post_parse_analyze_hook, consumed
+// by ExecutorEnd/ProcessUtility, then freed. Contains the query with literal
+// constants replaced by $1, $2, ... placeholders.
+static char* normalized_query = nullptr;
+static int normalized_query_len = 0;
 
 static int GetClientAddress(char* buf, int buf_size);
 static void ResolveNames(PschEvent* event);
@@ -344,8 +354,26 @@ static void CopyClientContext(PschEvent* event) {
   }
 }
 
+// Free any previously stored normalized query text.
+static void ClearNormalizedQuery() {
+  if (normalized_query != nullptr) {
+    pfree(normalized_query);
+    normalized_query = nullptr;
+    normalized_query_len = 0;
+  }
+}
+
+// Copy query text into event, preferring the normalized (parameterized) form.
+// If normalization produced a result, use it and free the buffer. Otherwise
+// fall back to the raw source text (e.g. utility statements without constants).
 static void CopyQueryText(PschEvent* event, const char* query_text) {
-  if (query_text != nullptr) {
+  if (normalized_query != nullptr) {
+    size_t len = Min(static_cast<size_t>(normalized_query_len), sizeof(event->query) - 1);
+    memcpy(event->query, normalized_query, len);
+    event->query[len] = '\0';
+    event->query_len = static_cast<uint16>(len);
+    ClearNormalizedQuery();
+  } else if (query_text != nullptr) {
     event->query_len =
         static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
   }
@@ -444,6 +472,37 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
 }
 
 extern "C" {
+
+// post_parse_analyze_hook — normalize query text at parse time.
+// The JumbleState (with constant locations) is only available here, so we
+// must generate the normalized text now and stash it for ExecutorEnd.
+static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* jstate) {
+  if (prev_post_parse_analyze != nullptr) {
+    prev_post_parse_analyze(pstate, query, jstate);
+  }
+
+  // Only normalize if enabled and the query has constants to replace
+  if (!psch_enabled || jstate == nullptr || jstate->clocations_count <= 0) {
+    return;
+  }
+
+  // Free any stale normalized text from a previous parse in this backend
+  ClearNormalizedQuery();
+
+  const char* query_text = pstate->p_sourcetext;
+  int query_loc = query->stmt_location;
+  int query_len = query->stmt_len;
+
+  // CleanQuerytext extracts the relevant portion for multi-statement strings
+  query_text = CleanQuerytext(query_text, &query_loc, &query_len);
+
+  // Allocate in TopMemoryContext so the normalized text survives until
+  // ExecutorEnd consumes it (the parse-time context is short-lived).
+  MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+  normalized_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
+  MemoryContextSwitchTo(oldcxt);
+  normalized_query_len = query_len;
+}
 
 static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   if (IsParallelWorker()) {
@@ -763,14 +822,9 @@ static bool ShouldCaptureLog(ErrorData* edata) {
   return true;
 }
 
-// Build and enqueue an error event from ErrorData
-//
-// NOTE: Query text captured here may contain sensitive data (passwords in CREATE USER,
-// connection strings, etc.). Consider this PII concern when configuring ClickHouse
-// retention policies. Future enhancement: GUC to disable query capture in error events.
+// Build and enqueue an error event from ErrorData.
+// Uses normalized query text when available to avoid leaking literal values.
 static void CaptureLogEvent(ErrorData* edata) {
-  const char* query = (debug_query_string != nullptr) ? debug_query_string : "";
-
   PschEvent event;
   InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
 
@@ -782,8 +836,15 @@ static void CaptureLogEvent(ErrorData* edata) {
         static_cast<uint16>(CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
   }
 
-  if (query[0] != '\0') {
-    event.query_len = static_cast<uint16>(CopyTrimmed(event.query, PSCH_MAX_QUERY_LEN, query));
+  // Use normalized query if available; fall back to debug_query_string
+  if (normalized_query != nullptr) {
+    size_t len = Min(static_cast<size_t>(normalized_query_len), sizeof(event.query) - 1);
+    memcpy(event.query, normalized_query, len);
+    event.query[len] = '\0';
+    event.query_len = static_cast<uint16>(len);
+  } else if (debug_query_string != nullptr && debug_query_string[0] != '\0') {
+    event.query_len =
+        static_cast<uint16>(CopyTrimmed(event.query, PSCH_MAX_QUERY_LEN, debug_query_string));
   }
 
   CopyClientContext(&event);
@@ -824,6 +885,9 @@ void PschInstallHooks(void) {
 #if PG_VERSION_NUM >= 140000
   EnableQueryId();
 #endif
+
+  prev_post_parse_analyze = post_parse_analyze_hook;
+  post_parse_analyze_hook = PschPostParseAnalyze;
 
   prev_executor_start = ExecutorStart_hook;
   ExecutorStart_hook = PschExecutorStart;
