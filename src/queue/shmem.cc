@@ -145,7 +145,8 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
 
 static void PschShmemShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
   if (psch_shared_state != nullptr) {
-    elog(LOG, "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
+    elog(LOG, "pg_stat_ch: shutdown (enqueued=" UINT64_FORMAT ", dropped=" UINT64_FORMAT
+             ", exported=" UINT64_FORMAT ")",
          pg_atomic_read_u64(&psch_shared_state->enqueued),
          pg_atomic_read_u64(&psch_shared_state->dropped),
          pg_atomic_read_u64(&psch_shared_state->exported));
