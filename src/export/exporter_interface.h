@@ -79,8 +79,10 @@ class StatsExporter {
   virtual ~StatsExporter() = default;
 };
 
-// Allows PG logging of exceptional cases without postgres.h
+// Bridge functions for PG logging from files that cannot include postgres.h
+// (e.g. otel_exporter.cc conflicts with libintl.h via gRPC headers).
 void LogNegativeValue(const std::string& column_name, int64_t value);
+void LogExporterWarning(const char* context, const char* message);
 
 // Expected usage:
 // void ProcessBatch(StatsExporter *exporter) {

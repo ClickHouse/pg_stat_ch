@@ -207,6 +207,10 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
 
 }  // namespace
 
+void LogExporterWarning(const char* context, const char* message) {
+  ereport(WARNING, errmsg("pg_stat_ch: %s: %s", context, message));
+}
+
 // Used to report negative values, which are not supported by OTel.
 void LogNegativeValue(const std::string& column_name, int64_t value) {
   static std::chrono::steady_clock::time_point last_log = {};

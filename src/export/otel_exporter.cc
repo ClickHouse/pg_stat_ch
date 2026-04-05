@@ -440,7 +440,8 @@ bool OTelExporter::EstablishNewConnection() {
     logger = log_provider->GetLogger("pg_stat_ch", "pg_stat_ch_logs");
 
     return true;
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    LogExporterWarning("OTel init failed", e.what());
     return false;
   }
 }
