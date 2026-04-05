@@ -150,6 +150,12 @@ class OTelExporter : public StatsExporter {
     ++exported_count;
   }
 
+  opentelemetry::sdk::resource::Resource CreateResource();
+  void InitMetricsPipeline(const std::string& endpoint,
+                           const opentelemetry::sdk::resource::Resource& resource);
+  void InitLogPipeline(const std::string& endpoint,
+                       const opentelemetry::sdk::resource::Resource& resource);
+
   // =====================================================================
   // Column implementation classes (translate OTel concepts to CH Columns)
   // =====================================================================
@@ -373,94 +379,77 @@ class OTelExporter : public StatsExporter {
   std::vector<shared_ptr<BasicColumn>> columns;
 };
 
+opentelemetry::sdk::resource::Resource OTelExporter::CreateResource() {
+  return opentelemetry::sdk::resource::Resource::Create({
+      {"service.name", "pg_stat_ch"},
+      {"service.version", std::string(PG_STAT_CH_VERSION)},
+      {"host.name", GetAHostname("postgres-primary")},
+  });
+}
+
+void OTelExporter::InitMetricsPipeline(const std::string& endpoint,
+                                       const opentelemetry::sdk::resource::Resource& resource) {
+  otlp::OtlpGrpcMetricExporterOptions metric_opts;
+  metric_opts.endpoint = endpoint;
+
+  metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
+  reader_opts.export_interval_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms);
+  reader_opts.export_timeout_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
+
+  metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
+      otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
+
+  metrics_provider = std::make_shared<metrics_sdk::MeterProvider>(
+      std::make_unique<metrics_sdk::ViewRegistry>(), resource);
+  metrics_provider->AddMetricReader(metrics_reader);
+}
+
+void OTelExporter::InitLogPipeline(const std::string& endpoint,
+                                   const opentelemetry::sdk::resource::Resource& resource) {
+  otlp::OtlpGrpcLogRecordExporterOptions log_opts;
+  log_opts.endpoint = endpoint;
+
+  // Cap batch size by byte budget to stay under gRPC 4 MiB default.
+  static constexpr size_t kOtelMinBytesPerRecord = 1200;
+  size_t batch_size_by_bytes =
+      static_cast<size_t>(psch_otel_log_max_bytes) / kOtelMinBytesPerRecord;
+
+  logs_sdk::BatchLogRecordProcessorOptions batch_opts;
+  batch_opts.max_queue_size = psch_otel_log_queue_size;
+  batch_opts.max_export_batch_size =
+      std::min(static_cast<size_t>(psch_otel_log_batch_size), batch_size_by_bytes);
+  batch_opts.schedule_delay_millis = std::chrono::milliseconds(psch_otel_log_delay_ms);
+
+  log_provider = std::make_shared<logs_sdk::LoggerProvider>(
+      logs_sdk::BatchLogRecordProcessorFactory::Create(
+          otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts), batch_opts),
+      resource);
+}
+
 bool OTelExporter::EstablishNewConnection() {
   try {
-    const std::string hostname = GetAHostname("postgres-primary");
     const std::string endpoint =
         (psch_otel_endpoint && *psch_otel_endpoint) ? psch_otel_endpoint : "localhost:4317";
+
+    auto resource = CreateResource();
+    InitMetricsPipeline(endpoint, resource);
+    InitLogPipeline(endpoint, resource);
+
     const std::string pgch_version = PG_STAT_CH_VERSION;
-
-    // Resource (The "ID Card" for our service)
-    auto resource_attributes = opentelemetry::sdk::resource::ResourceAttributes{
-        {"service.name", "pg_stat_ch"},
-        {"service.version", pgch_version},
-        {"host.name", hostname}  // Ideally fetch real hostname
-    };
-    auto resource = opentelemetry::sdk::resource::Resource::Create(resource_attributes);
-
-    // Configure Metrics
-    // -------------------------------------------------------------------------
-    otlp::OtlpGrpcMetricExporterOptions metric_opts;
-    metric_opts.endpoint = endpoint;
-
-    // Configure Reader (async periodic export — does not block bgworker)
-    metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
-    reader_opts.export_interval_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms);
-    reader_opts.export_timeout_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
-
-    metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
-        otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
-
-    // Create the Provider with our Resource and add our Reader
-    // Note: We use the ViewRegistry (default)
-    metrics_provider = std::make_shared<metrics_sdk::MeterProvider>(
-        std::make_unique<metrics_sdk::ViewRegistry>(), resource);
-    metrics_provider->AddMetricReader(metrics_reader);
-
-    // Configure Logs
-    // -------------------------------------------------------------------------
-    otlp::OtlpGrpcLogRecordExporterOptions log_opts;
-    log_opts.endpoint = endpoint;
-
-    // Create Logger Provider with batch processor for throughput.
-    // Cap max_export_batch_size by the byte budget: even at the minimum variable-field
-    // size the fixed overhead alone can push a large batch over the gRPC 4 MiB default.
-    // DequeueEvents already enforces the byte budget on the producer side; this caps
-    // the SDK's internal batch size as a second line of defence.
-    static constexpr size_t kOtelMinBytesPerRecord = 1200;  // fixed overhead only
-    size_t batch_size_by_bytes =
-        static_cast<size_t>(psch_otel_log_max_bytes) / kOtelMinBytesPerRecord;
-    logs_sdk::BatchLogRecordProcessorOptions batch_opts;
-    batch_opts.max_queue_size = psch_otel_log_queue_size;
-    batch_opts.max_export_batch_size =
-        std::min(static_cast<size_t>(psch_otel_log_batch_size), batch_size_by_bytes);
-    batch_opts.schedule_delay_millis = std::chrono::milliseconds(psch_otel_log_delay_ms);
-
-    log_provider = std::make_shared<logs_sdk::LoggerProvider>(
-        logs_sdk::BatchLogRecordProcessorFactory::Create(
-            otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts), batch_opts),
-        resource);
-
-    // Get Instruments
-    // -------------------------------------------------------------------------
     meter = metrics_provider->GetMeter("pg_stat_ch", pgch_version);
     logger = log_provider->GetLogger("pg_stat_ch", "pg_stat_ch_logs");
 
     return true;
   } catch (const std::exception& e) {
-    // PschLog(LogLevel::Warning, "pg_stat_ch: OTel init failed: %s", e.what());
+    LogExporterWarning("OTel init failed", e.what());
     return false;
   }
 }
 
 bool OTelExporter::CommitBatch() {
   EndRow();
-
-  // Both metrics and logs are exported asynchronously by background threads:
-  //   - PeriodicExportingMetricReader: exports histograms every metric_interval_ms
-  //   - BatchLogRecordProcessor: exports log batches every log_delay_ms
-  //
-  // We do NOT call ForceFlush here. ForceFlush blocks until the background
-  // thread finishes its current gRPC export, which stalls dequeuing for seconds
-  // and causes shmem queue overflow. Instead, EmitLogRecord() just enqueues to
-  // the batch processor's internal buffer (non-blocking), and the bgworker
-  // loops immediately back to dequeue more events.
-  //
-  // Trade-off: if the batch processor's internal queue fills up (gRPC slower
-  // than event rate), it silently drops log records. This is acceptable for
-  // best-effort telemetry — the alternative (blocking) causes shmem drops which
-  // lose events before they're even processed.
-
+  // No ForceFlush — metrics and logs export asynchronously via background
+  // threads. Blocking here would stall dequeuing and cause shmem overflow.
   ResetFailures();
   return true;
 }
