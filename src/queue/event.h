@@ -38,6 +38,12 @@ extern "C" {
 // Maximum error message length (truncated if longer)
 #define PSCH_MAX_ERR_MSG_LEN 2048
 
+// Maximum application name length (NAMEDATALEN - 1)
+#define PSCH_MAX_APP_NAME_LEN 63
+
+// Maximum client address length (INET6_ADDRSTRLEN - 1)
+#define PSCH_MAX_CLIENT_ADDR_LEN 45
+
 // Command type values (matching PostgreSQL's CmdType enum)
 enum PschCmdType {
   PSCH_CMD_UNKNOWN = 0,

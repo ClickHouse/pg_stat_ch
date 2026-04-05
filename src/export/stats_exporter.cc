@@ -60,6 +60,15 @@ const char* CmdTypeToString(PschCmdType cmd) {
   }
 }
 
+// Clamp a field length to its buffer maximum, warning on overflow.
+template <typename LenT>
+LenT ClampFieldLen(LenT len, LenT max, const char* field_name) {
+  if (len <= max)
+    return len;
+  elog(WARNING, "pg_stat_ch: invalid %s %u, clamping", field_name, static_cast<unsigned>(len));
+  return max;
+}
+
 // Dequeue events from the shared memory queue
 std::vector<PschEvent> DequeueEvents(int max_events) {
   std::vector<PschEvent> events;
@@ -78,25 +87,16 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
 
   exporter->BeginBatch();
 
-  elog(DEBUG2, "pg_stat_ch: creating column objects");
-
-  // Basic columns
-  elog(DEBUG3, "pg_stat_ch: creating col_ts_start");
   auto col_ts_start = exporter->RecordDateTime("ts_start");
-  elog(DEBUG3, "pg_stat_ch: col_ts_start created");
   auto col_duration_us = exporter->DbDurationColumn();
-  // Use pre-resolved names from event (resolved at capture time in hooks)
   auto col_db = exporter->DbNameColumn();
   auto col_username = exporter->DbUserColumn();
-  elog(DEBUG3, "pg_stat_ch: basic columns created");
   auto col_pid = exporter->RecordInt32("pid");
   auto col_query_id = exporter->RecordInt64("query_id");
   auto col_cmd_type = exporter->DbOperationColumn();
   auto col_rows = exporter->MetricUInt64("rows");
   auto col_query = exporter->DbQueryTextColumn();
-  elog(DEBUG3, "pg_stat_ch: all basic columns created");
 
-  // Buffer usage columns (hit/read are histograms, rest are records)
   auto col_shared_blks_hit = exporter->MetricInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->MetricInt64("shared_blks_read");
   auto col_shared_blks_dirtied = exporter->RecordInt64("shared_blks_dirtied");
@@ -108,7 +108,6 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   auto col_temp_blks_read = exporter->RecordInt64("temp_blks_read");
   auto col_temp_blks_written = exporter->RecordInt64("temp_blks_written");
 
-  // I/O timing columns (records — rarely non-zero)
   auto col_shared_blk_read_time_us = exporter->RecordInt64("shared_blk_read_time_us");
   auto col_shared_blk_write_time_us = exporter->RecordInt64("shared_blk_write_time_us");
   auto col_local_blk_read_time_us = exporter->RecordInt64("local_blk_read_time_us");
@@ -116,16 +115,13 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   auto col_temp_blk_read_time_us = exporter->RecordInt64("temp_blk_read_time_us");
   auto col_temp_blk_write_time_us = exporter->RecordInt64("temp_blk_write_time_us");
 
-  // WAL usage columns (records — rarely non-zero for reads)
   auto col_wal_records = exporter->RecordInt64("wal_records");
   auto col_wal_fpi = exporter->RecordInt64("wal_fpi");
   auto col_wal_bytes = exporter->RecordUInt64("wal_bytes");
 
-  // CPU time columns (records)
   auto col_cpu_user_time_us = exporter->RecordInt64("cpu_user_time_us");
   auto col_cpu_sys_time_us = exporter->RecordInt64("cpu_sys_time_us");
 
-  // JIT columns (records — rarely non-zero)
   auto col_jit_functions = exporter->RecordInt32("jit_functions");
   auto col_jit_generation_time_us = exporter->RecordInt32("jit_generation_time_us");
   auto col_jit_deform_time_us = exporter->RecordInt32("jit_deform_time_us");
@@ -133,52 +129,31 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   auto col_jit_optimization_time_us = exporter->RecordInt32("jit_optimization_time_us");
   auto col_jit_emission_time_us = exporter->RecordInt32("jit_emission_time_us");
 
-  // Parallel worker columns (records)
   auto col_parallel_workers_planned = exporter->RecordInt16("parallel_workers_planned");
   auto col_parallel_workers_launched = exporter->RecordInt16("parallel_workers_launched");
 
-  elog(DEBUG3, "pg_stat_ch: creating error columns");
-  // Error columns (records)
   auto col_err_sqlstate = exporter->MetricFixedString(5, "err_sqlstate");
   auto col_err_elevel = exporter->RecordUInt8("err_elevel");
   auto col_err_message = exporter->RecordString("err_message");
-  elog(DEBUG3, "pg_stat_ch: error columns created");
 
-  // Client context columns; records rather than tags (no histogram in OTel)
   auto col_app = exporter->RecordString("app");
   auto col_client_addr = exporter->RecordString("client_addr");
 
-  elog(DEBUG2, "pg_stat_ch: all columns created, starting event loop");
-  size_t event_idx = 0;
   for (const auto& ev : events) {
-    elog(DEBUG2, "pg_stat_ch: processing event %zu: pid=%d, query_len=%u", event_idx, ev.pid,
-         ev.query_len);
     exporter->BeginRow();
 
-    int64_t unix_us = ev.ts_start + kPostgresEpochOffsetUs;
-    col_ts_start->Append(unix_us);
+    col_ts_start->Append(ev.ts_start + kPostgresEpochOffsetUs);
     col_duration_us->Append(ev.duration_us);
-
-    // Use pre-resolved names from event (resolved at capture time in hooks)
     col_db->Append(std::string(ev.datname, ev.datname_len));
     col_username->Append(std::string(ev.username, ev.username_len));
-
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
     col_cmd_type->Append(CmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
 
-    // Validate query_len before using it
-    uint16 safe_query_len = ev.query_len;
-    if (safe_query_len > PSCH_MAX_QUERY_LEN) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid query_len %u, clamping", event_idx,
-           safe_query_len);
-      safe_query_len = PSCH_MAX_QUERY_LEN;
-    }
-    col_query->Append(std::string(ev.query, safe_query_len));
+    auto qlen = ClampFieldLen(ev.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
+    col_query->Append(std::string(ev.query, qlen));
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - buffer usage", event_idx);
-    // Buffer usage
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);
     col_shared_blks_dirtied->Append(ev.shared_blks_dirtied);
@@ -190,8 +165,6 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
     col_temp_blks_read->Append(ev.temp_blks_read);
     col_temp_blks_written->Append(ev.temp_blks_written);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - I/O timing", event_idx);
-    // I/O timing
     col_shared_blk_read_time_us->Append(ev.shared_blk_read_time_us);
     col_shared_blk_write_time_us->Append(ev.shared_blk_write_time_us);
     col_local_blk_read_time_us->Append(ev.local_blk_read_time_us);
@@ -199,19 +172,13 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
     col_temp_blk_read_time_us->Append(ev.temp_blk_read_time_us);
     col_temp_blk_write_time_us->Append(ev.temp_blk_write_time_us);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - WAL usage", event_idx);
-    // WAL usage
     col_wal_records->Append(ev.wal_records);
     col_wal_fpi->Append(ev.wal_fpi);
     col_wal_bytes->Append(ev.wal_bytes);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - CPU time", event_idx);
-    // CPU time
     col_cpu_user_time_us->Append(ev.cpu_user_time_us);
     col_cpu_sys_time_us->Append(ev.cpu_sys_time_us);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - JIT", event_idx);
-    // JIT
     col_jit_functions->Append(ev.jit_functions);
     col_jit_generation_time_us->Append(ev.jit_generation_time_us);
     col_jit_deform_time_us->Append(ev.jit_deform_time_us);
@@ -219,45 +186,23 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
     col_jit_optimization_time_us->Append(ev.jit_optimization_time_us);
     col_jit_emission_time_us->Append(ev.jit_emission_time_us);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - parallel workers", event_idx);
-    // Parallel workers
     col_parallel_workers_planned->Append(ev.parallel_workers_planned);
     col_parallel_workers_launched->Append(ev.parallel_workers_launched);
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - error info", event_idx);
-    // Error info (5-char SQLSTATE, trimmed)
     col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
     col_err_elevel->Append(ev.err_elevel);
-    // Error message (validate length)
-    uint16 safe_err_msg_len = ev.err_message_len;
-    if (safe_err_msg_len > PSCH_MAX_ERR_MSG_LEN) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid err_message_len %u, clamping", event_idx,
-           safe_err_msg_len);
-      safe_err_msg_len = PSCH_MAX_ERR_MSG_LEN;
-    }
-    col_err_message->Append(std::string(ev.err_message, safe_err_msg_len));
+    auto elen = ClampFieldLen(ev.err_message_len, static_cast<uint16>(PSCH_MAX_ERR_MSG_LEN),
+                              "err_message_len");
+    col_err_message->Append(std::string(ev.err_message, elen));
 
-    elog(DEBUG3, "pg_stat_ch: event %zu - client context (app_len=%u, addr_len=%u)", event_idx,
-         ev.application_name_len, ev.client_addr_len);
-    // Client context - validate lengths
-    uint8 safe_app_len = ev.application_name_len;
-    if (safe_app_len > 63) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid app_name_len %u, clamping", event_idx,
-           safe_app_len);
-      safe_app_len = 63;
-    }
-    uint8 safe_addr_len = ev.client_addr_len;
-    if (safe_addr_len > 45) {
-      elog(WARNING, "pg_stat_ch: event %zu has invalid client_addr_len %u, clamping", event_idx,
-           safe_addr_len);
-      safe_addr_len = 45;
-    }
-    col_app->Append(std::string(ev.application_name, safe_app_len));
-    col_client_addr->Append(std::string(ev.client_addr, safe_addr_len));
-
-    event_idx++;
+    auto alen = ClampFieldLen(ev.application_name_len, static_cast<uint8>(PSCH_MAX_APP_NAME_LEN),
+                              "app_name_len");
+    auto clen = ClampFieldLen(ev.client_addr_len, static_cast<uint8>(PSCH_MAX_CLIENT_ADDR_LEN),
+                              "client_addr_len");
+    col_app->Append(std::string(ev.application_name, alen));
+    col_client_addr->Append(std::string(ev.client_addr, clen));
   }
-  elog(DEBUG1, "pg_stat_ch: finished processing %zu events", event_idx);
+  elog(DEBUG1, "pg_stat_ch: finished processing %zu events", events.size());
 }
 
 }  // namespace
