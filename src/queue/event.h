@@ -31,6 +31,13 @@ extern "C" {
 
 #include "datatype/timestamp.h"
 
+// POSIX defines INET6_ADDRSTRLEN = 46 in <arpa/inet.h>, but that header may not
+// be available in all build environments (e.g. Docker benchmark images).  Define
+// a local constant instead so event.h stays self-contained.
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 46
+#endif
+
 // Maximum query text length stored in events (truncated if longer)
 // 2KB is enough for most queries; full query text is available via pg_stat_statements
 #define PSCH_MAX_QUERY_LEN 2048
