@@ -1,4 +1,4 @@
-name: pg-stat-ch
+name: postgresql-${PG_MAJOR}-pg-stat-ch
 arch: ${ARCH}
 version: ${VERSION}
 release: 1
