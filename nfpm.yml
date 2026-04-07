@@ -1,0 +1,25 @@
+name: pg-stat-ch
+arch: ${ARCH}
+version: ${VERSION}
+release: 1
+platform: linux
+section: database
+priority: optional
+maintainer: "Kaushik Iska <iska.kaushik@gmail.com>"
+description: "PostgreSQL Query Telemetry Exporter to ClickHouse for PostgreSQL ${PG_MAJOR}"
+vendor: ClickHouse
+homepage: https://github.com/ClickHouse/pg_stat_ch
+license: Apache-2.0
+
+depends:
+  - postgresql-${PG_MAJOR}
+  - libssl3
+
+contents:
+  # Extension SQL and control files.
+  - src: ${DESTDIR}/usr/share/postgresql/${PG_MAJOR}/extension/*.*
+    dst: /usr/share/postgresql/${PG_MAJOR}/extension/
+
+  # Shared library.
+  - src: ${DESTDIR}/usr/lib/postgresql/${PG_MAJOR}/lib/pg_stat_ch.so
+    dst: /usr/lib/postgresql/${PG_MAJOR}/lib/pg_stat_ch.so
