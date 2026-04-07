@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     git \
     postgresql-server-dev-18 \
     libssl-dev \
-    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
