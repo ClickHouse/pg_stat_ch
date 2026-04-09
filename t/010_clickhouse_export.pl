@@ -49,12 +49,18 @@ subtest 'basic export' => sub {
     cmp_ok($exported, '>=', 3, 'Events exported to ClickHouse');
 
     # Verify events in ClickHouse
-    my $ch_count = psch_query_clickhouse("SELECT count() FROM pg_stat_ch.events_raw");
+    my $ch_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw",
+        sub { $_[0] >= 3 },
+        10
+    );
     cmp_ok($ch_count, '>=', 3, "Events visible in ClickHouse (got $ch_count)");
 
     # Verify query field is populated
-    my $query_check = psch_query_clickhouse(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE query != ''"
+    my $query_check = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query != ''",
+        sub { $_[0] >= 1 },
+        10
     );
     cmp_ok($query_check, '>=', 1, 'Query text is captured');
 };
@@ -76,7 +82,11 @@ subtest 'batch sizing' => sub {
     cmp_ok($stats->{exported}, '>=', 150, 'All events exported');
 
     # Verify in ClickHouse
-    my $ch_count = psch_query_clickhouse("SELECT count() FROM pg_stat_ch.events_raw");
+    my $ch_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw",
+        sub { $_[0] >= 150 },
+        15
+    );
     cmp_ok($ch_count, '>=', 150, "All events in ClickHouse (got $ch_count)");
 };
 
@@ -91,11 +101,12 @@ subtest 'immediate flush' => sub {
     # Force immediate flush
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
-    # Small delay for flush to complete
-    sleep(1);
-
     # Check ClickHouse - should have the event
-    my $ch_count = psch_query_clickhouse("SELECT count() FROM pg_stat_ch.events_raw");
+    my $ch_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw",
+        sub { $_[0] >= 1 },
+        10
+    );
     cmp_ok($ch_count, '>=', 1, "Flush triggered export (got $ch_count events)");
 };
 
@@ -113,21 +124,26 @@ subtest 'all fields populated' => sub {
 
     # Flush and wait
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
-    sleep(2);
 
     # Check that various fields are populated
-    my $duration_check = psch_query_clickhouse(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE duration_us > 0"
+    my $duration_check = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE duration_us > 0",
+        sub { $_[0] >= 1 },
+        10
     );
     cmp_ok($duration_check, '>=', 1, 'duration_us is populated');
 
-    my $db_check = psch_query_clickhouse(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE db = 'postgres'"
+    my $db_check = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE db = 'postgres'",
+        sub { $_[0] >= 1 },
+        10
     );
     cmp_ok($db_check, '>=', 1, 'db field is populated');
 
-    my $cmd_type_check = psch_query_clickhouse(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE cmd_type != ''"
+    my $cmd_type_check = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE cmd_type != ''",
+        sub { $_[0] >= 1 },
+        10
     );
     cmp_ok($cmd_type_check, '>=', 1, 'cmd_type is populated');
 
@@ -151,7 +167,11 @@ subtest 'stats accuracy' => sub {
     psch_wait_for_export($node, $num_queries, 10);
 
     my $stats = psch_get_stats($node);
-    my $ch_count = psch_query_clickhouse("SELECT count() FROM pg_stat_ch.events_raw");
+    my $ch_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw",
+        sub { $_[0] >= $num_queries },
+        10
+    );
 
     # exported_events should approximately match ClickHouse count
     # (may not be exact due to timing, but should be close)

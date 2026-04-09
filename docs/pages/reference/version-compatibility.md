@@ -1,4 +1,7 @@
-# PostgreSQL Version Compatibility
+---
+title: PostgreSQL Version Compatibility
+description: Feature matrix and version-specific behavior for PostgreSQL 16, 17, and 18
+---
 
 This document details the features available in each PostgreSQL version supported by pg_stat_ch.
 

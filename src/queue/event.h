@@ -31,12 +31,25 @@ extern "C" {
 
 #include "datatype/timestamp.h"
 
+// POSIX defines INET6_ADDRSTRLEN = 46 in <arpa/inet.h>, but that header may not
+// be available in all build environments (e.g. Docker benchmark images).  Define
+// a local constant instead so event.h stays self-contained.
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 46
+#endif
+
 // Maximum query text length stored in events (truncated if longer)
 // 2KB is enough for most queries; full query text is available via pg_stat_statements
 #define PSCH_MAX_QUERY_LEN 2048
 
 // Maximum error message length (truncated if longer)
 #define PSCH_MAX_ERR_MSG_LEN 2048
+
+// Maximum application name length
+#define PSCH_MAX_APP_NAME_LEN (NAMEDATALEN - 1)
+
+// Maximum client address length
+#define PSCH_MAX_CLIENT_ADDR_LEN (INET6_ADDRSTRLEN - 1)
 
 // Command type values (matching PostgreSQL's CmdType enum)
 enum PschCmdType {

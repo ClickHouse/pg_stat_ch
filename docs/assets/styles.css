@@ -1,0 +1,549 @@
+/* ============================================
+   Global Border Radius
+   ============================================ */
+
+.card,
+.code-block,
+.accordion,
+.callout {
+    border-radius: 4px;
+}
+
+.code-block-background,
+[data-component-part="code-block-root"],
+.code-block-background.rounded-2xl,
+[data-component-part="code-block-root"].rounded-2xl {
+    border-radius: 4px !important;
+}
+
+/* ============================================
+   Code Blocks - Dark Mode
+   ============================================ */
+
+.dark .code-block-background,
+.dark [data-component-part="code-block-root"],
+:is(.dark) .code-block-background,
+:is(.dark) [data-component-part="code-block-root"] {
+    background-color: #282828 !important;
+    --shiki-dark-bg: #282828 !important;
+}
+
+.dark pre.shiki,
+:is(.dark) pre.shiki {
+    background-color: #282828 !important;
+    --shiki-dark-bg: #282828 !important;
+}
+
+/* Highlighted lines */
+.dark [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight,
+:is(.dark) [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight {
+    background: #424242 !important;
+}
+
+.dark [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::before,
+:is(.dark) [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::before {
+    background-color: #424242 !important;
+    border-left-color: #FAFF69 !important;
+}
+
+.dark [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::after,
+:is(.dark) [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::after {
+    background-color: #424242 !important;
+}
+
+/* Fade overlay */
+.dark [data-fade-overlay="true"],
+:is(.dark) [data-fade-overlay="true"] {
+    --fade-color-dark: #282828 !important;
+}
+
+/* Copy button checkmark - yellow in dark mode */
+.dark [data-testid="copy-code-button"] svg[viewBox="0 0 16 11"],
+:is(.dark) [data-testid="copy-code-button"] svg[viewBox="0 0 16 11"] {
+    fill: #FAFF69 !important;
+}
+
+/* ============================================
+   Eyebrow Element Color Override
+   ============================================ */
+
+/* Light mode - match page text */
+html:not(.dark) .eyebrow {
+    color: #1f1f1c !important;
+}
+
+/* Dark mode - white */
+html.dark .eyebrow {
+    color: #ffffff !important;
+}
+
+/* ============================================
+   Active Sidebar Item - Dark Mode
+   ============================================ */
+
+/* Brighter background for selected sidebar item */
+.dark .sidebar-group a.dark\:bg-primary-light\/10,
+:is(.dark) .sidebar-group a.dark\:bg-primary-light\/10 {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Yellow text for selected sidebar item */
+.dark .sidebar-group a.dark\:text-primary-light,
+:is(.dark) .sidebar-group a.dark\:text-primary-light {
+    color: #FAFF69 !important;
+}
+
+/* ============================================
+   Table of Contents Links - Dark Mode
+   ============================================ */
+
+/* Yellow text and border for active TOC links */
+/* Active nav anchor - yellow in dark mode */
+html.dark a.nav-anchor.dark\:text-primary-light,
+:is(.dark) a.nav-anchor.dark\:text-primary-light {
+    color: #FAFF69 !important;
+}
+
+html.dark a.nav-anchor svg.dark\:bg-primary-light,
+:is(.dark) a.nav-anchor svg.dark\:bg-primary-light {
+    background-color: #FAFF69 !important;
+}
+
+/* Active TOC link (with border) */
+.dark a.dark\:text-primary-light.border-l,
+:is(.dark) a.dark\:text-primary-light.border-l {
+    color: #FAFF69 !important;
+    border-color: #FAFF69 !important;
+}
+
+/* Active TOC link (without border) */
+html.dark a[href^="#"].dark\:text-primary-light {
+    color: #FAFF69 !important;
+}
+
+/* Inactive TOC link hover - yellow in dark mode */
+html.dark a[href^="#"].dark\:hover\:text-gray-300:hover {
+    color: #FAFF69 !important;
+}
+
+/* ============================================
+   Pagination Links - Dark Mode
+   ============================================ */
+
+html:not(.dark) .pagination-next,
+html:not(.dark) .pagination-prev {
+    background-color: #f7f7f7 !important;
+}
+
+html:not(.dark) .pagination-next:hover,
+html:not(.dark) .pagination-prev:hover {
+    background-color: #efefef !important;
+}
+
+/* ============================================
+   Table Borders
+   ============================================ */
+
+.dark table th,
+.dark table td,
+:is(.dark) table th,
+:is(.dark) table td {
+    border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.dark table thead,
+:is(.dark) table thead {
+    border-bottom-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.dark table tr,
+:is(.dark) table tr {
+    border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.dark .pagination-next,
+.dark .pagination-prev,
+:is(.dark) .pagination-next,
+:is(.dark) .pagination-prev {
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.dark .pagination-next:hover,
+.dark .pagination-prev:hover,
+:is(.dark) .pagination-next:hover,
+:is(.dark) .pagination-prev:hover {
+    border-color: rgba(255, 255, 255, 0.3) !important;
+    background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.dark .pagination-title,
+:is(.dark) .pagination-title {
+    color: #E6E7E9 !important;
+}
+
+
+
+/* ============================================
+   Navbar & Sidebar
+   ============================================ */
+
+.nav-logo {
+    height: 2rem;
+}
+
+#navbar {
+    background-color: #f7f7f7 !important;
+}
+
+.dark #navbar,
+:is(.dark) #navbar {
+    background-color: #151515 !important;
+}
+
+.dark #almond-background-color,
+:is(.dark) #almond-background-color {
+    background-color: #151515 !important;
+}
+
+/* ============================================
+   Dark Mode Content Text
+   ============================================ */
+
+/* White body text for document content */
+.dark .prose,
+:is(.dark) .prose,
+.dark .prose p,
+:is(.dark) .prose p,
+.dark .prose li,
+:is(.dark) .prose li,
+.dark .prose td,
+:is(.dark) .prose td,
+.dark .prose th,
+:is(.dark) .prose th {
+    color: #ffffff !important;
+}
+
+/* Yellow links in dark mode content area (excluding cards) */
+.dark .prose a:not(.card):not(.card *),
+:is(.dark) .prose a:not(.card):not(.card *) {
+    color: #FAFF69 !important;
+    font-weight: normal !important;
+    text-decoration: none;
+}
+
+.dark .prose a:not(.card):not(.card *):hover,
+:is(.dark) .prose a:not(.card):not(.card *):hover {
+    color: #FAFF69 !important;
+    text-decoration: underline;
+    opacity: 1;
+}
+
+/* Yellow card icon in dark mode */
+html.dark [data-component-part="card-icon"] {
+    color: #FDFF75 !important;
+}
+
+/* Yellow card hover border in dark mode */
+.dark .card:hover {
+    border-color: #fdff75 !important;
+}
+
+
+/* ============================================
+   Content Area Width & Padding
+   ============================================ */
+
+#content-area {
+    max-width: 48rem !important;
+    /* 768px */
+}
+
+#content-container {
+    border-radius: 15px;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+}
+
+@media (min-width: 1024px) {
+    #content-container {
+        padding-left: 2rem !important;
+    }
+}
+
+#content-container>.flex.flex-row-reverse {
+    gap: 2rem !important;
+    padding-left: 1rem !important;
+}
+
+/* Subtle top border gradient in dark mode */
+.dark #content-container {
+    border-top: 1px solid !important;
+    border-image: linear-gradient(to right, transparent, rgba(250, 255, 105, 0.5) 50%, transparent) 1 0 0 0 !important;
+    background-image:
+        linear-gradient(to bottom, transparent 0%, rgba(250, 255, 105, 0.5) 50%, transparent 100%);
+    background-size: 1px 100%;
+    background-position: top right;
+    background-repeat: no-repeat;
+}
+
+@media (max-width: 640px) {
+    .dark #content-container {
+        margin-top: 15px !important;
+    }
+}
+
+/* Fix layout overlap in flex-row-reverse pages */
+@media (min-width: 1280px) {
+    .flex.flex-row-reverse>.relative.grow {
+        max-width: calc(100% - 20rem) !important;
+    }
+}
+
+/* ============================================
+   Mark Element Styling
+   ============================================ */
+
+.dark mark,
+:is(.dark) mark {
+    background-color: transparent !important;
+    color: #FAFF69 !important;
+}
+
+html:not(.dark) mark {
+    background-color: transparent !important;
+    color: #d4a005 !important;
+}
+
+/* ============================================
+   Callout Styling
+   ============================================ */
+
+[data-callout-type] {
+    border: none !important;
+}
+
+[data-component-part="callout-icon"] {
+    display: flex !important;
+    align-items: center !important;
+}
+
+/* Light Mode Callouts */
+
+html:not(.dark) [data-callout-type="note"] {
+    background-color: rgb(41.176% 43.137% 47.451% / 0.1);
+}
+
+html:not(.dark) [data-callout-type="note"] [data-component-part="callout-content"] {
+    color: #53575f !important;
+}
+
+html:not(.dark) [data-callout-type="note"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+html:not(.dark) [data-callout-type="note"] [data-component-part="callout-icon"] svg {
+    color: lch(36.838 5.2307 266.96 / 0.75);
+}
+
+html:not(.dark) [data-callout-type="info"] {
+    background-color: rgb(26.275% 49.412% 93.725% / 0.1);
+}
+
+html:not(.dark) [data-callout-type="info"] [data-component-part="callout-content"] {
+    color: rgb(83, 87, 95) !important;
+}
+
+html:not(.dark) [data-callout-type="info"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+html:not(.dark) [data-callout-type="info"] [data-component-part="callout-icon"] svg {
+    color: lch(53.426 64.605 278.98 / 0.75);
+}
+
+html:not(.dark) [data-callout-type="tip"],
+html:not(.dark) [data-callout-type="success"],
+html:not(.dark) [data-callout-type="check"] {
+    background-color: rgb(20% 100% 26.667% / 0.1);
+}
+
+html:not(.dark) [data-callout-type="tip"] [data-component-part="callout-content"],
+html:not(.dark) [data-callout-type="success"] [data-component-part="callout-content"],
+html:not(.dark) [data-callout-type="check"] [data-component-part="callout-content"] {
+    color: #008a0b !important;
+}
+
+html:not(.dark) [data-callout-type="tip"] [data-component-part="callout-icon"],
+html:not(.dark) [data-callout-type="success"] [data-component-part="callout-icon"],
+html:not(.dark) [data-callout-type="check"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+html:not(.dark) [data-callout-type="tip"] [data-component-part="callout-icon"] svg,
+html:not(.dark) [data-callout-type="success"] [data-component-part="callout-icon"] svg,
+html:not(.dark) [data-callout-type="check"] [data-component-part="callout-icon"] svg {
+    color: lch(49.786 70.246 135.31 / 0.75);
+}
+
+html:not(.dark) [data-callout-type="warning"] {
+    background-color: rgb(100% 46.667% 16.078% / 0.1);
+}
+
+html:not(.dark) [data-callout-type="warning"] [data-component-part="callout-content"] {
+    color: #a33c00 !important;
+}
+
+html:not(.dark) [data-callout-type="warning"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+html:not(.dark) [data-callout-type="warning"] [data-component-part="callout-icon"] svg {
+    color: lch(40.227 66.602 51.059 / 0.75);
+}
+
+html:not(.dark) [data-callout-type="danger"],
+html:not(.dark) [data-callout-type="error"] {
+    background-color: rgb(100% 13.725% 13.725% / 0.1);
+}
+
+html:not(.dark) [data-callout-type="danger"] [data-component-part="callout-content"],
+html:not(.dark) [data-callout-type="error"] [data-component-part="callout-content"] {
+    color: #c10000 !important;
+}
+
+html:not(.dark) [data-callout-type="danger"] [data-component-part="callout-icon"],
+html:not(.dark) [data-callout-type="error"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+html:not(.dark) [data-callout-type="danger"] [data-component-part="callout-icon"] svg,
+html:not(.dark) [data-callout-type="error"] [data-component-part="callout-icon"] svg {
+    color: lch(41.001 86.638 40.858 / 0.75);
+}
+
+/* Dark Mode Callouts */
+
+.dark [data-callout-type="note"],
+:is(.dark) [data-callout-type="note"] {
+    background-color: rgb(62.745% 62.745% 62.745% / 0.2);
+}
+
+.dark [data-callout-type="note"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="note"] [data-component-part="callout-content"] {
+    color: #c0c0c0 !important;
+}
+
+.dark [data-callout-type="note"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="note"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+.dark [data-callout-type="note"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="note"] [data-component-part="callout-icon"] svg {
+    color: lch(77.704 0 none / 0.75);
+}
+
+.dark [data-callout-type="info"],
+:is(.dark) [data-callout-type="info"] {
+    background-color: rgb(26.275% 49.412% 93.725% / 0.2);
+}
+
+.dark [data-callout-type="info"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="info"] [data-component-part="callout-content"] {
+    color: #d0dffb !important;
+}
+
+.dark [data-callout-type="info"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="info"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+.dark [data-callout-type="info"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="info"] [data-component-part="callout-icon"] svg {
+    color: lch(88.343 15.514 266.4 / 0.75);
+}
+
+.dark [data-callout-type="tip"],
+.dark [data-callout-type="success"],
+.dark [data-callout-type="check"],
+:is(.dark) [data-callout-type="tip"],
+:is(.dark) [data-callout-type="success"],
+:is(.dark) [data-callout-type="check"] {
+    background-color: rgb(20% 100% 26.667% / 0.2);
+}
+
+.dark [data-callout-type="tip"] [data-component-part="callout-content"],
+.dark [data-callout-type="success"] [data-component-part="callout-content"],
+.dark [data-callout-type="check"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="tip"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="success"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="check"] [data-component-part="callout-content"] {
+    color: #ccffd0 !important;
+}
+
+.dark [data-callout-type="tip"] [data-component-part="callout-icon"],
+.dark [data-callout-type="success"] [data-component-part="callout-icon"],
+.dark [data-callout-type="check"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="tip"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="success"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="check"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+.dark [data-callout-type="tip"] [data-component-part="callout-icon"] svg,
+.dark [data-callout-type="success"] [data-component-part="callout-icon"] svg,
+.dark [data-callout-type="check"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="tip"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="success"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="check"] [data-component-part="callout-icon"] svg {
+    color: lch(95.558 28.893 143.93 / 0.75);
+}
+
+.dark [data-callout-type="warning"],
+:is(.dark) [data-callout-type="warning"] {
+    background-color: rgb(100% 46.667% 16.078% / 0.2);
+}
+
+.dark [data-callout-type="warning"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="warning"] [data-component-part="callout-content"] {
+    color: #ffd5b8 !important;
+}
+
+.dark [data-callout-type="warning"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="warning"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+.dark [data-callout-type="warning"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="warning"] [data-component-part="callout-icon"] svg {
+    color: lch(77.834 47.584 62.328 / 0.75);
+}
+
+.dark [data-callout-type="danger"],
+.dark [data-callout-type="error"],
+:is(.dark) [data-callout-type="danger"],
+:is(.dark) [data-callout-type="error"] {
+    background-color: rgb(100% 13.725% 13.725% / 0.2);
+}
+
+.dark [data-callout-type="danger"] [data-component-part="callout-content"],
+.dark [data-callout-type="error"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="danger"] [data-component-part="callout-content"],
+:is(.dark) [data-callout-type="error"] [data-component-part="callout-content"] {
+    color: #ffc0c0 !important;
+}
+
+.dark [data-callout-type="danger"] [data-component-part="callout-icon"],
+.dark [data-callout-type="error"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="danger"] [data-component-part="callout-icon"],
+:is(.dark) [data-callout-type="error"] [data-component-part="callout-icon"] {
+    background-color: transparent;
+}
+
+.dark [data-callout-type="danger"] [data-component-part="callout-icon"] svg,
+.dark [data-callout-type="error"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="danger"] [data-component-part="callout-icon"] svg,
+:is(.dark) [data-callout-type="error"] [data-component-part="callout-icon"] svg {
+    color: lch(82.295 39.485 22.025 / 0.75);
+}

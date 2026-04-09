@@ -235,7 +235,7 @@ void PschRegisterBgworker(void) {
   strlcpy(worker.bgw_name, "pg_stat_ch exporter", BGW_MAXLEN);
   strlcpy(worker.bgw_type, "pg_stat_ch exporter", BGW_MAXLEN);
   worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-  worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+  worker.bgw_start_time = BgWorkerStart_ConsistentState;
   worker.bgw_restart_time = 10;  // Restart after 10 seconds on crash
   strlcpy(worker.bgw_library_name, "pg_stat_ch", BGW_MAXLEN);
   strlcpy(worker.bgw_function_name, "PschBgworkerMain", BGW_MAXLEN);

@@ -1,4 +1,7 @@
-# PostgreSQL Hooks Architecture
+---
+title: PostgreSQL Hooks Architecture
+description: How pg_stat_ch hooks into the query lifecycle to capture telemetry
+---
 
 pg_stat_ch uses PostgreSQL's extensibility hooks to capture query telemetry without modifying the database server. This document explains each hook, what data it captures, and how the capture pipeline works.
 
@@ -163,47 +166,49 @@ Parallel workers execute portions of a query plan. pg_stat_ch:
 
 ## Data Flow Summary
 
-```
+<pre style={{fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: '1.4', overflowX: 'auto', backgroundColor: '#282828', color: '#e6e7e9', padding: '1rem', borderRadius: '4px', display: 'flex', justifyContent: 'center'}}>
+{`
 ┌─────────────────────────────────────────────────────────────────┐
 │                     PostgreSQL Backend                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  ExecutorStart_hook                                             │
-│    ├─ Record start time, CPU baseline                          │
+│    ├─ Record start time, CPU baseline                           │
 │    └─ Enable instrumentation                                    │
 │                                                                 │
-│  ExecutorRun_hook / ExecutorFinish_hook                        │
+│  ExecutorRun_hook / ExecutorFinish_hook                         │
 │    └─ Track nesting level                                       │
 │                                                                 │
 │  ExecutorEnd_hook                                               │
 │    ├─ Finalize instrumentation                                  │
 │    ├─ Compute CPU delta                                         │
-│    ├─ Extract metrics from QueryDesc                           │
-│    └─ Enqueue PschEvent to shared memory                       │
+│    ├─ Extract metrics from QueryDesc                            │
+│    └─ Enqueue PschEvent to shared memory                        │
 │                                                                 │
 │  ProcessUtility_hook                                            │
-│    ├─ Capture buffer/WAL/CPU baselines                         │
+│    ├─ Capture buffer/WAL/CPU baselines                          │
 │    ├─ Execute utility                                           │
 │    ├─ Compute deltas                                            │
 │    └─ Enqueue PschEvent                                         │
 │                                                                 │
 │  emit_log_hook                                                  │
-│    ├─ Check error level >= configured minimum                  │
-│    ├─ Extract SQLSTATE, error level                            │
+│    ├─ Check error level >= configured minimum                   │
+│    ├─ Extract SQLSTATE, error level                             │
 │    └─ Enqueue PschEvent                                         │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Shared Memory Ring Buffer                     │
-│                     (MPSC: Multi-Producer, Single-Consumer)    │
+│             (MPSC: Multi-Producer, Single-Consumer)             │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+                                 │
+                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Background Worker                           │
-│                  Batch export to ClickHouse                     │
+│                       Background Worker                         │
+│                   Batch export to ClickHouse                    │
 └─────────────────────────────────────────────────────────────────┘
-```
+`}
+</pre>
 
 ## References
 

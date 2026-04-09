@@ -14,8 +14,9 @@ int psch_otel_log_max_bytes = 4194304;
 int psch_otel_log_delay_ms = 200;
 int psch_otel_metric_interval_ms = 5000;
 
-// Stub out the PG-dependent log helper declared in exporter_interface.h
+// Stub out the PG-dependent log helpers declared in exporter_interface.h
 void LogNegativeValue(const std::string&, int64_t) {}
+void LogExporterWarning(const char*, const char*) {}
 
 // Function under test — defined in otel_exporter.cc with external linkage
 std::string GetAHostname(const char* fallback);

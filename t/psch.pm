@@ -5,6 +5,7 @@ use strict;
 use warnings;
 use Exporter 'import';
 use PostgreSQL::Test::Cluster;
+use Time::HiRes qw(sleep time);
 
 our @EXPORT = qw(
     psch_init_node
@@ -17,6 +18,7 @@ our @EXPORT = qw(
     psch_query_clickhouse_tsv
     psch_init_node_with_clickhouse
     psch_wait_for_export
+    psch_wait_for_clickhouse_query
     psch_otelcol_available
     psch_start_otelcol
     psch_stop_otelcol
@@ -173,6 +175,27 @@ sub psch_wait_for_export {
     # Timeout - return current count anyway for diagnostic
     my $stats = psch_get_stats($node);
     return $stats->{exported};
+}
+
+# Poll a ClickHouse query until the predicate accepts the raw result.
+# Returns the latest result on success or timeout.
+sub psch_wait_for_clickhouse_query {
+    my ($query, $predicate, $timeout_secs, $poll_interval_secs) = @_;
+    $timeout_secs //= 10;
+    $poll_interval_secs //= 0.1;
+
+    die "psch_wait_for_clickhouse_query requires a CODE predicate"
+        unless ref($predicate) eq 'CODE';
+
+    my $result = '';
+    my $start_time = time();
+    while (time() - $start_time < $timeout_secs) {
+        $result = psch_query_clickhouse($query);
+        return $result if $predicate->($result);
+        sleep($poll_interval_secs);
+    }
+
+    return $result;
 }
 
 # ============================================================================
