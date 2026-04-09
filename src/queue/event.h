@@ -82,9 +82,9 @@ struct PschEvent {
   char username[64];     // User name (NAMEDATALEN=64, resolved at capture)
   uint8 username_len;    // Actual length
   int32 pid;             // Backend process ID
-  uint64 queryid;        // Query ID (from pg_stat_statements)
-  bool top_level;        // True if this is a top-level query
-  PschCmdType cmd_type;  // Command type (SELECT, UPDATE, etc.)
+  uint64 queryid;           // Query ID (from pg_stat_statements)
+  uint64 parent_query_id;   // Query ID of the calling query (0 if top-level)
+  PschCmdType cmd_type;     // Command type (SELECT, UPDATE, etc.)
 
   // Results
   uint64 rows;  // Number of rows affected/returned

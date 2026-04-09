@@ -93,6 +93,7 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   auto col_username = exporter->DbUserColumn();
   auto col_pid = exporter->RecordInt32("pid");
   auto col_query_id = exporter->RecordInt64("query_id");
+  auto col_parent_query_id = exporter->RecordUInt64("parent_query_id");
   auto col_cmd_type = exporter->DbOperationColumn();
   auto col_rows = exporter->MetricUInt64("rows");
   auto col_query = exporter->DbQueryTextColumn();
@@ -148,6 +149,7 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
     col_username->Append(std::string(ev.username, ev.username_len));
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
+    col_parent_query_id->Append(ev.parent_query_id);
     col_cmd_type->Append(CmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
 
