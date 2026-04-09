@@ -30,17 +30,17 @@
               {
                 "group": "Get started",
                 "icon": "rocket",
-                "pages": ["pages/get-started/introduction", "pages/get-started/quick-start"]
+                "pages": ["get-started/introduction", "get-started/quick-start"]
               },
               {
                 "group": "Guides",
                 "icon": "lightbulb",
-                "pages": ["pages/guides/clickhouse", "pages/guides/testing"]
+                "pages": ["guides/clickhouse", "guides/testing"]
               },
               {
                 "group": "Reference",
                 "icon": "folder",
-                "pages": ["pages/reference/hooks", "pages/reference/version-compatibility", "pages/reference/troubleshooting"]
+                "pages": ["reference/hooks", "reference/version-compatibility", "reference/troubleshooting"]
               }
             ]
           },
