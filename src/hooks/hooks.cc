@@ -2,7 +2,6 @@
 
 #include <array>
 #include <sys/resource.h>
-#include <vector>
 
 extern "C" {
 #include "postgres.h"
@@ -54,12 +53,19 @@ static emit_log_hook_type prev_emit_log_hook = nullptr;
 // depth and provides each query with its own rusage baseline and start time,
 // fixing the prior single-static design that produced overlapping CPU deltas
 // for nested SPI calls.
+//
+// Fixed-size to avoid heap allocation: std::vector::push_back throws
+// std::bad_alloc on OOM, which is incompatible with PostgreSQL's longjmp-based
+// error handling. Real-world nesting depth is small; 64 levels is a generous
+// ceiling even for deeply recursive plpgsql.
 struct PschQueryFrame {
   struct rusage rusage_start;
   TimestampTz query_start_ts;
   uint64 queryid;  // used as parent_query_id by the next inner query
 };
-static std::vector<PschQueryFrame> query_stack;
+constexpr int kMaxQueryNestingDepth = 64;
+static std::array<PschQueryFrame, kMaxQueryNestingDepth> query_stack;
+static int query_stack_depth = 0;
 
 // Deadlock prevention for emit_log_hook
 static bool disable_error_capture = false;
@@ -551,7 +557,10 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   frame.queryid = query_desc->plannedstmt->queryId;
   frame.query_start_ts = GetCurrentTimestamp();
   getrusage(RUSAGE_SELF, &frame.rusage_start);
-  query_stack.push_back(frame);
+  if (query_stack_depth < kMaxQueryNestingDepth) {
+    query_stack[query_stack_depth] = frame;
+  }
+  query_stack_depth++;
 
   if (prev_executor_start != nullptr) {
     prev_executor_start(query_desc, eflags);
@@ -612,11 +621,14 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     return;
   }
 
-  // Pop the frame pushed in ExecutorStart.
+  // Pop the frame pushed in ExecutorStart. If depth exceeded the array cap,
+  // the frame is zeroed — the event is still emitted but with zero CPU.
   PschQueryFrame frame = {};
-  if (!query_stack.empty()) {
-    frame = query_stack.back();
-    query_stack.pop_back();
+  if (query_stack_depth > 0) {
+    query_stack_depth--;
+    if (query_stack_depth < kMaxQueryNestingDepth) {
+      frame = query_stack[query_stack_depth];
+    }
   }
 
   if (!psch_enabled || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
@@ -643,7 +655,9 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 
   // The frame below us on the stack is our caller; its queryid is our parent.
-  uint64 parent_query_id = query_stack.empty() ? 0 : query_stack.back().queryid;
+  int parent_idx = query_stack_depth - 1;
+  uint64 parent_query_id =
+      (parent_idx >= 0 && parent_idx < kMaxQueryNestingDepth) ? query_stack[parent_idx].queryid : 0;
 
   PschEvent event;
   BuildEventFromQueryDesc(query_desc, &event, frame.query_start_ts, cpu_user_us, cpu_sys_us,
@@ -748,13 +762,18 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   // Capture parent before pushing our own frame, then push so that any
   // executor hooks fired from within this utility (e.g. CREATE TABLE AS SELECT)
   // see us on the stack and correctly link themselves as our children.
-  uint64 parent_query_id = query_stack.empty() ? 0 : query_stack.back().queryid;
+  int parent_idx = query_stack_depth - 1;
+  uint64 parent_query_id =
+      (parent_idx >= 0 && parent_idx < kMaxQueryNestingDepth) ? query_stack[parent_idx].queryid : 0;
 
   PschQueryFrame frame;
   frame.queryid = 0;  // utility statements have no queryId
   frame.query_start_ts = GetCurrentTimestamp();
   getrusage(RUSAGE_SELF, &frame.rusage_start);
-  query_stack.push_back(frame);
+  if (query_stack_depth < kMaxQueryNestingDepth) {
+    query_stack[query_stack_depth] = frame;
+  }
+  query_stack_depth++;
 
   int stmt_location = pstmt->stmt_location;
   int stmt_len = pstmt->stmt_len;
@@ -769,9 +788,15 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   INSTR_TIME_SET_CURRENT(duration);
   INSTR_TIME_SUBTRACT(duration, start_time);
 
-  // Pop our frame and compute CPU delta.
-  PschQueryFrame popped = query_stack.back();
-  query_stack.pop_back();
+  // Pop our frame and compute CPU delta. Zeroed if depth exceeded the cap.
+  PschQueryFrame popped = {};
+  if (query_stack_depth > 0) {
+    query_stack_depth--;
+    if (query_stack_depth < kMaxQueryNestingDepth) {
+      popped = query_stack[query_stack_depth];
+    }
+  }
+
 
   BufferUsage bufusage_delta;
   WalUsage walusage_delta;
@@ -837,7 +862,7 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // message, SQLSTATE, and client/session metadata.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
-  uint64 parent_query_id = query_stack.empty() ? 0 : query_stack.back().queryid;
+  uint64 parent_query_id = query_stack_depth > 0 ? query_stack[query_stack_depth - 1].queryid : 0;
   InitBaseEvent(&event, GetCurrentTimestamp(), parent_query_id, PSCH_CMD_UNKNOWN);
 
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
