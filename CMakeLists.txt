@@ -60,7 +60,7 @@ set(BUILD_BENCHMARK OFF CACHE BOOL "Disable clickhouse-cpp benchmarks" FORCE)
 add_subdirectory(third_party/clickhouse-cpp EXCLUDE_FROM_ALL)
 
 # Collect source files
-file(GLOB_RECURSE SOURCES src/*.cc)
+file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
 
 # Build shared library
 add_library(pg_stat_ch SHARED ${SOURCES})

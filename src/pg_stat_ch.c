@@ -2,7 +2,6 @@
 //
 // This is the main entry point for the pg_stat_ch extension.
 
-extern "C" {
 #include "postgres.h"
 
 #include "access/htup_details.h"
@@ -11,7 +10,6 @@ extern "C" {
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
-}
 
 #include "pg_stat_ch/pg_stat_ch.h"
 
@@ -19,8 +17,6 @@ extern "C" {
 #include "hooks/hooks.h"
 #include "queue/shmem.h"
 #include "worker/bgworker.h"
-
-extern "C" {
 
 PG_MODULE_MAGIC;
 
@@ -74,7 +70,7 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   HeapTuple tuple;
 
   // Build tuple descriptor
-  if (get_call_result_type(fcinfo, nullptr, &tupdesc) != TYPEFUNC_COMPOSITE) {
+  if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE) {
     ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                     errmsg("function returning record called in context that cannot "
                            "accept type record")));
@@ -158,5 +154,3 @@ Datum pg_stat_ch_flush(PG_FUNCTION_ARGS) {
   PschSignalFlush();
   PG_RETURN_VOID();
 }
-
-}  // extern "C"

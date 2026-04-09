@@ -32,6 +32,7 @@ extern "C" {
 // [ring buffer]
 //    rarely changed              producer cache line                             consumer cache
 //    line
+typedef struct PschSharedState PschSharedState;
 struct PschSharedState {
   // === Rarely-changed fields (initialization only) ===
   LWLock* lock;     // Protects writes to the ring buffer (multi-producer)

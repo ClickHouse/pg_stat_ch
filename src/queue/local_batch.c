@@ -9,21 +9,17 @@
 // PschLocalBatchShutdown is registered later (on first Add), so it runs FIRST —
 // flushing buffered events before stats are logged.
 
-extern "C" {
 #include "postgres.h"
 
 #include "access/xact.h"
 #include "storage/ipc.h"
-}
-
-#include <array>
 
 #include "queue/local_batch.h"
 #include "queue/shmem.h"
 
 #define PSCH_LOCAL_BATCH_CAPACITY 8
 
-static std::array<PschEvent, PSCH_LOCAL_BATCH_CAPACITY> local_batch;
+static PschEvent local_batch[PSCH_LOCAL_BATCH_CAPACITY];
 static int local_batch_count = 0;
 static bool local_batch_initialized = false;
 
@@ -33,12 +29,10 @@ static void PschLocalBatchShutdown(int code, Datum arg);
 
 // Register callbacks lazily on first use.
 static void PschLocalBatchInit(void) {
-  RegisterXactCallback(PschXactCallback, nullptr);
+  RegisterXactCallback(PschXactCallback, NULL);
   on_shmem_exit(PschLocalBatchShutdown, 0);
   local_batch_initialized = true;
 }
-
-extern "C" {
 
 int PschLocalBatchFlush(void) {
   if (local_batch_count == 0) {
@@ -47,7 +41,7 @@ int PschLocalBatchFlush(void) {
 
   int count = local_batch_count;
   local_batch_count = 0;
-  return PschEnqueueBatch(local_batch.data(), count);
+  return PschEnqueueBatch(local_batch, count);
 }
 
 void PschLocalBatchAdd(const PschEvent* event) {
@@ -64,10 +58,9 @@ void PschLocalBatchAdd(const PschEvent* event) {
   local_batch_count++;
 }
 
-}  // extern "C"
-
 // Flush on transaction end (COMMIT, ABORT, PREPARE)
-static void PschXactCallback(XactEvent event, [[maybe_unused]] void* arg) {
+static void PschXactCallback(XactEvent event, void* arg) {
+  (void)arg;
   if (local_batch_count == 0) {
     return;
   }
@@ -86,6 +79,8 @@ static void PschXactCallback(XactEvent event, [[maybe_unused]] void* arg) {
 }
 
 // Flush on backend shutdown to avoid losing buffered events
-static void PschLocalBatchShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
+static void PschLocalBatchShutdown(int code, Datum arg) {
+  (void)code;
+  (void)arg;
   PschLocalBatchFlush();
 }

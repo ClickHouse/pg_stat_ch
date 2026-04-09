@@ -1,9 +1,7 @@
 // pg_stat_ch executor hooks implementation
 
-#include <array>
 #include <sys/resource.h>
 
-extern "C" {
 #include "postgres.h"
 
 #include "access/parallel.h"
@@ -30,7 +28,6 @@ extern "C" {
 #if PG_VERSION_NUM >= 150000
 #include "jit/jit.h"
 #endif
-}
 
 #include "config/guc.h"
 #include "hooks/hooks.h"
@@ -40,13 +37,13 @@ extern "C" {
 #include "queue/shmem.h"
 
 // Previous hook values for chaining
-static post_parse_analyze_hook_type prev_post_parse_analyze = nullptr;
-static ExecutorStart_hook_type prev_executor_start = nullptr;
-static ExecutorRun_hook_type prev_executor_run = nullptr;
-static ExecutorFinish_hook_type prev_executor_finish = nullptr;
-static ExecutorEnd_hook_type prev_executor_end = nullptr;
-static ProcessUtility_hook_type prev_process_utility = nullptr;
-static emit_log_hook_type prev_emit_log_hook = nullptr;
+static post_parse_analyze_hook_type prev_post_parse_analyze = NULL;
+static ExecutorStart_hook_type prev_executor_start = NULL;
+static ExecutorRun_hook_type prev_executor_run = NULL;
+static ExecutorFinish_hook_type prev_executor_finish = NULL;
+static ExecutorEnd_hook_type prev_executor_end = NULL;
+static ProcessUtility_hook_type prev_process_utility = NULL;
+static emit_log_hook_type prev_emit_log_hook = NULL;
 
 // Per-query frame pushed at ExecutorStart / PschProcessUtility and popped at
 // ExecutorEnd / end of PschProcessUtility. The stack naturally tracks nesting
@@ -54,17 +51,18 @@ static emit_log_hook_type prev_emit_log_hook = nullptr;
 // fixing the prior single-static design that produced overlapping CPU deltas
 // for nested SPI calls.
 //
-// Fixed-size to avoid heap allocation: std::vector::push_back throws
-// std::bad_alloc on OOM, which is incompatible with PostgreSQL's longjmp-based
-// error handling. Real-world nesting depth is small; 64 levels is a generous
+// Fixed-size to avoid heap allocation: malloc can fail in OOM conditions
+// with effects that are incompatible with PostgreSQL's longjmp-based error
+// handling. Real-world nesting depth is small; 64 levels is a generous
 // ceiling even for deeply recursive plpgsql.
-struct PschQueryFrame {
+typedef struct PschQueryFrame {
   struct rusage rusage_start;
   TimestampTz query_start_ts;
   uint64 queryid;  // used as parent_query_id by the next inner query
-};
-constexpr int kMaxQueryNestingDepth = 64;
-static std::array<PschQueryFrame, kMaxQueryNestingDepth> query_stack;
+} PschQueryFrame;
+
+#define PSCH_MAX_QUERY_NESTING_DEPTH 64
+static PschQueryFrame query_stack[PSCH_MAX_QUERY_NESTING_DEPTH];
 static int query_stack_depth = 0;
 
 // Deadlock prevention for emit_log_hook
@@ -78,7 +76,7 @@ static void ResolveNames(PschEvent* event);
 
 static uint8 CopyName(char* dst, size_t dst_size, const char* src) {
   size_t len = strlcpy(dst, src, dst_size);
-  return static_cast<uint8>(Min(len, dst_size - 1));
+  return (uint8)Min(len, dst_size - 1);
 }
 
 // Cache for session-stable values to avoid repeated catalog lookups on every query.
@@ -87,7 +85,7 @@ static uint8 CopyName(char* dst, size_t dst_size, const char* src) {
 // re-resolved when userid changes (handles SET ROLE). This also carries the
 // session-local registry of normalized statements waiting to be consumed by
 // ExecutorEnd, ProcessUtility, or emit_log_hook.
-struct PschBackendState {
+typedef struct PschBackendState {
   bool initialized;
   char datname[NAMEDATALEN];
   uint8 datname_len;
@@ -97,8 +95,9 @@ struct PschBackendState {
   char client_addr[46];  // INET6_ADDRSTRLEN
   uint8 client_addr_len;
   PschNormalizedQueryState normalized_queries;
-};
-static PschBackendState backend_state = {};
+} PschBackendState;
+
+static PschBackendState backend_state = {0};
 
 // Resolve and cache the current username. On initial resolve, falls back to
 // "<unknown>" if resolution fails. On SET ROLE re-resolve, keeps the existing
@@ -106,7 +105,7 @@ static PschBackendState backend_state = {};
 // leaves cached_userid unchanged so future calls can retry resolution.
 static void CacheUsername(Oid userid, bool fallback_on_null) {
   const char* username = GetUserNameFromId(userid, true);
-  if (username != nullptr) {
+  if (username != NULL) {
     backend_state.username_len =
         CopyName(backend_state.username, sizeof(backend_state.username), username);
     backend_state.cached_userid = userid;
@@ -132,10 +131,10 @@ static void EnsureBackendCache(void) {
     // Database name (session-stable)
     const char* datname = get_database_name(MyDatabaseId);
     backend_state.datname_len = CopyName(backend_state.datname, sizeof(backend_state.datname),
-                                         datname != nullptr ? datname : "<unknown>");
+                                         datname != NULL ? datname : "<unknown>");
 
     // Client address (session-stable)
-    backend_state.client_addr_len = static_cast<uint8>(
+    backend_state.client_addr_len = (uint8)(
         GetClientAddress(backend_state.client_addr, sizeof(backend_state.client_addr)));
 
     // Username (may change via SET ROLE)
@@ -177,8 +176,8 @@ static PschCmdType ConvertCmdType(CmdType cmd) {
 }
 
 static int64 TimeDiffMicrosec(struct timeval end, struct timeval start) {
-  return (static_cast<int64>(end.tv_sec - start.tv_sec) * 1000000LL) +
-         static_cast<int64>(end.tv_usec - start.tv_usec);
+  return ((int64)(end.tv_sec - start.tv_sec) * 1000000LL) +
+         (int64)(end.tv_usec - start.tv_usec);
 }
 
 // Unpack SQLSTATE code from PostgreSQL's packed format to string
@@ -191,7 +190,7 @@ static void UnpackSqlState(int sql_state, char* buf) {
 }
 
 static size_t TrimTrailing(char* str, size_t len) {
-  while (len > 0 && isspace(static_cast<unsigned char>(str[len - 1]))) {
+  while (len > 0 && isspace((unsigned char)str[len - 1])) {
     len--;
   }
   str[len] = '\0';
@@ -202,15 +201,18 @@ static size_t TrimTrailing(char* str, size_t len) {
 // This avoids memmove by skipping leading whitespace BEFORE the copy.
 // Returns the final length of the trimmed string in dst.
 static size_t CopyTrimmed(char* dst, size_t dst_size, const char* src) {
-  if (src == nullptr || dst_size == 0) {
+  size_t src_len;
+  size_t len;
+
+  if (src == NULL || dst_size == 0) {
     if (dst_size > 0)
       dst[0] = '\0';
     return 0;
   }
-  while (*src != '\0' && isspace(static_cast<unsigned char>(*src)))
+  while (*src != '\0' && isspace((unsigned char)*src))
     src++;
-  size_t src_len = strlcpy(dst, src, dst_size);
-  size_t len = Min(src_len, dst_size - 1);
+  src_len = strlcpy(dst, src, dst_size);
+  len = Min(src_len, dst_size - 1);
   return TrimTrailing(dst, len);
 }
 
@@ -224,7 +226,7 @@ static PgBackendStatus* GetBackendStatus(void) {
   int num_backends = pgstat_fetch_stat_numbackends();
   for (int i = 1; i <= num_backends; i++) {
     local_beentry = pgstat_get_local_beentry_by_index(i);
-    if (local_beentry == nullptr) {
+    if (local_beentry == NULL) {
       continue;
     }
     PgBackendStatus* beentry = &local_beentry->backendStatus;
@@ -232,19 +234,19 @@ static PgBackendStatus* GetBackendStatus(void) {
       return beentry;
     }
   }
-  return nullptr;
+  return NULL;
 #endif
 }
 
 static int GetApplicationName(char* buf, int buf_size) {
   // Try application_name GUC first (always up-to-date)
-  if (application_name != nullptr && application_name[0] != '\0') {
-    return static_cast<int>(CopyTrimmed(buf, buf_size, application_name));
+  if (application_name != NULL && application_name[0] != '\0') {
+    return (int)CopyTrimmed(buf, buf_size, application_name);
   }
 
   PgBackendStatus* beentry = GetBackendStatus();
-  if (beentry != nullptr && beentry->st_appname != nullptr) {
-    return static_cast<int>(CopyTrimmed(buf, buf_size, beentry->st_appname));
+  if (beentry != NULL && beentry->st_appname != NULL) {
+    return (int)CopyTrimmed(buf, buf_size, beentry->st_appname);
   }
 
   buf[0] = '\0';
@@ -252,31 +254,35 @@ static int GetApplicationName(char* buf, int buf_size) {
 }
 
 static int GetClientAddress(char* buf, int buf_size) {
+  char remote_host[NI_MAXHOST];
+  int ret;
+
   buf[0] = '\0';
 
   PgBackendStatus* beentry = GetBackendStatus();
-  if (beentry == nullptr) {
+  if (beentry == NULL) {
     return 0;
   }
 
-  std::array<char, NI_MAXHOST> remote_host{};
-
-  int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
-                               remote_host.data(), remote_host.size(), nullptr, 0,
-                               NI_NUMERICHOST | NI_NUMERICSERV);
+  remote_host[0] = '\0';
+  ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
+                           remote_host, NI_MAXHOST, NULL, 0,
+                           NI_NUMERICHOST | NI_NUMERICSERV);
 
   if (ret != 0 || remote_host[0] == '\0') {
     return 0;
   }
 
   // Handle local connections
-  if (strcmp(remote_host.data(), "[local]") == 0) {
+  if (strcmp(remote_host, "[local]") == 0) {
     size_t src_len = strlcpy(buf, "127.0.0.1", buf_size);
-    return static_cast<int>(Min(src_len, static_cast<size_t>(buf_size - 1)));
+    return (int)Min(src_len, (size_t)(buf_size - 1));
   }
 
-  size_t src_len = strlcpy(buf, remote_host.data(), buf_size);
-  return static_cast<int>(Min(src_len, static_cast<size_t>(buf_size - 1)));
+  {
+    size_t src_len = strlcpy(buf, remote_host, buf_size);
+    return (int)Min(src_len, (size_t)(buf_size - 1));
+  }
 }
 
 static void CopyBufferUsage(PschEvent* event, const BufferUsage* buf) {
@@ -329,7 +335,7 @@ static void InitEventPartial(PschEvent* event) {
   // Zero mid section: application_name through query_len (~114 bytes)
   const size_t mid_offset = offsetof(PschEvent, application_name);
   const size_t mid_size = offsetof(PschEvent, query) - mid_offset;
-  memset(reinterpret_cast<char*>(event) + mid_offset, 0, mid_size);
+  memset((char*)event + mid_offset, 0, mid_size);
   event->query[0] = '\0';
 }
 
@@ -346,7 +352,7 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, uint64 parent_
 }
 
 static void CopyClientContext(PschEvent* event) {
-  event->application_name_len = static_cast<uint8>(
+  event->application_name_len = (uint8)(
       GetApplicationName(event->application_name, sizeof(event->application_name)));
 
   EnsureBackendCache();
@@ -355,7 +361,7 @@ static void CopyClientContext(PschEvent* event) {
     event->client_addr_len = backend_state.client_addr_len;
   } else {
     event->client_addr_len =
-        static_cast<uint8>(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+        (uint8)(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
   }
 }
 
@@ -365,19 +371,21 @@ static void CopyClientContext(PschEvent* event) {
 // stmt_len. CleanQuerytext trims that down to just the current statement, but
 // it does not parameterize literals. This helper is the raw-text fallback when
 // we have no normalized entry for the statement.
-static void CopyRawStatementText(PschEvent* event, const PschStatementKey& statement_key) {
-  if (statement_key.source_text == nullptr) {
+static void CopyRawStatementText(PschEvent* event, PschStatementKey statement_key) {
+  const char* query_text;
+
+  if (statement_key.source_text == NULL) {
     return;
   }
 
-  const char* query_text = statement_key.source_text;
+  query_text = statement_key.source_text;
   if (statement_key.stmt_location >= 0) {
     int query_loc = statement_key.stmt_location;
     int query_len = statement_key.stmt_len;
     query_text = CleanQuerytext(query_text, &query_loc, &query_len);
   }
 
-  event->query_len = static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
+  event->query_len = (uint16)CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text);
 }
 
 // Copy query text into the event buffer, preferring a previously normalized
@@ -388,7 +396,7 @@ static void CopyRawStatementText(PschEvent* event, const PschStatementKey& state
 // normalized entry stashed at parse time. If no match exists, it falls back to
 // CopyRawStatementText, which preserves the literal SQL text for the current
 // statement only.
-static void CopyQueryText(PschEvent* event, const PschStatementKey& statement_key) {
+static void CopyQueryText(PschEvent* event, PschStatementKey statement_key) {
   if (PschCopyNormalizedQueryForStatement(&backend_state.normalized_queries, event->query,
                                           sizeof(event->query), &event->query_len, statement_key,
                                           false)) {
@@ -413,57 +421,63 @@ static void ResolveNames(PschEvent* event) {
   }
 
   // Fallback: resolve fresh (cache not yet initialized, e.g. emit_log_hook early)
-  const char* datname = nullptr;
-  const char* username = nullptr;
+  const char* datname = NULL;
+  const char* username = NULL;
   if (IsTransactionState()) {
     datname = get_database_name(event->dbid);
     username = GetUserNameFromId(event->userid, true);
   }
 
   event->datname_len =
-      CopyName(event->datname, sizeof(event->datname), datname != nullptr ? datname : "<unknown>");
+      CopyName(event->datname, sizeof(event->datname), datname != NULL ? datname : "<unknown>");
   event->username_len = CopyName(event->username, sizeof(event->username),
-                                 username != nullptr ? username : "<unknown>");
+                                 username != NULL ? username : "<unknown>");
 }
 
 // Copy JIT instrumentation to event (PG15+)
-static void CopyJitInstrumentation([[maybe_unused]] PschEvent* event,
-                                   [[maybe_unused]] QueryDesc* query_desc) {
+static void CopyJitInstrumentation(PschEvent* event, QueryDesc* query_desc) {
 #if PG_VERSION_NUM >= 150000
-  if (query_desc->estate->es_jit != nullptr) {
+  if (query_desc->estate->es_jit != NULL) {
     JitInstrumentation* jit = &query_desc->estate->es_jit->instr;
-    event->jit_functions = static_cast<int32>(jit->created_functions);
+    event->jit_functions = (int32)jit->created_functions;
     event->jit_generation_time_us =
-        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->generation_counter));
+        (int32)INSTR_TIME_GET_MICROSEC(jit->generation_counter);
     event->jit_inlining_time_us =
-        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->inlining_counter));
+        (int32)INSTR_TIME_GET_MICROSEC(jit->inlining_counter);
     event->jit_optimization_time_us =
-        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->optimization_counter));
+        (int32)INSTR_TIME_GET_MICROSEC(jit->optimization_counter);
     event->jit_emission_time_us =
-        static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->emission_counter));
+        (int32)INSTR_TIME_GET_MICROSEC(jit->emission_counter);
 #if PG_VERSION_NUM >= 170000
-    event->jit_deform_time_us = static_cast<int32>(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
+    event->jit_deform_time_us = (int32)INSTR_TIME_GET_MICROSEC(jit->deform_counter);
 #endif
   }
+#else
+  (void)event;
+  (void)query_desc;
 #endif
 }
 
 // Copy parallel worker info to event (PG18+)
-static void CopyParallelWorkerInfo([[maybe_unused]] PschEvent* event,
-                                   [[maybe_unused]] QueryDesc* query_desc) {
+static void CopyParallelWorkerInfo(PschEvent* event, QueryDesc* query_desc) {
 #if PG_VERSION_NUM >= 180000
-  if (query_desc->estate != nullptr) {
+  if (query_desc->estate != NULL) {
     event->parallel_workers_planned =
-        static_cast<int16>(query_desc->estate->es_parallel_workers_to_launch);
+        (int16)query_desc->estate->es_parallel_workers_to_launch;
     event->parallel_workers_launched =
-        static_cast<int16>(query_desc->estate->es_parallel_workers_launched);
+        (int16)query_desc->estate->es_parallel_workers_launched;
   }
+#else
+  (void)event;
+  (void)query_desc;
 #endif
 }
 
 static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
                                     TimestampTz query_start_ts, int64 cpu_user_us,
                                     int64 cpu_sys_us, uint64 parent_query_id) {
+  PschStatementKey statement_key;
+
   InitBaseEvent(event, query_start_ts, parent_query_id, ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
   event->rows = query_desc->estate->es_processed;
@@ -471,34 +485,32 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
   event->cpu_sys_time_us = cpu_sys_us;
 
   // Instrumentation data (duration, buffer, WAL)
-  if (query_desc->totaltime != nullptr) {
+  if (query_desc->totaltime != NULL) {
 #if PG_VERSION_NUM >= 190000
-    event->duration_us = static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
+    event->duration_us = (uint64)INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total);
 #else
-    event->duration_us = static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
+    event->duration_us = (uint64)(query_desc->totaltime->total * 1000000.0);
 #endif
     CopyBufferUsage(event, &query_desc->totaltime->bufusage);
     CopyIoTiming(event, &query_desc->totaltime->bufusage);
     CopyWalUsage(event, &query_desc->totaltime->walusage);
   } else {
-    event->duration_us = static_cast<uint64>(GetCurrentTimestamp() - query_start_ts);
+    event->duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
   }
 
   CopyJitInstrumentation(event, query_desc);
   CopyParallelWorkerInfo(event, query_desc);
   CopyClientContext(event);
-  const PschStatementKey statement_key =
+  statement_key =
       PschMakeStatementKey(query_desc->sourceText, query_desc->plannedstmt->stmt_location,
                            query_desc->plannedstmt->stmt_len);
   CopyQueryText(event, statement_key);
 }
 
-extern "C" {
-
 // Remove a pending normalized entry for one statement when execution exits
 // without building a normal executor/utility event from it.
 static void ForgetNormalizedStatement(const char* source_text, int stmt_location, int stmt_len) {
-  const PschStatementKey statement_key = PschMakeStatementKey(source_text, stmt_location, stmt_len);
+  PschStatementKey statement_key = PschMakeStatementKey(source_text, stmt_location, stmt_len);
   PschForgetNormalizedQueryForStatement(&backend_state.normalized_queries, statement_key);
 }
 
@@ -506,12 +518,12 @@ static void ForgetNormalizedStatement(const char* source_text, int stmt_location
 // The JumbleState (with constant locations) is only available here, so we
 // must generate the normalized text now and stash it for ExecutorEnd.
 static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* jstate) {
-  if (prev_post_parse_analyze != nullptr) {
+  if (prev_post_parse_analyze != NULL) {
     prev_post_parse_analyze(pstate, query, jstate);
   }
 
   // Only normalize if enabled and the query has constants to replace.
-  if (!psch_enabled || IsParallelWorker() || jstate == nullptr || jstate->clocations_count <= 0) {
+  if (!psch_enabled || IsParallelWorker() || jstate == NULL || jstate->clocations_count <= 0) {
     return;
   }
 
@@ -530,8 +542,8 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* 
   // ExecutorEnd or ProcessUtility copies it into the exported event.
   MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
   char* normalized_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
-  if (normalized_query != nullptr) {
-    const PschStatementKey statement_key =
+  if (normalized_query != NULL) {
+    PschStatementKey statement_key =
         PschMakeStatementKey(source_text, stmt_location, stmt_len);
     PschRememberNormalizedQuery(&backend_state.normalized_queries, statement_key, normalized_query,
                                 query_len);
@@ -540,8 +552,10 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* 
 }
 
 static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
+  PschQueryFrame frame;
+
   if (IsParallelWorker()) {
-    if (prev_executor_start != nullptr) {
+    if (prev_executor_start != NULL) {
       prev_executor_start(query_desc, eflags);
     } else {
       standard_ExecutorStart(query_desc, eflags);
@@ -553,23 +567,22 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   // that nested SPI calls each get an accurate, non-overlapping CPU delta.
   // The stack depth implicitly tracks nesting; the frame below us on the stack
   // supplies the parent_query_id for this query's event.
-  PschQueryFrame frame;
   frame.queryid = query_desc->plannedstmt->queryId;
   frame.query_start_ts = GetCurrentTimestamp();
   getrusage(RUSAGE_SELF, &frame.rusage_start);
-  if (query_stack_depth < kMaxQueryNestingDepth) {
+  if (query_stack_depth < PSCH_MAX_QUERY_NESTING_DEPTH) {
     query_stack[query_stack_depth] = frame;
   }
   query_stack_depth++;
 
-  if (prev_executor_start != nullptr) {
+  if (prev_executor_start != NULL) {
     prev_executor_start(query_desc, eflags);
   } else {
     standard_ExecutorStart(query_desc, eflags);
   }
 
   if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
-    if (query_desc->totaltime == nullptr) {
+    if (query_desc->totaltime == NULL) {
       MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
 #if PG_VERSION_NUM < 140000
       query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
@@ -583,7 +596,7 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
 
 #if PG_VERSION_NUM >= 180000
 static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint64 count) {
-  if (prev_executor_run != nullptr) {
+  if (prev_executor_run != NULL) {
     prev_executor_run(query_desc, direction, count);
   } else {
     standard_ExecutorRun(query_desc, direction, count);
@@ -592,7 +605,7 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
 #else
 static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint64 count,
                             bool execute_once) {
-  if (prev_executor_run != nullptr) {
+  if (prev_executor_run != NULL) {
     prev_executor_run(query_desc, direction, count, execute_once);
   } else {
     standard_ExecutorRun(query_desc, direction, count, execute_once);
@@ -601,7 +614,7 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
 #endif
 
 static void PschExecutorFinish(QueryDesc* query_desc) {
-  if (prev_executor_finish != nullptr) {
+  if (prev_executor_finish != NULL) {
     prev_executor_finish(query_desc);
   } else {
     standard_ExecutorFinish(query_desc);
@@ -613,7 +626,7 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   if (IsParallelWorker()) {
     ForgetNormalizedStatement(query_desc->sourceText, query_desc->plannedstmt->stmt_location,
                               query_desc->plannedstmt->stmt_len);
-    if (prev_executor_end != nullptr) {
+    if (prev_executor_end != NULL) {
       prev_executor_end(query_desc);
     } else {
       standard_ExecutorEnd(query_desc);
@@ -623,10 +636,11 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
 
   // Pop the frame pushed in ExecutorStart. If depth exceeded the array cap,
   // the frame is zeroed — the event is still emitted but with zero CPU.
-  PschQueryFrame frame = {};
+  PschQueryFrame frame;
+  memset(&frame, 0, sizeof(frame));
   if (query_stack_depth > 0) {
     query_stack_depth--;
-    if (query_stack_depth < kMaxQueryNestingDepth) {
+    if (query_stack_depth < PSCH_MAX_QUERY_NESTING_DEPTH) {
       frame = query_stack[query_stack_depth];
     }
   }
@@ -634,7 +648,7 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   if (!psch_enabled || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
     ForgetNormalizedStatement(query_desc->sourceText, query_desc->plannedstmt->stmt_location,
                               query_desc->plannedstmt->stmt_len);
-    if (prev_executor_end != nullptr) {
+    if (prev_executor_end != NULL) {
       prev_executor_end(query_desc);
     } else {
       standard_ExecutorEnd(query_desc);
@@ -642,7 +656,7 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     return;
   }
 
-  if (query_desc->totaltime != nullptr) {
+  if (query_desc->totaltime != NULL) {
     InstrEndLoop(query_desc->totaltime);
   }
 
@@ -657,14 +671,16 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   // The frame below us on the stack is our caller; its queryid is our parent.
   int parent_idx = query_stack_depth - 1;
   uint64 parent_query_id =
-      (parent_idx >= 0 && parent_idx < kMaxQueryNestingDepth) ? query_stack[parent_idx].queryid : 0;
+      (parent_idx >= 0 && parent_idx < PSCH_MAX_QUERY_NESTING_DEPTH)
+          ? query_stack[parent_idx].queryid
+          : 0;
 
   PschEvent event;
   BuildEventFromQueryDesc(query_desc, &event, frame.query_start_ts, cpu_user_us, cpu_sys_us,
                           parent_query_id);
   PschEnqueueEvent(&event);
 
-  if (prev_executor_end != nullptr) {
+  if (prev_executor_end != NULL) {
     prev_executor_end(query_desc);
   } else {
     standard_ExecutorEnd(query_desc);
@@ -676,6 +692,8 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
                                  int stmt_location, int stmt_len, uint64 duration_us,
                                  uint64 parent_query_id, uint64 rows, BufferUsage* bufusage,
                                  WalUsage* walusage, int64 cpu_user_us, int64 cpu_sys_us) {
+  PschStatementKey statement_key;
+
   InitBaseEvent(event, start_ts, parent_query_id, PSCH_CMD_UTILITY);
   event->duration_us = duration_us;
   event->rows = rows;
@@ -686,7 +704,7 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
   CopyIoTiming(event, bufusage);
   CopyWalUsage(event, walusage);
   CopyClientContext(event);
-  const PschStatementKey statement_key = PschMakeStatementKey(queryString, stmt_location, stmt_len);
+  statement_key = PschMakeStatementKey(queryString, stmt_location, stmt_len);
   CopyQueryText(event, statement_key);
 }
 
@@ -725,7 +743,7 @@ static bool ShouldTrackUtility(Node* parsetree) {
 }
 
 static uint64 GetUtilityRowCount(QueryCompletion* qc) {
-  if (qc == nullptr) {
+  if (qc == NULL) {
     return 0;
   }
   switch (qc->commandTag) {
@@ -764,13 +782,15 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   // see us on the stack and correctly link themselves as our children.
   int parent_idx = query_stack_depth - 1;
   uint64 parent_query_id =
-      (parent_idx >= 0 && parent_idx < kMaxQueryNestingDepth) ? query_stack[parent_idx].queryid : 0;
+      (parent_idx >= 0 && parent_idx < PSCH_MAX_QUERY_NESTING_DEPTH)
+          ? query_stack[parent_idx].queryid
+          : 0;
 
   PschQueryFrame frame;
   frame.queryid = 0;  // utility statements have no queryId
   frame.query_start_ts = GetCurrentTimestamp();
   getrusage(RUSAGE_SELF, &frame.rusage_start);
-  if (query_stack_depth < kMaxQueryNestingDepth) {
+  if (query_stack_depth < PSCH_MAX_QUERY_NESTING_DEPTH) {
     query_stack[query_stack_depth] = frame;
   }
   query_stack_depth++;
@@ -789,14 +809,14 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   INSTR_TIME_SUBTRACT(duration, start_time);
 
   // Pop our frame and compute CPU delta. Zeroed if depth exceeded the cap.
-  PschQueryFrame popped = {};
+  PschQueryFrame popped;
+  memset(&popped, 0, sizeof(popped));
   if (query_stack_depth > 0) {
     query_stack_depth--;
-    if (query_stack_depth < kMaxQueryNestingDepth) {
+    if (query_stack_depth < PSCH_MAX_QUERY_NESTING_DEPTH) {
       popped = query_stack[query_stack_depth];
     }
   }
-
 
   BufferUsage bufusage_delta;
   WalUsage walusage_delta;
@@ -826,7 +846,7 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
 // Returns false during early initialization, in background workers, or when disabled.
 static bool ShouldCaptureLog(ErrorData* edata) {
   // Basic preconditions
-  if (edata == nullptr || !system_init || !psch_enabled || disable_error_capture) {
+  if (edata == NULL || !system_init || !psch_enabled || disable_error_capture) {
     return false;
   }
 
@@ -836,7 +856,7 @@ static bool ShouldCaptureLog(ErrorData* edata) {
   }
 
   // PostgreSQL bootstrapping checks - MyProc indicates PGPROC allocation complete
-  if (MyProc == nullptr || IsParallelWorker()) {
+  if (MyProc == NULL || IsParallelWorker()) {
     return false;
   }
 
@@ -845,8 +865,8 @@ static bool ShouldCaptureLog(ErrorData* edata) {
   // - IsUnderPostmaster: not single-user mode or bootstrap
   // - psch_shared_state: shared memory must be ready
   // - MyBgworkerEntry: skip background workers (not user queries)
-  if (MyDatabaseId == InvalidOid || !IsUnderPostmaster || psch_shared_state == nullptr ||
-      MyBgworkerEntry != nullptr) {
+  if (MyDatabaseId == InvalidOid || !IsUnderPostmaster || psch_shared_state == NULL ||
+      MyBgworkerEntry != NULL) {
     return false;
   }
 
@@ -862,15 +882,16 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // message, SQLSTATE, and client/session metadata.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
-  uint64 parent_query_id = query_stack_depth > 0 ? query_stack[query_stack_depth - 1].queryid : 0;
+  uint64 parent_query_id =
+      query_stack_depth > 0 ? query_stack[query_stack_depth - 1].queryid : 0;
   InitBaseEvent(&event, GetCurrentTimestamp(), parent_query_id, PSCH_CMD_UNKNOWN);
 
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
-  event.err_elevel = static_cast<uint8>(edata->elevel);
+  event.err_elevel = (uint8)edata->elevel;
 
-  if (edata->message != nullptr) {
+  if (edata->message != NULL) {
     event.err_message_len =
-        static_cast<uint16>(CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
+        (uint16)CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message);
   }
 
   CopyClientContext(&event);
@@ -888,7 +909,7 @@ static void CaptureLogEvent(ErrorData* edata) {
 // This ensures we capture the final, potentially modified log message.
 static void PschEmitLogHook(ErrorData* edata) {
   // Chain to previous hook first (allows log transformation by other extensions)
-  if (prev_emit_log_hook != nullptr) {
+  if (prev_emit_log_hook != NULL) {
     prev_emit_log_hook(edata);
   }
 
@@ -898,7 +919,7 @@ static void PschEmitLogHook(ErrorData* edata) {
   }
 
   // Reset recursion guard on ERROR+ (transaction will abort)
-  if (edata != nullptr && edata->elevel >= ERROR) {
+  if (edata != NULL && edata->elevel >= ERROR) {
     disable_error_capture = false;
   }
 }
@@ -936,5 +957,3 @@ void PschInstallHooks(void) {
   // Mark system as initialized - emit_log_hook will now capture messages
   system_init = true;
 }
-
-}  // extern "C"

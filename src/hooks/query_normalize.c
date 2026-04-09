@@ -4,20 +4,18 @@
 // are static in contrib/pg_stat_statements/pg_stat_statements.c. We reproduce
 // them here so pg_stat_ch can normalize independently of pg_stat_statements.
 
-extern "C" {
 #include "postgres.h"
 
 #include "lib/stringinfo.h"
 #include "nodes/queryjumble.h"
 #include "parser/scanner.h"
-}
 
 #include "hooks/query_normalize.h"
 
 // Comparator for qsorting LocationLen structs by location.
 static int CompLocation(const void* a, const void* b) {
-  int l = (static_cast<const LocationLen*>(a))->location;
-  int r = (static_cast<const LocationLen*>(b))->location;
+  int l = ((const LocationLen*)a)->location;
+  int r = ((const LocationLen*)b)->location;
   if (l < r) {
     return -1;
   }
@@ -33,11 +31,14 @@ static bool ShouldPreserveExternalParam(const JumbleState* jstate, int index) {
   return jstate->clocations[index].extern_param && !jstate->has_squashed_lists;
 }
 #else
-static bool IsSquashedConstant(const LocationLen* /* loc */) {
+static bool IsSquashedConstant(const LocationLen* loc) {
+  (void)loc;
   return false;
 }
 
-static bool ShouldPreserveExternalParam(const JumbleState* /* jstate */, int /* index */) {
+static bool ShouldPreserveExternalParam(const JumbleState* jstate, int index) {
+  (void)jstate;
+  (void)index;
   return false;
 }
 #endif
@@ -95,7 +96,7 @@ static void FillInConstantLengths(JumbleState* jstate, const char* query, int qu
             break;
           }
         }
-        locs[i].length = static_cast<int>(strlen(yyextra.scanbuf + loc));
+        locs[i].length = (int)strlen(yyextra.scanbuf + loc);
         break;
       }
     }
@@ -109,8 +110,8 @@ static void FillInConstantLengths(JumbleState* jstate, const char* query, int qu
 }
 
 char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, JumbleState* jstate) {
-  if (jstate == nullptr || jstate->clocations_count <= 0) {
-    return nullptr;
+  if (jstate == NULL || jstate->clocations_count <= 0) {
+    return NULL;
   }
 
   int query_len = *query_len_p;

@@ -52,7 +52,7 @@ extern "C" {
 #define PSCH_MAX_CLIENT_ADDR_LEN (INET6_ADDRSTRLEN - 1)
 
 // Command type values (matching PostgreSQL's CmdType enum)
-enum PschCmdType {
+typedef enum PschCmdType {
   PSCH_CMD_UNKNOWN = 0,
   PSCH_CMD_SELECT = 1,
   PSCH_CMD_UPDATE = 2,
@@ -61,9 +61,11 @@ enum PschCmdType {
   PSCH_CMD_MERGE = 5,
   PSCH_CMD_UTILITY = 6,
   PSCH_CMD_NOTHING = 7
-};
+} PschCmdType;
 
 // Event structure stored in shared memory queue (~2KB fixed size)
+// Forward-declare typedef so C code can use PschEvent without the struct tag
+typedef struct PschEvent PschEvent;
 //
 // VERSION-SPECIFIC FIELDS: All fields are unconditionally present regardless of
 // PostgreSQL version. This keeps the struct size fixed for ring buffer simplicity.

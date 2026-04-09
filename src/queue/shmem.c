@@ -29,7 +29,6 @@
 //    When queue is full, we log a warning once (overflow_logged flag) and drop
 //    events. This prevents log spam while alerting operators to capacity issues.
 
-extern "C" {
 #include "postgres.h"
 
 #include "miscadmin.h"
@@ -38,24 +37,22 @@ extern "C" {
 #include "storage/shmem.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
-}
 
 #include "config/guc.h"
 #include "hooks/hooks.h"
 #include "queue/local_batch.h"
 #include "queue/shmem.h"
 
-PschSharedState* psch_shared_state = nullptr;
+PschSharedState* psch_shared_state = NULL;
 
 // Previous hook values for chaining
-static shmem_startup_hook_type prev_shmem_startup_hook = nullptr;
+static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 #if PG_VERSION_NUM >= 150000
-static shmem_request_hook_type prev_shmem_request_hook = nullptr;
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 
 static inline PschEvent* GetRingBuffer(void) {
-  return reinterpret_cast<PschEvent*>(reinterpret_cast<char*>(psch_shared_state) +
-                                      sizeof(PschSharedState));
+  return (PschEvent*)((char*)psch_shared_state + sizeof(PschSharedState));
 }
 
 // Handle queue overflow: increment dropped counter and log warning once
@@ -73,7 +70,7 @@ static inline PschEvent* GetRingBuffer(void) {
 // DETECTING OVERFLOW: Check pg_stat_ch_stats().dropped > 0 or look for the WARNING
 // in PostgreSQL logs. The overflow_logged flag prevents log spam by warning only once
 // until stats are reset.
-static void HandleOverflow() {
+static void HandleOverflow(void) {
   pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
 
   // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
@@ -121,8 +118,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   // 3. Copy mid section: application_name, client_addr, query_len
   const size_t mid_offset = offsetof(PschEvent, application_name);
   const size_t mid_size = offsetof(PschEvent, query) - mid_offset;
-  memcpy(reinterpret_cast<char*>(slot) + mid_offset,
-         reinterpret_cast<const char*>(event) + mid_offset, mid_size);
+  memcpy((char*)slot + mid_offset, (const char*)event + mid_offset, mid_size);
 
   // 4. Copy actual query content (typically 20-200 bytes vs 2KB buffer)
   if (event->query_len > 0) {
@@ -143,16 +139,16 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   return true;
 }
 
-static void PschShmemShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
-  if (psch_shared_state != nullptr) {
+static void PschShmemShutdown(int code, Datum arg) {
+  (void)code;
+  (void)arg;
+  if (psch_shared_state != NULL) {
     elog(LOG, "pg_stat_ch: shutdown (enqueued=%lu, dropped=%lu, exported=%lu)",
          pg_atomic_read_u64(&psch_shared_state->enqueued),
          pg_atomic_read_u64(&psch_shared_state->dropped),
          pg_atomic_read_u64(&psch_shared_state->exported));
   }
 }
-
-extern "C" {
 
 Size PschShmemSize(void) {
   Size size = sizeof(PschSharedState);
@@ -167,7 +163,7 @@ static void RequestSharedResources(void) {
 
 #if PG_VERSION_NUM >= 150000
 static void PschShmemRequestHook(void) {
-  if (prev_shmem_request_hook != nullptr) {
+  if (prev_shmem_request_hook != NULL) {
     prev_shmem_request_hook();
   }
   RequestSharedResources();
@@ -201,16 +197,15 @@ static void InitializeSharedState(void) {
 static void PschShmemStartupHook(void) {
   bool found;
 
-  if (prev_shmem_startup_hook != nullptr) {
+  if (prev_shmem_startup_hook != NULL) {
     prev_shmem_startup_hook();
   }
 
   LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
-  psch_shared_state =
-      static_cast<PschSharedState*>(ShmemInitStruct("pg_stat_ch", PschShmemSize(), &found));
+  psch_shared_state = (PschSharedState*)ShmemInitStruct("pg_stat_ch", PschShmemSize(), &found);
 
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     LWLockRelease(AddinShmemInitLock);
     ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY),
                     errmsg("pg_stat_ch: could not create shared memory segment")));
@@ -268,7 +263,7 @@ void PschInstallShmemHooks(void) {
 // drop until stats are reset. This is better than blocking producers or growing
 // the queue unboundedly.
 bool PschEnqueueEvent(const PschEvent* event) {
-  if (psch_shared_state == nullptr || !psch_enabled) {
+  if (psch_shared_state == NULL || !psch_enabled) {
     return false;
   }
 
@@ -312,7 +307,7 @@ bool PschEnqueueEvent(const PschEvent* event) {
 // Enqueue a batch of events under a single lock acquisition.
 // Called by PschLocalBatchFlush to amortize lock overhead across multiple events.
 int PschEnqueueBatch(const PschEvent* events, int count) {
-  if (psch_shared_state == nullptr || !psch_enabled || count == 0)
+  if (psch_shared_state == NULL || !psch_enabled || count == 0)
     return 0;
 
   PschSuppressErrorCapture(true);
@@ -361,7 +356,7 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
 // at 1M events/sec. Even after wraparound, (head - tail) arithmetic works correctly
 // because both wrap at the same point (2^64).
 bool PschDequeueEvent(PschEvent* event) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     return false;
   }
 
@@ -403,7 +398,7 @@ bool PschDequeueEvent(PschEvent* event) {
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
                   uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
                   char* last_error_buf, size_t last_error_buf_size, TimestampTz* last_error_ts) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     *enqueued = 0;
     *dropped = 0;
     *exported = 0;
@@ -427,7 +422,7 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
 
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-  *queue_size = static_cast<uint32>(head - tail);
+  *queue_size = (uint32)(head - tail);
   *queue_capacity = psch_shared_state->capacity;
 
   // Copy exporter timestamps and error text under lock to prevent torn reads.
@@ -449,7 +444,7 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
 // OVERFLOW FLAG RESET: Clearing overflow_logged allows the warning to be logged
 // again on the next overflow, which is useful after capacity has been increased.
 void PschResetStats(void) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     return;
   }
 
@@ -468,7 +463,7 @@ void PschResetStats(void) {
 // Record a successful export (updates timestamp)
 // Lock protects last_success_ts from torn reads by PschGetStats/PschResetStats.
 void PschRecordExportSuccess(void) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     return;
   }
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
@@ -480,14 +475,14 @@ void PschRecordExportSuccess(void) {
 // Lock protects last_error_ts and last_error_text from torn reads by
 // PschGetStats/PschResetStats. send_failures is atomic so it's safe outside the lock.
 void PschRecordExportFailure(const char* error_msg) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     return;
   }
   pg_atomic_fetch_add_u64(&psch_shared_state->send_failures, 1);
 
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   psch_shared_state->last_error_ts = GetCurrentTimestamp();
-  if (error_msg != nullptr) {
+  if (error_msg != NULL) {
     strlcpy(psch_shared_state->last_error_text, error_msg,
             sizeof(psch_shared_state->last_error_text));
   }
@@ -495,17 +490,15 @@ void PschRecordExportFailure(const char* error_msg) {
 }
 
 int PschGetBgworkerPid(void) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     return 0;
   }
-  return static_cast<int>(pg_atomic_read_u32(&psch_shared_state->bgworker_pid));
+  return (int)pg_atomic_read_u32(&psch_shared_state->bgworker_pid);
 }
 
 void PschSetBgworkerPid(int pid) {
-  if (psch_shared_state == nullptr) {
+  if (psch_shared_state == NULL) {
     return;
   }
-  pg_atomic_write_u32(&psch_shared_state->bgworker_pid, static_cast<uint32>(pid));
+  pg_atomic_write_u32(&psch_shared_state->bgworker_pid, (uint32)pid);
 }
-
-}  // extern "C"
