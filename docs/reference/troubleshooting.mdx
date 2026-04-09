@@ -1,0 +1,70 @@
+---
+title: Troubleshooting
+description: SQL API reference, common issues, and diagnostic steps
+---
+
+## SQL API Reference
+
+### `pg_stat_ch_stats()`
+
+Returns queue and exporter statistics:
+
+```sql
+SELECT * FROM pg_stat_ch_stats();
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `enqueued_events` | bigint | Total events added to queue |
+| `dropped_events` | bigint | Events dropped due to full queue |
+| `exported_events` | bigint | Events successfully sent to ClickHouse |
+| `send_failures` | bigint | Failed export attempts |
+| `last_success_ts` | timestamptz | Last successful export timestamp |
+| `last_error_text` | text | Most recent error message |
+| `last_error_ts` | timestamptz | Most recent error timestamp |
+| `queue_size` | int | Current events in queue |
+| `queue_capacity` | int | Maximum queue capacity |
+| `queue_usage_pct` | float | Queue utilization percentage |
+
+## Extension Won't Load
+
+```
+WARNING:  pg_stat_ch must be loaded via shared_preload_libraries
+```
+
+Add `shared_preload_libraries = 'pg_stat_ch'` to `postgresql.conf` and restart PostgreSQL.
+
+## Events Not Appearing in ClickHouse
+
+<Steps>
+  <Step title="Check connection settings">
+    ```sql
+    SHOW pg_stat_ch.clickhouse_host;
+    SHOW pg_stat_ch.clickhouse_port;
+    ```
+  </Step>
+  <Step title="Check stats for errors">
+    ```sql
+    SELECT * FROM pg_stat_ch_stats();
+    ```
+  </Step>
+  <Step title="Check PostgreSQL logs for connection errors" />
+</Steps>
+
+## High Queue Usage
+
+If `queue_usage_pct` is consistently high:
+- Increase `pg_stat_ch.queue_capacity` (restart required)
+- Decrease `pg_stat_ch.flush_interval_ms`
+- Increase `pg_stat_ch.batch_max`
+- Ensure ClickHouse is healthy and reachable
+
+## Dropped Events
+
+Check the `dropped_events` counter:
+
+```sql
+SELECT dropped_events FROM pg_stat_ch_stats();
+```
+
+Dropped events indicate the queue filled faster than the background worker could export. This is safe (queries continue unaffected) but means some telemetry is lost.
