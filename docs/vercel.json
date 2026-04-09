@@ -1,0 +1,44 @@
+{
+  "rewrites": [
+    {
+      "source": "/_mintlify/:path*",
+      "destination": "https://pg_stat_ch.mintlify.app/_mintlify/:path*"
+    },
+    {
+      "source": "/api/request",
+      "destination": "https://pg_stat_ch.mintlify.app/_mintlify/api/request"
+    },
+    {
+      "source": "/pg-stat-ch",
+      "destination": "https://pg_stat_ch.mintlify.app/pg-stat-ch"
+    },
+    {
+      "source": "/pg-stat-ch/llms.txt",
+      "destination": "https://pg_stat_ch.mintlify.app/llms.txt"
+    },
+    {
+      "source": "/pg-stat-ch/llms-full.txt",
+      "destination": "https://pg_stat_ch.mintlify.app/llms-full.txt"
+    },
+    {
+      "source": "/pg-stat-ch/sitemap.xml",
+      "destination": "https://pg_stat_ch.mintlify.app/sitemap.xml"
+    },
+    {
+      "source": "/pg-stat-ch/robots.txt",
+      "destination": "https://pg_stat_ch.mintlify.app/robots.txt"
+    },
+    {
+      "source": "/pg-stat-ch/mcp",
+      "destination": "https://pg_stat_ch.mintlify.app/mcp"
+    },
+    {
+      "source": "/pg-stat-ch/:path*",
+      "destination": "https://pg_stat_ch.mintlify.app/pg-stat-ch/:path*"
+    },
+    {
+      "source": "/mintlify-assets/:path+",
+      "destination": "https://pg_stat_ch.mintlify.app/mintlify-assets/:path+"
+    }
+  ]
+}
