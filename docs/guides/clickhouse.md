@@ -11,7 +11,7 @@ From the repo root:
 ./scripts/quickstart.sh up
 ```
 
-This brings up local PostgreSQL + ClickHouse with the `pg_stat_ch` schema preloaded. For endpoints and stack details, see [docker/quickstart/README.md](../docker/quickstart/README.md).
+This brings up local PostgreSQL + ClickHouse with the `pg_stat_ch` schema preloaded. For endpoints and stack details, see [docker/quickstart/README.md](https://github.com/ClickHouse/pg_stat_ch/blob/main/docker/quickstart/README.md).
 
 ## Manual Setup
 
@@ -21,7 +21,7 @@ For production deployments, apply the canonical schema directly (from the repo r
 clickhouse-client < docker/init/00-schema.sql
 ```
 
-The schema file ([`docker/init/00-schema.sql`](https://raw.githubusercontent.com/ClickHouse/pg_stat_ch/4b9a43fc9f21611d1365981f702bb027e7aac97f/docker/init/00-schema.sql)) is the single source of truth and includes:
+The schema file ([`docker/init/00-schema.sql`](https://github.com/ClickHouse/pg_stat_ch/blob/main/docker/init/00-schema.sql)) is the single source of truth and includes:
 - Full `events_raw` table with all columns documented (what metrics mean, when values are HIGH/LOW)
 - 4 materialized views for common analytics patterns
 - Column comments explaining how to interpret each metric
