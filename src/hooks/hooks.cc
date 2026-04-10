@@ -553,12 +553,10 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   // that nested SPI calls each get an accurate, non-overlapping CPU delta.
   // The stack depth implicitly tracks nesting; the frame below us on the stack
   // supplies the parent_query_id for this query's event.
-  PschQueryFrame frame;
-  frame.queryid = query_desc->plannedstmt->queryId;
-  frame.query_start_ts = GetCurrentTimestamp();
-  getrusage(RUSAGE_SELF, &frame.rusage_start);
   if (query_stack_depth < kMaxQueryNestingDepth) {
-    query_stack[query_stack_depth] = frame;
+    query_stack[query_stack_depth].queryid = query_desc->plannedstmt->queryId;
+    query_stack[query_stack_depth].query_start_ts = GetCurrentTimestamp();
+    getrusage(RUSAGE_SELF, &query_stack[query_stack_depth].rusage_start);
   }
   query_stack_depth++;
 
@@ -622,13 +620,12 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 
   // Pop the frame pushed in ExecutorStart. If depth exceeded the array cap,
-  // the frame is zeroed — the event is still emitted but with zero CPU.
-  PschQueryFrame frame = {};
+  // frame is null — the event is still emitted but with zero CPU.
+  const PschQueryFrame* frame = nullptr;
   if (query_stack_depth > 0) {
     query_stack_depth--;
-    if (query_stack_depth < kMaxQueryNestingDepth) {
-      frame = query_stack[query_stack_depth];
-    }
+    if (query_stack_depth < kMaxQueryNestingDepth)
+      frame = &query_stack[query_stack_depth];
   }
 
   if (!psch_enabled || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
@@ -649,9 +646,9 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
   struct rusage rusage_end;
-  if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
-    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, frame.rusage_start.ru_utime);
-    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, frame.rusage_start.ru_stime);
+  if (getrusage(RUSAGE_SELF, &rusage_end) == 0 && frame != nullptr) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, frame->rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, frame->rusage_start.ru_stime);
   }
 
   // The frame below us on the stack is our caller; its queryid is our parent.
@@ -660,7 +657,8 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
       (parent_idx >= 0 && parent_idx < kMaxQueryNestingDepth) ? query_stack[parent_idx].queryid : 0;
 
   PschEvent event;
-  BuildEventFromQueryDesc(query_desc, &event, frame.query_start_ts, cpu_user_us, cpu_sys_us,
+  BuildEventFromQueryDesc(query_desc, &event, frame ? frame->query_start_ts : 0, cpu_user_us,
+                          cpu_sys_us,
                           parent_query_id);
   PschEnqueueEvent(&event);
 
@@ -766,12 +764,10 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   uint64 parent_query_id =
       (parent_idx >= 0 && parent_idx < kMaxQueryNestingDepth) ? query_stack[parent_idx].queryid : 0;
 
-  PschQueryFrame frame;
-  frame.queryid = 0;  // utility statements have no queryId
-  frame.query_start_ts = GetCurrentTimestamp();
-  getrusage(RUSAGE_SELF, &frame.rusage_start);
   if (query_stack_depth < kMaxQueryNestingDepth) {
-    query_stack[query_stack_depth] = frame;
+    query_stack[query_stack_depth].queryid = 0;  // utility statements have no queryId
+    query_stack[query_stack_depth].query_start_ts = GetCurrentTimestamp();
+    getrusage(RUSAGE_SELF, &query_stack[query_stack_depth].rusage_start);
   }
   query_stack_depth++;
 
@@ -788,13 +784,12 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   INSTR_TIME_SET_CURRENT(duration);
   INSTR_TIME_SUBTRACT(duration, start_time);
 
-  // Pop our frame and compute CPU delta. Zeroed if depth exceeded the cap.
-  PschQueryFrame popped = {};
+  // Pop our frame and compute CPU delta. Null if depth exceeded the cap.
+  const PschQueryFrame* popped = nullptr;
   if (query_stack_depth > 0) {
     query_stack_depth--;
-    if (query_stack_depth < kMaxQueryNestingDepth) {
-      popped = query_stack[query_stack_depth];
-    }
+    if (query_stack_depth < kMaxQueryNestingDepth)
+      popped = &query_stack[query_stack_depth];
   }
 
   BufferUsage bufusage_delta;
@@ -807,13 +802,14 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
   struct rusage rusage_end;
-  if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
-    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, popped.rusage_start.ru_utime);
-    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, popped.rusage_start.ru_stime);
+  if (getrusage(RUSAGE_SELF, &rusage_end) == 0 && popped != nullptr) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, popped->rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, popped->rusage_start.ru_stime);
   }
 
   PschEvent event;
-  BuildEventForUtility(&event, queryString, popped.query_start_ts, stmt_location, stmt_len,
+  BuildEventForUtility(&event, queryString, popped ? popped->query_start_ts : 0, stmt_location,
+                       stmt_len,
                        INSTR_TIME_GET_MICROSEC(duration), parent_query_id, GetUtilityRowCount(qc),
                        &bufusage_delta, &walusage_delta, cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
