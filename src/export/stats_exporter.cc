@@ -149,7 +149,7 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
     col_username->Append(std::string(ev.username, ev.username_len));
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
-    col_parent_query_id->Append(ev.parent_query_id);
+    col_parent_query_id->Append(static_cast<int64_t>(ev.parent_query_id));
     col_cmd_type->Append(CmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
 
