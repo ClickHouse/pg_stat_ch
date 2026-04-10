@@ -462,8 +462,8 @@ static void CopyParallelWorkerInfo([[maybe_unused]] PschEvent* event,
 }
 
 static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event,
-                                    TimestampTz query_start_ts, int64 cpu_user_us,
-                                    int64 cpu_sys_us, uint64 parent_query_id) {
+                                    TimestampTz query_start_ts, int64 cpu_user_us, int64 cpu_sys_us,
+                                    uint64 parent_query_id) {
   InitBaseEvent(event, query_start_ts, parent_query_id, ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
   event->rows = query_desc->estate->es_processed;
@@ -796,7 +796,6 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
       popped = query_stack[query_stack_depth];
     }
   }
-
 
   BufferUsage bufusage_delta;
   WalUsage walusage_delta;
