@@ -157,8 +157,19 @@ jit = on
 
 ## Next steps
 
-With the extension loaded, set up the ClickHouse backend to start receiving events:
+With the extension loaded, connect it to a backend to start receiving events:
 
-<Card title="Quick start" icon="bolt" href="/get-started/quick-start">
-  Docker-based setup that gets you from zero to querying events
-</Card>
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="bolt" href="/get-started/quick-start">
+    Docker-based setup that gets you from zero to querying events in ClickHouse
+  </Card>
+  <Card title="ClickHouse setup" icon="database" href="/guides/clickhouse">
+    Production ClickHouse deployment, schema, and data retention
+  </Card>
+  <Card title="OpenTelemetry export" icon="signal-stream" href="/guides/opentelemetry">
+    Route telemetry through your existing OTel collector to Grafana, Datadog, etc.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/reference/configuration">
+    Tune queue size, flush interval, and connection settings
+  </Card>
+</CardGroup>
