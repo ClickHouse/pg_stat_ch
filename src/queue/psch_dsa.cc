@@ -91,6 +91,9 @@ dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len) {
     return InvalidDsaPointer;
   }
   dsa_area* dsa = PschDsaGetArea();
+  if (dsa == nullptr) {
+    return InvalidDsaPointer;
+  }
   uint16 clamped = Min(len, static_cast<uint16>(max_len - 1));
   dsa_pointer dp = dsa_allocate_extended(dsa, clamped + 1, DSA_ALLOC_NO_OOM);
   if (DsaPointerIsValid(dp)) {
@@ -107,6 +110,11 @@ void PschDsaResolveString(dsa_pointer dp, uint16 src_len,
                           char* dst_buf, uint16 max_len, uint16* out_len) {
   if (DsaPointerIsValid(dp)) {
     dsa_area* dsa = PschDsaGetArea();
+    if (dsa == nullptr) {
+      dst_buf[0] = '\0';
+      *out_len = 0;
+      return;
+    }
     char* src = static_cast<char*>(dsa_get_address(dsa, dp));
     uint16 len = Min(src_len, static_cast<uint16>(max_len - 1));
     memcpy(dst_buf, src, len);

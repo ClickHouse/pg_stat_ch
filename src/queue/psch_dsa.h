@@ -109,15 +109,19 @@ void PschDsaInit(struct PschSharedState* state, void* dsa_place);
 void PschDsaAttach(void);
 
 // Get the process-local DSA handle, attaching lazily if needed.
+// Returns nullptr if shared state / raw_dsa_area is unavailable.
 dsa_area* PschDsaGetArea(void);
 
 // Allocate a DSA string from an inline buffer.
-// Returns InvalidDsaPointer on zero-length or allocation failure.
+// Returns InvalidDsaPointer on zero-length, unavailable DSA handle, or allocation
+// failure.
 // On OOM, increments state->dsa_oom_count atomically.
 dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len);
 
 // Resolve a DSA string into a caller-owned buffer and free the DSA memory.
-// If dp is InvalidDsaPointer, sets dst_buf to "" and *out_len to 0.
+// If dp is InvalidDsaPointer, or the DSA handle is unavailable, sets dst_buf to
+// "" and *out_len to 0. If the DSA handle is unavailable, the shared allocation
+// is left in place because it can't be safely resolved/freed.
 void PschDsaResolveString(dsa_pointer dp, uint16 src_len,
                           char* dst_buf, uint16 max_len, uint16* out_len);
 
