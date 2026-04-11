@@ -5,6 +5,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 #include "utils/memutils.h"
@@ -18,6 +19,24 @@ extern "C" {
 // dsa_attach_in_place().  This is NOT shared state — it contains
 // process-local page tables, free-list caches, etc.
 static dsa_area* psch_dsa = nullptr;
+static bool psch_dsa_exit_hook_registered = false;
+
+// dsa_attach_in_place() increments the shared refcount for this in-place area,
+// but because there is no containing DSM segment, PostgreSQL won't release it
+// automatically.  We must detach the backend-local handle and drop the shared
+// reference explicitly on backend/bgworker exit (see pgstat_detach_shmem()).
+static void PschDsaDetachOnExit([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
+  if (psch_dsa != nullptr) {
+    dsa_detach(psch_dsa);
+    psch_dsa = nullptr;
+  }
+
+  if (psch_shared_state != nullptr && psch_shared_state->raw_dsa_area != nullptr) {
+    dsa_release_in_place(psch_shared_state->raw_dsa_area);
+  }
+
+  psch_dsa_exit_hook_registered = false;
+}
 
 extern "C" {
 
@@ -53,6 +72,11 @@ void PschDsaAttach(void) {
   psch_dsa = dsa_attach_in_place(psch_shared_state->raw_dsa_area, NULL);
   MemoryContextSwitchTo(oldctx);
   dsa_pin_mapping(psch_dsa);
+
+  if (!psch_dsa_exit_hook_registered) {
+    on_shmem_exit(PschDsaDetachOnExit, 0);
+    psch_dsa_exit_hook_registered = true;
+  }
 }
 
 dsa_area* PschDsaGetArea(void) {

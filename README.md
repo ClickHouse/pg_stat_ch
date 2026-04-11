@@ -173,6 +173,7 @@ SELECT * FROM pg_stat_ch_stats();
 | `pg_stat_ch.clickhouse_password` | string | `""` | Restart | ClickHouse password |
 | `pg_stat_ch.clickhouse_database` | string | `pg_stat_ch` | Restart | ClickHouse database name |
 | `pg_stat_ch.queue_capacity` | int | `65536` | Restart | Ring buffer size (must be power of 2) |
+| `pg_stat_ch.string_area_size` | int | `64MB` | Restart | DSA size for variable-length query and error strings |
 | `pg_stat_ch.flush_interval_ms` | int | `1000` | SIGHUP | Export batch interval in milliseconds |
 | `pg_stat_ch.batch_max` | int | `10000` | SIGHUP | Maximum events per ClickHouse insert |
 | `pg_stat_ch.clickhouse_use_tls` | bool | `off` | Restart | Enable TLS for ClickHouse connections |

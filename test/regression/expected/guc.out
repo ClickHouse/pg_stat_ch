@@ -33,6 +33,12 @@ SHOW pg_stat_ch.enabled;
  on
 (1 row)
 
+SHOW pg_stat_ch.string_area_size;
+ pg_stat_ch.string_area_size 
+-----------------------------
+ 64MB
+(1 row)
+
 -- Test log_min_elevel GUC
 SHOW pg_stat_ch.log_min_elevel;
  pg_stat_ch.log_min_elevel 

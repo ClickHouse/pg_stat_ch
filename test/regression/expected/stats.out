@@ -12,4 +12,10 @@ SELECT queue_capacity > 0 AS has_capacity FROM pg_stat_ch_stats();
  t
 (1 row)
 
+SELECT dsa_oom_count = 0 AS has_no_dsa_ooms FROM pg_stat_ch_stats();
+ has_no_dsa_ooms 
+-----------------
+ t
+(1 row)
+
 DROP EXTENSION pg_stat_ch;

@@ -2,6 +2,7 @@
 CREATE EXTENSION pg_stat_ch;
 SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLATE "C";
 SHOW pg_stat_ch.enabled;
+SHOW pg_stat_ch.string_area_size;
 -- Test log_min_elevel GUC
 SHOW pg_stat_ch.log_min_elevel;
 SET pg_stat_ch.log_min_elevel = 'error';
