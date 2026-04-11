@@ -52,43 +52,43 @@ extern "C" {
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 
-// Shared state structure in shared memory.
+// Shared state in shared memory.
 //
-// CACHE-LINE ALIGNMENT: Fields are grouped by writer and separated with padding
-// to avoid false sharing.  See shmem.c comments for the concurrency model.
+// Fields are grouped by writer and separated with cache-line padding to avoid
+// false sharing.  See shmem.cc for the concurrency model.
+//
+// Ring buffer slots (PschRingEntry[capacity]) follow immediately after this
+// struct in the shared memory segment.
 struct PschSharedState {
-  // === Rarely-changed fields (initialization only) ===
-  // NB: pointer-sized fields first to avoid implicit alignment padding in pad1 calc
-  LWLock* lock;                    // Protects writes to the ring buffer (multi-producer)
-  void* raw_dsa_area;              // Pointer to DSA area for dsa_attach_in_place
-  pg_atomic_uint64 dsa_oom_count;  // DSA allocation failure counter
-  uint32 capacity;                 // Ring buffer size (must be power of 2 for bitmask)
+  // --- Init-time fields (written once by postmaster) -----------------------
+  LWLock* lock;
+  void* raw_dsa_area;
+  pg_atomic_uint64 dsa_oom_count;
+  uint32 capacity;  // must be power of 2
 
   char pad1[PG_CACHE_LINE_SIZE -
             (sizeof(LWLock*) + sizeof(void*) + sizeof(pg_atomic_uint64) + sizeof(uint32))];
 
-  // === Producer-written atomics (hot, written by many backends) ===
-  pg_atomic_uint64 head;           // Write position (incremented by producers)
-  pg_atomic_uint64 enqueued;       // Total events successfully enqueued (stats)
-  pg_atomic_uint64 dropped;        // Total events dropped due to full queue (stats)
-  pg_atomic_flag overflow_logged;  // Set once on first overflow (prevents log spam)
+  // --- Producer hotpath (written by many backends under lock) --------------
+  pg_atomic_uint64 head;
+  pg_atomic_uint64 enqueued;
+  pg_atomic_uint64 dropped;
+  pg_atomic_flag overflow_logged;
 
   char pad2[PG_CACHE_LINE_SIZE - (3 * sizeof(pg_atomic_uint64) + sizeof(pg_atomic_flag))];
 
-  // === Consumer-written atomics (hot, written only by bgworker) ===
-  pg_atomic_uint64 tail;      // Read position (incremented by single consumer)
-  pg_atomic_uint64 exported;  // Total events exported to ClickHouse (stats)
+  // --- Consumer hotpath (written only by bgworker) -------------------------
+  pg_atomic_uint64 tail;
+  pg_atomic_uint64 exported;
 
   char pad3[PG_CACHE_LINE_SIZE - (2 * sizeof(pg_atomic_uint64))];
 
-  // === Exporter stats (written by bgworker, read by stats function) ===
-  pg_atomic_uint64 send_failures;  // Total failed send attempts
-  TimestampTz last_success_ts;     // Last successful export timestamp
-  TimestampTz last_error_ts;       // Last error timestamp
-  char last_error_text[256];       // Last error message (truncated)
-  pg_atomic_uint32 bgworker_pid;   // Background worker PID for signaling
-
-  // Ring buffer array follows immediately after this struct
+  // --- Exporter stats (written by bgworker, read by stats function) --------
+  pg_atomic_uint64 send_failures;
+  TimestampTz last_success_ts;
+  TimestampTz last_error_ts;
+  char last_error_text[256];
+  pg_atomic_uint32 bgworker_pid;
 };
 
 // Global pointer to shared state (set in shmem startup)
