@@ -23,6 +23,7 @@ bool psch_clickhouse_skip_tls_verify = false;
 char* psch_otel_endpoint = nullptr;
 char* psch_hostname = nullptr;
 int psch_queue_capacity = 131072;
+int psch_string_area_size = 64;  // MB, for DSA string storage
 int psch_flush_interval_ms = 200;
 int psch_batch_max = 200000;
 int psch_log_min_elevel = WARNING;
@@ -199,6 +200,18 @@ void PschInitGuc(void) {
       PGC_POSTMASTER,
       0,
       check_psch_queue_capacity, nullptr, nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.string_area_size",
+      "Size in MB of the DSA area for variable-length string storage.",
+      "Query text and error messages are stored in a DSA (Dynamic Shared Memory Area) "
+      "rather than inline in ring buffer slots. This controls the total DSA area size.",
+      &psch_string_area_size,
+      64,              // bootValue: 64 MB
+      8, 1024,         // min: 8 MB, max: 1024 MB
+      PGC_POSTMASTER,
+      GUC_UNIT_MB,
+      nullptr, nullptr, nullptr);
 
   DefineCustomIntVariable(
       "pg_stat_ch.flush_interval_ms",

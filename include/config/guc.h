@@ -19,6 +19,7 @@ extern bool psch_clickhouse_skip_tls_verify;
 extern char* psch_otel_endpoint;
 extern char* psch_hostname;
 extern int psch_queue_capacity;
+extern int psch_string_area_size;
 extern int psch_flush_interval_ms;
 extern int psch_batch_max;
 extern int psch_log_min_elevel;

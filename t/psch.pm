@@ -55,7 +55,8 @@ sub psch_get_stats {
 
     my $result = $node->safe_psql('postgres',
         'SELECT enqueued_events, dropped_events, exported_events, ' .
-        'send_failures, queue_size, queue_capacity, queue_usage_pct ' .
+        'send_failures, queue_size, queue_capacity, queue_usage_pct, ' .
+        'dsa_oom_count ' .
         'FROM pg_stat_ch_stats()');
 
     my @values = split /\|/, $result;
@@ -67,6 +68,7 @@ sub psch_get_stats {
         queue_size    => $values[4] // 0,
         capacity      => $values[5] // 0,
         usage_pct     => $values[6] // 0,
+        dsa_oom       => $values[7] // 0,
     };
 }
 
