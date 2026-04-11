@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include "export/sqlcommenter_parse.h"
+
 class StatsExporter {
  protected:
   using string = std::string;
@@ -65,6 +67,10 @@ class StatsExporter {
   virtual shared_ptr<Column<string>> DbOperationColumn() = 0;
   // Query text. CH: RecordString "query"; OTel semconv: "db.query.text".
   virtual shared_ptr<Column<string_view>> DbQueryTextColumn() = 0;
+  // Query labels from sqlcommenter comments. Called inside the event loop.
+  // CH: serializes to JSON, appends to a String "labels" column;
+  // OTel: sets per-label attributes prefixed with "db.query.label.".
+  virtual void AppendLabels(const ParseResult& labels) = 0;
 
   virtual void BeginBatch() = 0;
   virtual void BeginRow() = 0;

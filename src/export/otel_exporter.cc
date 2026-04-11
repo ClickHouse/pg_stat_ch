@@ -129,6 +129,15 @@ class OTelExporter : public StatsExporter {
   shared_ptr<Column<string_view>> DbQueryTextColumn() final {
     return Wrap<RecordOnlyColumn<string_view>>("db.query.text");
   }
+  void AppendLabels(const ParseResult& labels) final {
+    for (int i = 0; i < labels.count; ++i) {
+      string attr_name = "db.query.label.";
+      attr_name.append(labels.labels[i].key.data(), labels.labels[i].key.size());
+      string val(labels.labels[i].value);
+      current_log_record->SetAttribute(attr_name, val);
+      current_row_tags[attr_name] = std::move(val);
+    }
+  }
 
   bool EstablishNewConnection() final;
   bool IsConnected() const final { return metrics_provider && log_provider; }

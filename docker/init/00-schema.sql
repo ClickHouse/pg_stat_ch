@@ -59,6 +59,8 @@ CREATE TABLE pg_stat_ch.events_raw
 
     query String COMMENT 'Full SQL query text (may be truncated). Used for debugging and query analysis.',
 
+    labels JSON(max_dynamic_paths=64) COMMENT 'Query labels from sqlcommenter comments (key=value pairs in /* */ blocks). Access subpaths directly: labels.controller, labels.action. Empty {} when no labels present. See: https://google.github.io/sqlcommenter/',
+
     -- ========================================================================
     -- Shared buffer metrics (main buffer cache)
     -- ========================================================================

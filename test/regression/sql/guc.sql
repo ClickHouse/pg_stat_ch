@@ -11,6 +11,8 @@ SET pg_stat_ch.log_min_elevel = 'notice';
 SHOW pg_stat_ch.log_min_elevel;
 RESET pg_stat_ch.log_min_elevel;
 SHOW pg_stat_ch.log_min_elevel;
+-- Test track_labels GUC (PGC_SIGHUP: can't SET, only ALTER SYSTEM + reload)
+SHOW pg_stat_ch.track_labels;
 -- Test that clickhouse_password is hidden from non-superusers (issue #3)
 CREATE ROLE psch_test_user LOGIN;
 SET ROLE psch_test_user;

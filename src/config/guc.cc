@@ -32,6 +32,7 @@ int psch_otel_log_batch_size = 8192;
 int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 MiB
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
+bool psch_track_labels = true;
 bool psch_debug_force_locked_overflow = false;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
@@ -307,6 +308,17 @@ void PschInitGuc(void) {
       PGC_SUSET,
       0,
       nullptr, nullptr, nullptr);
+  DefineCustomBoolVariable(
+      "pg_stat_ch.track_labels",
+      "Extract sqlcommenter labels from query comments.",
+      "When enabled, the background worker parses /* key='value' */ comments "
+      "and exports structured labels to ClickHouse (JSON) or OTel (attributes).",
+      &psch_track_labels,
+      true,
+      PGC_SIGHUP,
+      0,
+      nullptr, nullptr, nullptr);
+
   DefineCustomBoolVariable(
       "pg_stat_ch.debug_force_locked_overflow",
       "Force HandleOverflow in locked path (debug/test only).",

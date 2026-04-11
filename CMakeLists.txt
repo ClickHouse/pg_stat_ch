@@ -149,6 +149,16 @@ if(PSCH_BUILD_UNIT_TESTS)
   )
   pg_stat_ch_set_warnings(hostname_test)
 
+  add_executable(sqlcommenter_parse_test
+    test/unit/sqlcommenter_parse_test.cc
+    src/export/sqlcommenter_parse.cc
+  )
+  target_include_directories(sqlcommenter_parse_test PRIVATE src include)
+  target_compile_features(sqlcommenter_parse_test PRIVATE cxx_std_17)
+  target_link_libraries(sqlcommenter_parse_test PRIVATE GTest::gtest_main)
+  pg_stat_ch_set_warnings(sqlcommenter_parse_test)
+
   include(GoogleTest)
   gtest_discover_tests(hostname_test)
+  gtest_discover_tests(sqlcommenter_parse_test)
 endif()
