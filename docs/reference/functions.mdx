@@ -1,0 +1,101 @@
+---
+title: SQL functions
+description: pg_stat_ch SQL functions for monitoring, diagnostics, and control
+---
+
+pg_stat_ch provides four SQL functions for checking extension health, viewing statistics, and controlling the export pipeline.
+
+## `pg_stat_ch_version()`
+
+Returns the extension version string.
+
+```sql
+SELECT pg_stat_ch_version();
+```
+
+```
+ pg_stat_ch_version
+--------------------
+ 0.3.4
+```
+
+The version is set at compile time from the git tag.
+
+## `pg_stat_ch_stats()`
+
+Returns queue and exporter statistics as a single row.
+
+```sql
+SELECT * FROM pg_stat_ch_stats();
+```
+
+### Output columns
+
+| Column | Type | Description |
+|---|---|---|
+| `enqueued_events` | `bigint` | Total events successfully written to the ring buffer since startup or last reset |
+| `dropped_events` | `bigint` | Events dropped because the ring buffer was full. Non-zero means the queue cannot keep up with query throughput |
+| `exported_events` | `bigint` | Events successfully sent to ClickHouse (or OTel collector) |
+| `send_failures` | `bigint` | Failed export attempts (network errors, ClickHouse down, etc.) |
+| `last_success_ts` | `timestamptz` | Timestamp of the last successful batch export. `NULL` if no export has succeeded yet |
+| `last_error_text` | `text` | Error message from the most recent failed export. `NULL` if no errors have occurred |
+| `last_error_ts` | `timestamptz` | Timestamp of the most recent failed export. `NULL` if no errors have occurred |
+| `queue_size` | `integer` | Number of events currently in the ring buffer waiting to be exported |
+| `queue_capacity` | `integer` | Maximum ring buffer capacity (set by `pg_stat_ch.queue_capacity`) |
+| `queue_usage_pct` | `double precision` | Percentage of the ring buffer currently in use: `100 * queue_size / queue_capacity` |
+
+### Monitoring examples
+
+Check if events are flowing:
+
+```sql
+SELECT
+    enqueued_events,
+    exported_events,
+    enqueued_events - exported_events AS in_flight,
+    dropped_events
+FROM pg_stat_ch_stats();
+```
+
+Check for export errors:
+
+```sql
+SELECT
+    send_failures,
+    last_error_text,
+    last_error_ts,
+    last_success_ts
+FROM pg_stat_ch_stats();
+```
+
+Monitor queue pressure over time (run periodically):
+
+```sql
+SELECT
+    queue_size,
+    queue_capacity,
+    round(queue_usage_pct, 1) AS usage_pct
+FROM pg_stat_ch_stats();
+```
+
+## `pg_stat_ch_reset()`
+
+Resets all queue counters to zero.
+
+```sql
+SELECT pg_stat_ch_reset();
+```
+
+This resets `enqueued_events`, `dropped_events`, `exported_events`, and `send_failures` back to zero. It does not affect the queue contents or ClickHouse data. Useful for establishing a clean baseline before a load test or after resolving an issue.
+
+## `pg_stat_ch_flush()`
+
+Triggers an immediate flush of queued events to ClickHouse.
+
+```sql
+SELECT pg_stat_ch_flush();
+```
+
+Sends `SIGUSR2` to the background worker, which wakes it up and starts a drain cycle immediately instead of waiting for the next `flush_interval_ms` tick. The function returns immediately without waiting for the flush to complete.
+
+Use this after running test queries when you want events to appear in ClickHouse right away, or as part of a deployment script that needs to verify data is flowing.

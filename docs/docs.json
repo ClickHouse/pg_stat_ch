@@ -30,17 +30,34 @@
               {
                 "group": "Get started",
                 "icon": "rocket",
-                "pages": ["get-started/introduction", "get-started/quick-start"]
+                "pages": [
+                  "get-started/introduction",
+                  "get-started/installation",
+                  "get-started/quick-start"
+                ]
               },
               {
                 "group": "Guides",
                 "icon": "lightbulb",
-                "pages": ["guides/clickhouse", "guides/testing"]
+                "pages": [
+                  "guides/clickhouse",
+                  "guides/opentelemetry",
+                  "guides/monitoring-queries",
+                  "guides/testing"
+                ]
               },
               {
                 "group": "Reference",
                 "icon": "folder",
-                "pages": ["reference/hooks", "reference/version-compatibility", "reference/troubleshooting"]
+                "pages": [
+                  "reference/configuration",
+                  "reference/functions",
+                  "reference/events-schema",
+                  "reference/materialized-views",
+                  "reference/hooks",
+                  "reference/version-compatibility",
+                  "reference/troubleshooting"
+                ]
               }
             ]
           },

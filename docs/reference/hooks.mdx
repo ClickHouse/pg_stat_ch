@@ -30,7 +30,7 @@ The executor hooks work together to capture metrics for optimizable queries (SEL
 2. Records if this is a top-level query (nesting_level == 0)
 3. Captures the query start timestamp
 4. Initializes CPU time baseline via `getrusage()`
-5. Sets up instrumentation (`InstrAlloc`) to collect buffer/timing stats
+5. Enables instrumentation to collect buffer/timing stats
 
 ### ExecutorRun_hook
 
@@ -120,7 +120,7 @@ The `QueryDesc` structure provides access to all query execution information:
 
 **What pg_stat_ch captures:** Messages at the configured minimum level and above (default: WARNING). The minimum level is controlled by the `pg_stat_ch.log_min_elevel` GUC parameter.
 
-See [version-compatibility.md](version-compatibility.md#error-fields) for the complete list of error levels and their numeric values.
+See the [events schema reference](/reference/events-schema#error-level-values) for the complete list of error levels and their numeric values.
 
 **ErrorData fields captured:**
 

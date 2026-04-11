@@ -1,0 +1,128 @@
+---
+title: Installation
+description: Build pg_stat_ch from source and load it into PostgreSQL
+---
+
+## Prerequisites
+
+- **PostgreSQL 16, 17, or 18** with development headers (`postgresql-server-dev-*` or built from source)
+- **CMake 3.20+** and **Ninja** (or Make)
+- **A C++17 compiler** (GCC 10+, Clang 13+)
+- **Docker and Docker Compose** (for the quickstart and ClickHouse setup)
+- **ClickHouse** (for the default export backend) or an OpenTelemetry collector
+
+## Build from source
+
+Clone the repository with submodules (the ClickHouse C++ client is vendored):
+
+```bash
+git clone --recurse-submodules https://github.com/ClickHouse/pg_stat_ch.git
+cd pg_stat_ch
+```
+
+### Using mise (recommended for development)
+
+If you have [mise](https://mise.jdx.dev) installed:
+
+```bash
+mise run build        # Debug build against the default pg_config
+mise run install      # Install into the PostgreSQL extension directory
+```
+
+Other build targets:
+
+```bash
+mise run build:release    # Optimized release build
+mise run build:16         # Build for PostgreSQL 16
+mise run build:17         # Build for PostgreSQL 17
+mise run build:18         # Build for PostgreSQL 18
+mise run build:all        # Build for all supported versions
+```
+
+### Using CMake directly
+
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+sudo cmake --install build
+```
+
+To target a specific PostgreSQL installation, pass `-DPG_CONFIG`:
+
+```bash
+cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+cmake --build build
+sudo cmake --install build
+```
+
+## Load the extension
+
+pg_stat_ch must be loaded via `shared_preload_libraries` because it needs to initialize at server startup.
+
+<Steps>
+  <Step title="Edit postgresql.conf">
+    ```ini
+    shared_preload_libraries = 'pg_stat_ch'
+    ```
+
+    If you already have other extensions loaded, add pg_stat_ch to the comma-separated list:
+
+    ```ini
+    shared_preload_libraries = 'pg_stat_statements, pg_stat_ch'
+    ```
+  </Step>
+  <Step title="Restart PostgreSQL">
+    ```bash
+    sudo systemctl restart postgresql
+    ```
+  </Step>
+  <Step title="Create the extension in each database you want to monitor">
+    ```sql
+    CREATE EXTENSION pg_stat_ch;
+    ```
+  </Step>
+</Steps>
+
+## Verify installation
+
+Check that the extension is loaded and the background worker is running:
+
+```sql
+-- Check version
+SELECT pg_stat_ch_version();
+
+-- Check stats (queue should be active)
+SELECT * FROM pg_stat_ch_stats();
+
+-- Check the background worker is visible
+SELECT pid, application_name, state, wait_event
+FROM pg_stat_activity
+WHERE application_name = 'pg_stat_ch exporter';
+```
+
+If the background worker doesn't appear, check the PostgreSQL log for errors. The most common issue is forgetting to add pg_stat_ch to `shared_preload_libraries`.
+
+## Recommended PostgreSQL settings
+
+These PostgreSQL settings are not required but provide more data:
+
+```ini
+# Enable I/O timing (small overhead, big value)
+track_io_timing = on
+
+# Enable query ID computation (required for query grouping)
+compute_query_id = on
+
+# Enable JIT stats collection
+jit = on
+```
+
+## Next steps
+
+With the extension loaded, set up the ClickHouse backend to start receiving events:
+
+<Card title="Quick start" icon="bolt" href="/get-started/quick-start">
+  Docker-based setup that gets you from zero to querying events
+</Card>

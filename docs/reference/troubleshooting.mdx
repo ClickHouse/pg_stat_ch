@@ -1,70 +1,214 @@
 ---
 title: Troubleshooting
-description: SQL API reference, common issues, and diagnostic steps
+description: Common issues and diagnostic steps for pg_stat_ch
 ---
 
-## SQL API Reference
-
-### `pg_stat_ch_stats()`
-
-Returns queue and exporter statistics:
-
-```sql
-SELECT * FROM pg_stat_ch_stats();
-```
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `enqueued_events` | bigint | Total events added to queue |
-| `dropped_events` | bigint | Events dropped due to full queue |
-| `exported_events` | bigint | Events successfully sent to ClickHouse |
-| `send_failures` | bigint | Failed export attempts |
-| `last_success_ts` | timestamptz | Last successful export timestamp |
-| `last_error_text` | text | Most recent error message |
-| `last_error_ts` | timestamptz | Most recent error timestamp |
-| `queue_size` | int | Current events in queue |
-| `queue_capacity` | int | Maximum queue capacity |
-| `queue_usage_pct` | float | Queue utilization percentage |
-
-## Extension Won't Load
+## Extension won't load
 
 ```
 WARNING:  pg_stat_ch must be loaded via shared_preload_libraries
 ```
 
-Add `shared_preload_libraries = 'pg_stat_ch'` to `postgresql.conf` and restart PostgreSQL.
+pg_stat_ch must be loaded at server startup. Add it to `postgresql.conf` and restart:
 
-## Events Not Appearing in ClickHouse
+```ini
+shared_preload_libraries = 'pg_stat_ch'
+```
+
+Then restart PostgreSQL:
+
+```bash
+sudo systemctl restart postgresql
+```
+
+## Background worker not running
+
+Check if the exporter process is visible:
+
+```sql
+SELECT pid, application_name, state, wait_event
+FROM pg_stat_activity
+WHERE application_name = 'pg_stat_ch exporter';
+```
+
+If no row appears:
+- Verify `shared_preload_libraries` includes `pg_stat_ch`
+- Check PostgreSQL logs for startup errors
+- The worker restarts automatically after 10 seconds if it crashes -- check logs for repeated crash/restart cycles
+
+## Events not appearing in ClickHouse
 
 <Steps>
+  <Step title="Check that collection is enabled">
+    ```sql
+    SHOW pg_stat_ch.enabled;
+    ```
+
+    Should return `on`. If `off`, enable it:
+
+    ```sql
+    ALTER SYSTEM SET pg_stat_ch.enabled = on;
+    SELECT pg_reload_conf();
+    ```
+  </Step>
+  <Step title="Check queue stats">
+    ```sql
+    SELECT
+        enqueued_events,
+        exported_events,
+        dropped_events,
+        send_failures,
+        last_error_text,
+        last_error_ts
+    FROM pg_stat_ch_stats();
+    ```
+
+    - `enqueued_events = 0`: No queries are being captured. Run some queries and check again.
+    - `enqueued_events > 0` but `exported_events = 0`: The background worker cannot reach ClickHouse.
+    - `send_failures > 0`: Check `last_error_text` for the specific error.
+  </Step>
   <Step title="Check connection settings">
     ```sql
     SHOW pg_stat_ch.clickhouse_host;
     SHOW pg_stat_ch.clickhouse_port;
+    SHOW pg_stat_ch.clickhouse_database;
+    ```
+
+    Verify ClickHouse is reachable from the PostgreSQL host:
+
+    ```bash
+    clickhouse-client -h <host> -p <port> -q "SELECT 1"
     ```
   </Step>
-  <Step title="Check stats for errors">
+  <Step title="Check the ClickHouse schema exists">
     ```sql
-    SELECT * FROM pg_stat_ch_stats();
+    -- In ClickHouse
+    SHOW TABLES FROM pg_stat_ch;
+    ```
+
+    If the database or tables don't exist, apply the schema:
+
+    ```bash
+    clickhouse-client < docker/init/00-schema.sql
     ```
   </Step>
-  <Step title="Check PostgreSQL logs for connection errors" />
+  <Step title="Check PostgreSQL logs">
+    Look for connection errors or export failures:
+
+    ```bash
+    grep -i "pg_stat_ch" /var/log/postgresql/postgresql-*.log | tail -20
+    ```
+  </Step>
 </Steps>
 
-## High Queue Usage
+## High queue usage
 
-If `queue_usage_pct` is consistently high:
-- Increase `pg_stat_ch.queue_capacity` (restart required)
-- Decrease `pg_stat_ch.flush_interval_ms`
-- Increase `pg_stat_ch.batch_max`
-- Ensure ClickHouse is healthy and reachable
+If `queue_usage_pct` from `pg_stat_ch_stats()` is consistently above 80%:
 
-## Dropped Events
+1. **Decrease flush interval** -- export more frequently:
+   ```sql
+   ALTER SYSTEM SET pg_stat_ch.flush_interval_ms = 100;
+   SELECT pg_reload_conf();
+   ```
 
-Check the `dropped_events` counter:
+2. **Increase batch size** -- drain more events per cycle:
+   ```sql
+   ALTER SYSTEM SET pg_stat_ch.batch_max = 500000;
+   SELECT pg_reload_conf();
+   ```
+
+3. **Check ClickHouse health** -- slow inserts cause backpressure:
+   ```sql
+   -- In ClickHouse: check for merge backlog
+   SELECT table, count() AS parts
+   FROM system.parts
+   WHERE database = 'pg_stat_ch' AND active
+   GROUP BY table;
+   ```
+
+4. **Increase queue capacity** (requires restart):
+   ```ini
+   pg_stat_ch.queue_capacity = 262144  -- must be power of 2
+   ```
+
+## Dropped events
 
 ```sql
 SELECT dropped_events FROM pg_stat_ch_stats();
 ```
 
-Dropped events indicate the queue filled faster than the background worker could export. This is safe (queries continue unaffected) but means some telemetry is lost.
+Non-zero `dropped_events` means the queue filled up before the background worker could drain it. This is safe -- queries continue running unaffected -- but some telemetry is lost.
+
+Common causes:
+- ClickHouse is down or unreachable (events queue up with nowhere to go)
+- A burst of queries exceeded the queue capacity
+- The flush interval is too long for the workload
+
+To reset the counter after resolving the issue:
+
+```sql
+SELECT pg_stat_ch_reset();
+```
+
+## Missing I/O timing data
+
+If `shared_blk_read_time_us` and related columns are always zero:
+
+```sql
+SHOW track_io_timing;
+```
+
+I/O timing must be enabled in `postgresql.conf`:
+
+```ini
+track_io_timing = on
+```
+
+This adds a small overhead (one `gettimeofday()` call per block I/O operation) but provides valuable data for distinguishing CPU-bound from I/O-bound queries.
+
+## Missing query_id values
+
+If `query_id` is always 0:
+
+```sql
+SHOW compute_query_id;
+```
+
+Enable query ID computation:
+
+```ini
+compute_query_id = on
+```
+
+This is required for grouping queries by their normalized form. Without it, every execution gets `query_id = 0` and cannot be aggregated.
+
+## TLS connection errors
+
+If you see TLS-related errors in PostgreSQL logs:
+
+1. Verify `pg_stat_ch.clickhouse_use_tls = on` is set
+2. For self-signed certificates in testing, set `pg_stat_ch.clickhouse_skip_tls_verify = on`
+3. In production, ensure the ClickHouse server certificate is trusted by the system CA store
+
+## Extension health check query
+
+Run this in PostgreSQL for a quick health summary:
+
+```sql
+SELECT
+    pg_stat_ch_version() AS version,
+    s.enqueued_events,
+    s.exported_events,
+    s.dropped_events,
+    s.send_failures,
+    round(s.queue_usage_pct, 1) AS queue_pct,
+    s.last_error_text,
+    CASE
+        WHEN s.send_failures > 0 THEN 'EXPORT ERRORS'
+        WHEN s.dropped_events > 0 THEN 'DROPS DETECTED'
+        WHEN s.queue_usage_pct > 80 THEN 'QUEUE PRESSURE'
+        WHEN s.enqueued_events = 0 THEN 'NO EVENTS'
+        ELSE 'OK'
+    END AS status
+FROM pg_stat_ch_stats() s;
+```

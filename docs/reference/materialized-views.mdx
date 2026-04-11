@@ -1,0 +1,238 @@
+---
+title: Materialized views
+description: Pre-built ClickHouse materialized views for common analytics patterns
+---
+
+The pg_stat_ch ClickHouse schema includes four materialized views that aggregate `events_raw` data automatically. All views are populated by ClickHouse as events arrive -- no manual refresh is needed.
+
+## Overview
+
+| View | Purpose | Granularity | Retention |
+|---|---|---|---|
+| `events_recent_1h` | Real-time debugging | Per event | 1 hour TTL |
+| `query_stats_5m` | Query performance dashboards | 5-minute buckets | Unbounded |
+| `db_app_user_1m` | Load by application/user | 1-minute buckets | Unbounded |
+| `errors_recent` | Error investigation | Per error event | 7-day TTL |
+
+The typical workflow is: use materialized views to find patterns, then drill into `events_raw` for specific events.
+
+## `events_recent_1h`
+
+A copy of `events_raw` with a 1-hour TTL. ClickHouse automatically deletes events older than 1 hour from this table.
+
+**Use cases:**
+- "What queries ran in the last 5 minutes?"
+- Real-time dashboards with sub-second refresh
+- Quick debugging of ongoing issues
+
+```sql
+SELECT
+    ts_start,
+    db,
+    cmd_type,
+    duration_us / 1000 AS ms,
+    rows,
+    substring(query, 1, 100) AS query_preview
+FROM pg_stat_ch.events_recent_1h
+WHERE ts_start > now() - INTERVAL 5 MINUTE
+ORDER BY ts_start DESC
+LIMIT 50;
+```
+
+Because this table has a 1-hour TTL, queries against it are fast even if `events_raw` has weeks of data.
+
+## `query_stats_5m`
+
+Pre-aggregated query statistics in 5-minute buckets. This is the primary view for dashboards and performance monitoring.
+
+**Use cases:**
+- QPS trends over time
+- Latency percentiles (p95/p99) per query
+- Identifying slow queries and regressions
+- Capacity planning
+
+### Schema
+
+| Column | Type | Description |
+|---|---|---|
+| `bucket` | `DateTime` | 5-minute bucket start time |
+| `db` | `LowCardinality(String)` | Database name |
+| `query_id` | `Int64` | Normalized query identifier |
+| `cmd_type` | `LowCardinality(String)` | Command type |
+| `calls_state` | `AggregateFunction(count)` | Call count |
+| `duration_sum_state` | `AggregateFunction(sum, UInt64)` | Total duration (microseconds) |
+| `duration_min_state` | `AggregateFunction(min, UInt64)` | Minimum duration |
+| `duration_max_state` | `AggregateFunction(max, UInt64)` | Maximum duration |
+| `duration_q_state` | `AggregateFunction(quantilesTDigest(0.95, 0.99), UInt64)` | Latency percentile digest |
+| `rows_sum_state` | `AggregateFunction(sum, UInt64)` | Total rows |
+| `shared_hit_sum_state` | `AggregateFunction(sum, Int64)` | Total buffer hits |
+| `shared_read_sum_state` | `AggregateFunction(sum, Int64)` | Total buffer reads |
+
+### Querying aggregate states
+
+This view uses ClickHouse's `-State` / `-Merge` pattern. Columns store intermediate aggregate states that must be finalized with the corresponding `-Merge` function:
+
+| To get | Use |
+|---|---|
+| Call count | `countMerge(calls_state)` |
+| Total duration | `sumMerge(duration_sum_state)` |
+| Min duration | `minMerge(duration_min_state)` |
+| Max duration | `maxMerge(duration_max_state)` |
+| p95 and p99 | `quantilesTDigestMerge(0.95, 0.99)(duration_q_state)` |
+| Total rows | `sumMerge(rows_sum_state)` |
+| Buffer hits | `sumMerge(shared_hit_sum_state)` |
+| Buffer reads | `sumMerge(shared_read_sum_state)` |
+
+This pattern allows correct re-aggregation across multiple 5-minute buckets. For example, a 1-hour p99 is computed correctly from 12 five-minute digests, rather than being an average of 12 p99 values.
+
+### Top queries by p99 latency
+
+```sql
+SELECT
+    query_id,
+    cmd_type,
+    countMerge(calls_state) AS calls,
+    round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 1 HOUR
+GROUP BY query_id, cmd_type
+ORDER BY p99_ms DESC
+LIMIT 10;
+```
+
+### QPS over time
+
+Each bucket is 5 minutes (300 seconds), so divide by 300 for per-second rate:
+
+```sql
+SELECT
+    bucket,
+    countMerge(calls_state) / 300 AS qps
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Cache hit ratio trend
+
+```sql
+SELECT
+    bucket,
+    round(100 * sumMerge(shared_hit_sum_state) /
+        (sumMerge(shared_hit_sum_state) + sumMerge(shared_read_sum_state) + 1), 2) AS hit_ratio_pct
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+## `db_app_user_1m`
+
+Load breakdown by database, application, user, and command type in 1-minute buckets.
+
+**Use cases:**
+- Which application is generating the most load?
+- Per-tenant or per-user resource tracking
+- Error rates by application
+- Identifying misbehaving clients
+
+### Schema
+
+| Column | Type | Description |
+|---|---|---|
+| `bucket` | `DateTime` | 1-minute bucket start time |
+| `db` | `LowCardinality(String)` | Database name |
+| `app` | `LowCardinality(String)` | Application name |
+| `username` | `LowCardinality(String)` | PostgreSQL username |
+| `cmd_type` | `LowCardinality(String)` | Command type |
+| `calls_state` | `AggregateFunction(count)` | Query count |
+| `duration_sum_state` | `AggregateFunction(sum, UInt64)` | Total duration (microseconds) |
+| `duration_q_state` | `AggregateFunction(quantilesTDigest(0.95, 0.99), UInt64)` | Latency percentile digest |
+| `errors_sum_state` | `AggregateFunction(sum, UInt64)` | Error count |
+
+### Load by application
+
+```sql
+SELECT
+    app,
+    countMerge(calls_state) AS total_queries,
+    round(sumMerge(duration_sum_state) / 1000000, 2) AS total_seconds,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms,
+    sumMerge(errors_sum_state) AS errors
+FROM pg_stat_ch.db_app_user_1m
+WHERE bucket >= now() - INTERVAL 24 HOUR
+GROUP BY app
+ORDER BY total_seconds DESC;
+```
+
+### Error rate by database and user
+
+```sql
+SELECT
+    db,
+    username,
+    countMerge(calls_state) AS queries,
+    sumMerge(errors_sum_state) AS errors,
+    round(100 * sumMerge(errors_sum_state) / countMerge(calls_state), 2) AS error_pct
+FROM pg_stat_ch.db_app_user_1m
+WHERE bucket >= now() - INTERVAL 1 HOUR
+GROUP BY db, username
+HAVING errors > 0
+ORDER BY error_pct DESC;
+```
+
+## `errors_recent`
+
+Recent error events with a 7-day TTL. This view filters `events_raw` to only rows where `err_elevel > 0`.
+
+**Use cases:**
+- "What errors happened in the last hour?"
+- Incident investigation with query context
+- Error rate alerting
+- Identifying recurring error patterns by SQLSTATE
+
+### Schema
+
+This view stores the full event row (not aggregated):
+
+`ts_start`, `db`, `username`, `app`, `client_addr`, `pid`, `query_id`, `err_sqlstate`, `err_elevel`, `err_message`, `query`
+
+### Recent errors with context
+
+```sql
+SELECT
+    ts_start,
+    db,
+    username,
+    app,
+    err_sqlstate,
+    err_message,
+    substring(query, 1, 200) AS query_preview
+FROM pg_stat_ch.errors_recent
+WHERE ts_start > now() - INTERVAL 1 HOUR
+ORDER BY ts_start DESC
+LIMIT 100;
+```
+
+### Error breakdown by SQLSTATE
+
+```sql
+SELECT
+    err_sqlstate,
+    count() AS occurrences,
+    uniq(query_id) AS unique_queries,
+    any(err_message) AS sample_message
+FROM pg_stat_ch.errors_recent
+WHERE ts_start > now() - INTERVAL 24 HOUR
+GROUP BY err_sqlstate
+ORDER BY occurrences DESC;
+```
+
+## Custom views
+
+You can create your own materialized views on top of `events_raw` for project-specific analytics. For example, a view that tracks queries by table name or a view that computes per-minute error rates for alerting.
+
+See the [ClickHouse documentation on materialized views](https://clickhouse.com/docs/en/guides/developer/cascading-materialized-views) for details on creating and managing views.

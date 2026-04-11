@@ -1,21 +1,150 @@
 ---
-title: Quick Start
-description: Build, install, and connect pg_stat_ch in minutes
+title: Quick start
+description: From zero to querying per-execution telemetry in 5 minutes
 ---
 
-<Steps titleSize="h2">
-  <Step title="Build and install">
+This guide uses the Docker quickstart to run PostgreSQL and ClickHouse together with the schema pre-loaded.
+
+## Prerequisites
+
+- Docker and Docker Compose
+- The pg_stat_ch repository cloned locally
+
+## Setup
+
+<Steps>
+  <Step title="Start the stack">
+    From the repository root:
+
     ```bash
-    mise run build
-    mise run install
+    ./scripts/quickstart.sh up
     ```
+
+    This starts PostgreSQL (with pg_stat_ch pre-loaded) and ClickHouse with the full schema applied. See `docker/quickstart/` for stack details.
   </Step>
-  <Step title="Load the extension">
+  <Step title="Run some queries">
+    Connect to PostgreSQL and run a few queries to generate telemetry:
+
+    ```bash
+    psql -h localhost -U postgres -d postgres
+    ```
+
     ```sql
-    CREATE EXTENSION pg_stat_ch;
+    -- Create a test table
+    CREATE TABLE test_data (id serial PRIMARY KEY, value text);
+
+    -- Generate some load
+    INSERT INTO test_data (value) SELECT md5(random()::text) FROM generate_series(1, 1000);
+    SELECT count(*) FROM test_data;
+    SELECT * FROM test_data WHERE id = 42;
+
+    -- Trigger an error (for error tracking)
+    SELECT * FROM nonexistent_table;
     ```
   </Step>
-  <Step title="Set up ClickHouse">
-    See the [ClickHouse setup guide](/guides/clickhouse) for the required schema and Docker quick-start.
+  <Step title="Flush events to ClickHouse">
+    Events are flushed automatically every 200ms, but you can trigger an immediate flush:
+
+    ```sql
+    SELECT pg_stat_ch_flush();
+    ```
+  </Step>
+  <Step title="Query events in ClickHouse">
+    Open a ClickHouse client:
+
+    ```bash
+    clickhouse-client
+    ```
+
+    See your queries:
+
+    ```sql
+    SELECT
+        ts_start,
+        db,
+        cmd_type,
+        duration_us / 1000 AS ms,
+        rows,
+        substring(query, 1, 80) AS query_preview
+    FROM pg_stat_ch.events_raw
+    ORDER BY ts_start DESC
+    LIMIT 10;
+    ```
+  </Step>
+  <Step title="Check for errors">
+    ```sql
+    SELECT
+        ts_start,
+        err_sqlstate,
+        err_message,
+        substring(query, 1, 80) AS query_preview
+    FROM pg_stat_ch.errors_recent
+    ORDER BY ts_start DESC
+    LIMIT 10;
+    ```
+
+    You should see the `42P01` (undefined table) error from the `nonexistent_table` query.
   </Step>
 </Steps>
+
+## Check extension health
+
+Back in PostgreSQL, verify the extension is working:
+
+```sql
+SELECT * FROM pg_stat_ch_stats();
+```
+
+```
+ enqueued_events | dropped_events | exported_events | send_failures | ...
+-----------------+----------------+-----------------+---------------+----
+            1247 |              0 |            1247 |             0 | ...
+```
+
+Key things to check:
+- `enqueued_events` should be increasing as you run queries
+- `dropped_events` should be 0 (events are being processed faster than produced)
+- `exported_events` should match or be close to `enqueued_events`
+- `send_failures` should be 0
+
+## Try a latency percentile query
+
+Use the pre-aggregated materialized view to get p95/p99 latencies:
+
+```sql
+SELECT
+    query_id,
+    cmd_type,
+    countMerge(calls_state) AS calls,
+    round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 1 HOUR
+GROUP BY query_id, cmd_type
+ORDER BY p99_ms DESC
+LIMIT 10;
+```
+
+## Tear down
+
+```bash
+./scripts/quickstart.sh down
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="ClickHouse setup" icon="database" href="/guides/clickhouse">
+    Production ClickHouse deployment and schema
+  </Card>
+  <Card title="Configuration" icon="gear" href="/reference/configuration">
+    Tune queue size, flush interval, and connection settings
+  </Card>
+  <Card title="Monitoring queries" icon="chart-line" href="/guides/monitoring-queries">
+    Practical query recipes for common use cases
+  </Card>
+  <Card title="Events schema" icon="table" href="/reference/events-schema">
+    Every field in the events_raw table explained
+  </Card>
+</CardGroup>
