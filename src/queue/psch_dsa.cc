@@ -106,8 +106,8 @@ dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len) {
   return dp;
 }
 
-void PschDsaResolveString(dsa_pointer dp, uint16 src_len,
-                          char* dst_buf, uint16 max_len, uint16* out_len) {
+void PschDsaResolveString(dsa_pointer dp, uint16 src_len, char* dst_buf, uint16 max_len,
+                          uint16* out_len) {
   if (DsaPointerIsValid(dp)) {
     dsa_area* dsa = PschDsaGetArea();
     if (dsa == nullptr) {

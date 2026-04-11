@@ -123,8 +123,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
     slot->err_message_len = 0;  // Lost string on OOM — numeric data preserved
   }
 
-  slot->query_dsa =
-      PschDsaAllocString(event->query, event->query_len, PSCH_MAX_QUERY_LEN);
+  slot->query_dsa = PschDsaAllocString(event->query, event->query_len, PSCH_MAX_QUERY_LEN);
   if (event->query_len > 0 && !DsaPointerIsValid(slot->query_dsa)) {
     slot->query_len = 0;  // Lost string on OOM — numeric data preserved
   }
@@ -153,8 +152,8 @@ extern "C" {
 Size PschShmemSize(void) {
   // Layout: [PschSharedState] [PschRingEntry × capacity] [DSA area]
   // See psch_dsa.h for diagram.  DSA start is MAXALIGN'd for internal alignment.
-  Size ring_end = add_size(sizeof(PschSharedState),
-                           mul_size(psch_queue_capacity, sizeof(PschRingEntry)));
+  Size ring_end =
+      add_size(sizeof(PschSharedState), mul_size(psch_queue_capacity, sizeof(PschRingEntry)));
   Size dsa_offset = MAXALIGN(ring_end);
   Size total = add_size(dsa_offset, PschDsaShmemSize());
   return MAXALIGN(total);
@@ -199,16 +198,12 @@ static void InitializeSharedState(void) {
   // Create DSA area for variable-length string storage.
   // See psch_dsa.h for the shared memory layout diagram.
   char* dsa_place = reinterpret_cast<char*>(psch_shared_state) +
-                    MAXALIGN(sizeof(PschSharedState) +
-                             psch_queue_capacity * sizeof(PschRingEntry));
+                    MAXALIGN(sizeof(PschSharedState) + psch_queue_capacity * sizeof(PschRingEntry));
   PschDsaInit(psch_shared_state, dsa_place);
 
-  elog(LOG,
-       "pg_stat_ch: initialized shared memory (capacity=%d, ring=%zuKB, dsa=%zuMB, total=%zu)",
-       psch_queue_capacity,
-       (psch_queue_capacity * sizeof(PschRingEntry)) / 1024,
-       PschDsaShmemSize() / (1024 * 1024),
-       PschShmemSize());
+  elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, ring=%zuKB, dsa=%zuMB, total=%zu)",
+       psch_queue_capacity, (psch_queue_capacity * sizeof(PschRingEntry)) / 1024,
+       PschDsaShmemSize() / (1024 * 1024), PschShmemSize());
 }
 
 static void PschShmemStartupHook(void) {
@@ -405,10 +400,10 @@ bool PschDequeueEvent(PschEvent* event) {
   memcpy(event, slot, kFixedPrefixSize);
 
   // 2. Resolve err_message and query from DSA into PschEvent's inline buffers
-  PschDsaResolveString(slot->err_message_dsa, slot->err_message_len,
-                       event->err_message, PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
-  PschDsaResolveString(slot->query_dsa, slot->query_len,
-                       event->query, PSCH_MAX_QUERY_LEN, &event->query_len);
+  PschDsaResolveString(slot->err_message_dsa, slot->err_message_len, event->err_message,
+                       PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
+  PschDsaResolveString(slot->query_dsa, slot->query_len, event->query, PSCH_MAX_QUERY_LEN,
+                       &event->query_len);
 
   // CRITICAL: Write barrier ensures all reads and DSA frees complete before we
   // update tail.  Producers cannot reuse this slot until tail advances past it.
