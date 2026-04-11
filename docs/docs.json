@@ -1,15 +1,30 @@
 {
   "name": "pg_stat_ch",
-  "theme": "almond",
+  "theme": "sequoia",
   "colors": {
     "primary": "#1c1c1c",
-    "light": "#333431",
-    "dark": "#fdff75"
+    "light": "#FAFF69",
+    "dark": "#FAFF69"
+  },
+  "appearance": {
+    "default": "dark"
   },
   "background": {
+    "decoration": "gradient",
     "color": {
       "dark": "#1D1D1D",
       "light": "#FFFFFF"
+    }
+  },
+  "fonts": {
+    "family": "Inter"
+  },
+  "styling": {
+    "codeblocks": {
+      "theme": {
+        "light": "github-light",
+        "dark": "vitesse-dark"
+      }
     }
   },
   "css": "/assets/styles.css",
