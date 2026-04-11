@@ -239,6 +239,12 @@ html:not(.dark) .pagination-prev:hover {
     opacity: 1;
 }
 
+/* Yellow 404 recommended page links in dark mode */
+.dark .not-found-recommended-page-link,
+:is(.dark) .not-found-recommended-page-link {
+    color: #FAFF69 !important;
+}
+
 /* Yellow card icon in dark mode */
 html.dark [data-component-part="card-icon"] {
     color: #FDFF75 !important;
