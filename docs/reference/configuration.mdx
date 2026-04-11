@@ -1,0 +1,343 @@
+---
+title: Configuration
+description: All pg_stat_ch GUC parameters with defaults, ranges, and reload behavior
+---
+
+pg_stat_ch is configured through PostgreSQL GUC (Grand Unified Configuration) parameters. All parameters use the `pg_stat_ch.` prefix.
+
+## How to set parameters
+
+Parameters can be set in `postgresql.conf`, via `ALTER SYSTEM`, or with `SET` (for session-level parameters only):
+
+```ini
+# postgresql.conf
+pg_stat_ch.enabled = on
+pg_stat_ch.flush_interval_ms = 500
+pg_stat_ch.clickhouse_host = 'clickhouse.internal'
+```
+
+**Context** determines when a change takes effect:
+
+| Context | When it takes effect | How to apply |
+|---|---|---|
+| `postmaster` | Server restart only | `systemctl restart postgresql` |
+| `sighup` | Configuration reload | `SELECT pg_reload_conf();` or `pg_ctl reload` |
+| `suset` | Superuser SET | `SET pg_stat_ch.param = value;` |
+
+## General
+
+### `pg_stat_ch.enabled`
+
+Enable or disable query telemetry collection.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `on` |
+| **Context** | sighup |
+
+When disabled, hooks still fire but skip event creation. The background worker continues running but has nothing to export. Use this to temporarily pause collection without restarting PostgreSQL.
+
+```sql
+-- Disable collection (takes effect immediately after reload)
+ALTER SYSTEM SET pg_stat_ch.enabled = off;
+SELECT pg_reload_conf();
+
+-- Re-enable
+ALTER SYSTEM SET pg_stat_ch.enabled = on;
+SELECT pg_reload_conf();
+```
+
+### `pg_stat_ch.hostname`
+
+Override the machine hostname sent with events.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `''` (empty, uses system hostname) |
+| **Context** | postmaster |
+
+Useful in containerized environments where the system hostname is a random container ID. Set this to a stable identifier like the pod name or instance ID.
+
+### `pg_stat_ch.log_min_elevel`
+
+Minimum error severity level to capture via the `emit_log_hook`.
+
+| | |
+|---|---|
+| **Type** | enum |
+| **Default** | `warning` |
+| **Context** | suset |
+| **Values** | `debug5`, `debug4`, `debug3`, `debug2`, `debug1`, `log`, `info`, `notice`, `warning`, `error`, `fatal`, `panic` |
+
+Controls which PostgreSQL log messages are captured as events. The default (`warning`) captures warnings, errors, fatals, and panics. Set to `error` to skip warnings, or `debug5` to capture everything.
+
+```sql
+-- Capture only errors and above
+SET pg_stat_ch.log_min_elevel = 'error';
+
+-- Capture everything including debug messages (noisy)
+SET pg_stat_ch.log_min_elevel = 'debug5';
+```
+
+## Queue
+
+The shared-memory ring buffer sits between the foreground hooks and the background worker. These settings control its size and drain behavior.
+
+### `pg_stat_ch.queue_capacity`
+
+Maximum number of events the ring buffer can hold.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `131072` (128K events) |
+| **Min** | `1024` |
+| **Max** | `4194304` (4M events) |
+| **Context** | postmaster |
+
+Must be a power of 2 (1024, 2048, 4096, ... 4194304). The ring buffer uses bitmask arithmetic for slot indexing, which requires a power-of-2 capacity.
+
+Each event is approximately 4.5 KB. The default capacity of 131072 events uses about **576 MB** of shared memory. Adjust based on your query throughput and acceptable memory usage.
+
+<Warning>
+Changing this parameter requires a PostgreSQL restart.
+</Warning>
+
+**Sizing guidance:**
+
+| Workload | QPS | Recommended capacity | Memory |
+|---|---|---|---|
+| Low traffic | < 1,000 | 8192 | ~36 MB |
+| Medium traffic | 1,000 - 10,000 | 65536 | ~288 MB |
+| High traffic | 10,000 - 100,000 | 131072 (default) | ~576 MB |
+| Very high traffic | > 100,000 | 524288+ | ~2.3 GB+ |
+
+The queue needs to hold enough events to buffer a burst while the background worker flushes a batch. If `dropped_events` in `pg_stat_ch_stats()` is non-zero, increase this value.
+
+### `pg_stat_ch.flush_interval_ms`
+
+Interval between export batches, in milliseconds.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `200` |
+| **Min** | `100` |
+| **Max** | `60000` |
+| **Context** | sighup |
+| **Unit** | milliseconds |
+
+The background worker sleeps for this duration between drain cycles. Lower values reduce latency from query execution to ClickHouse visibility. Higher values reduce the number of ClickHouse inserts (fewer, larger batches).
+
+### `pg_stat_ch.batch_max`
+
+Maximum number of events per ClickHouse insert.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `200000` |
+| **Min** | `1` |
+| **Max** | `1000000` |
+| **Context** | sighup |
+
+Limits the size of each batch sent to ClickHouse. The background worker drains up to `batch_max` events per insert, then loops until the queue is empty or below the threshold. Larger batches are more efficient for ClickHouse but use more memory in the background worker.
+
+## ClickHouse connection
+
+These parameters configure the connection to ClickHouse. All require a PostgreSQL restart to take effect.
+
+### `pg_stat_ch.clickhouse_host`
+
+ClickHouse server hostname.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `localhost` |
+| **Context** | postmaster |
+
+### `pg_stat_ch.clickhouse_port`
+
+ClickHouse native protocol port.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `9000` |
+| **Min** | `1` |
+| **Max** | `65535` |
+| **Context** | postmaster |
+
+This is the native TCP protocol port, not the HTTP port (8123). The native protocol is more efficient for bulk inserts.
+
+### `pg_stat_ch.clickhouse_user`
+
+ClickHouse username.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `default` |
+| **Context** | postmaster |
+
+### `pg_stat_ch.clickhouse_password`
+
+ClickHouse password.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `''` (empty) |
+| **Context** | postmaster |
+
+<Note>
+This parameter is restricted to superusers (`GUC_SUPERUSER_ONLY`). It is not visible via `SHOW` to non-superuser roles.
+</Note>
+
+### `pg_stat_ch.clickhouse_database`
+
+ClickHouse database name where the `events_raw` table and materialized views live.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `pg_stat_ch` |
+| **Context** | postmaster |
+
+### `pg_stat_ch.clickhouse_use_tls`
+
+Enable TLS encryption for ClickHouse connections.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `off` |
+| **Context** | postmaster |
+
+### `pg_stat_ch.clickhouse_skip_tls_verify`
+
+Skip TLS certificate verification.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `off` |
+| **Context** | postmaster |
+
+<Warning>
+Only use this for testing. In production, configure proper TLS certificates.
+</Warning>
+
+## OpenTelemetry
+
+These parameters configure the OpenTelemetry export backend. Enable it with `pg_stat_ch.use_otel = on`. When OTel mode is active, events are sent as OpenTelemetry logs and metrics instead of ClickHouse inserts.
+
+### `pg_stat_ch.use_otel`
+
+Send events via OpenTelemetry instead of ClickHouse.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `off` |
+| **Context** | postmaster |
+
+When enabled, the background worker sends events to an OTel collector via gRPC instead of inserting into ClickHouse. The ClickHouse connection parameters are ignored.
+
+### `pg_stat_ch.otel_endpoint`
+
+OpenTelemetry gRPC endpoint.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `localhost:4317` |
+| **Context** | postmaster |
+
+The `host:port` of the OTel collector's gRPC receiver. Port 4317 is the standard OTel gRPC port.
+
+### `pg_stat_ch.otel_log_queue_size`
+
+Maximum number of log records buffered in the OTel batch processor before dropping.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `65536` |
+| **Min** | `512` |
+| **Max** | `1048576` |
+| **Context** | postmaster |
+
+### `pg_stat_ch.otel_log_batch_size`
+
+Number of log records per gRPC export call.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `8192` |
+| **Min** | `1` |
+| **Max** | `131072` |
+| **Context** | postmaster |
+
+### `pg_stat_ch.otel_log_max_bytes`
+
+Maximum gRPC message size in bytes for OTel log export.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `3145728` (3 MiB) |
+| **Min** | `65536` (64 KiB) |
+| **Max** | `67108864` (64 MiB) |
+| **Context** | postmaster |
+| **Unit** | bytes |
+
+The gRPC default maximum is 4 MiB. The default value of 3 MiB leaves a safety margin.
+
+### `pg_stat_ch.otel_log_delay_ms`
+
+Delay between OTel batch export attempts.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `100` |
+| **Min** | `10` |
+| **Max** | `60000` |
+| **Context** | postmaster |
+| **Unit** | milliseconds |
+
+### `pg_stat_ch.otel_metric_interval_ms`
+
+How often aggregated metric histograms are exported via gRPC.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `5000` |
+| **Min** | `100` |
+| **Max** | `300000` |
+| **Context** | postmaster |
+| **Unit** | milliseconds |
+
+Metrics export is asynchronous and does not block the background worker.
+
+## Debug
+
+These parameters are for development and testing only.
+
+### `pg_stat_ch.debug_force_locked_overflow`
+
+Force the overflow code path in the locked enqueue path.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `off` |
+| **Context** | suset |
+
+Used to deterministically test the overflow-under-lock deadlock fix. Do not enable in production.

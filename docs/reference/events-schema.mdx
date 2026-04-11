@@ -1,0 +1,166 @@
+---
+title: Events schema
+description: Complete field reference for the events_raw ClickHouse table
+---
+
+The `events_raw` table in ClickHouse stores one row per query execution. This page documents every column with its type, what it means, and when the value is useful for diagnosis.
+
+The table is partitioned by date (`toDate(ts_start)`) and ordered by `ts_start` for efficient time-range scans.
+
+## Timing
+
+| Column | Type | Description |
+|---|---|---|
+| `ts_start` | `DateTime64(6, 'UTC')` | Query start timestamp with microsecond precision. Used for time-range filtering, partitioning, and correlating events across systems. |
+| `duration_us` | `UInt64` | Total execution time in microseconds. Compare with p95/p99 from the `query_stats_5m` materialized view to identify outliers. |
+
+## Identity
+
+| Column | Type | Description |
+|---|---|---|
+| `db` | `LowCardinality(String)` | PostgreSQL database name. |
+| `username` | `LowCardinality(String)` | PostgreSQL user or role that executed the query. |
+| `pid` | `Int32` | Backend process ID. Correlate with `pg_stat_activity` for session-level debugging. |
+| `query_id` | `Int64` | 64-bit hash of the normalized query. Queries that differ only in literal constants share the same `query_id`. This is how you group "the same query" across executions. Requires `compute_query_id = on` in PostgreSQL. |
+| `cmd_type` | `LowCardinality(String)` | Command type: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `UTILITY`, `NOTHING`, or `UNKNOWN`. Use for workload characterization (read-heavy vs write-heavy). |
+| `rows` | `UInt64` | Rows returned (SELECT) or affected (INSERT/UPDATE/DELETE). Unexpectedly high values may indicate a missing WHERE clause. |
+| `query` | `String` | Query text, truncated to 2 KB. Literal constants are replaced with `$1`, `$2`, ... placeholders to prevent sensitive data from being exported. |
+
+<Note>
+Query normalization replaces literals with placeholders (`$N`). This means `SELECT * FROM users WHERE id = 42` becomes `SELECT * FROM users WHERE id = $1`. No passwords, tokens, or PII are exported in query text.
+</Note>
+
+## Shared buffer usage
+
+These columns show how queries interact with PostgreSQL's `shared_buffers` cache. The cache hit ratio for a query is `shared_blks_hit / (shared_blks_hit + shared_blks_read)`. Target above 99% for OLTP workloads.
+
+| Column | Type | Description |
+|---|---|---|
+| `shared_blks_hit` | `Int64` | Blocks found in the shared buffer cache. High values mean the data was already cached. |
+| `shared_blks_read` | `Int64` | Blocks read from disk (cache miss). High values indicate cold data or a working set larger than `shared_buffers`. |
+| `shared_blks_dirtied` | `Int64` | Blocks modified by this query. High values mean write-heavy queries that create checkpoint pressure. |
+| `shared_blks_written` | `Int64` | Blocks written directly to disk by this backend (not by the background writer or checkpointer). Ideally zero; high values mean the background writer is falling behind. Consider increasing `bgwriter_lru_maxpages`. |
+
+## Local buffer usage
+
+Local buffers are used for temporary tables (`CREATE TEMP TABLE`). They are session-private and do not benefit from `shared_buffers`.
+
+| Column | Type | Description |
+|---|---|---|
+| `local_blks_hit` | `Int64` | Temp table blocks found in the session's local buffer cache. |
+| `local_blks_read` | `Int64` | Temp table blocks read from disk. High values indicate large temp tables exceeding `temp_buffers`. |
+| `local_blks_dirtied` | `Int64` | Temp table blocks modified. |
+| `local_blks_written` | `Int64` | Temp table blocks written to disk. High values mean temp tables are spilling due to `temp_buffers` exhaustion. |
+
+## Temp file usage
+
+Temp files are used when `work_mem` is insufficient for sorts, hash joins, or materialization. Unlike local buffers, these are always on disk. Non-zero values indicate `work_mem` pressure.
+
+| Column | Type | Description |
+|---|---|---|
+| `temp_blks_read` | `Int64` | Temp file blocks read back. High values mean external sorts or hashes are re-reading spilled data. |
+| `temp_blks_written` | `Int64` | Temp file blocks written. First place to look when a query is unexpectedly slow. Consider increasing `work_mem` or optimizing the query to reduce intermediate data volume. |
+
+## I/O timing
+
+These columns show actual time spent on I/O operations, not just block counts. They separate storage bottlenecks from CPU bottlenecks.
+
+<Warning>
+All I/O timing columns are zero unless `track_io_timing = on` is set in `postgresql.conf`.
+</Warning>
+
+| Column | Type | PG version | Description |
+|---|---|---|---|
+| `shared_blk_read_time_us` | `Int64` | 16+ | Time spent reading shared blocks (microseconds). Divide by `shared_blks_read` for average latency per block. Values above 10ms/block may indicate storage issues. |
+| `shared_blk_write_time_us` | `Int64` | 16+ | Time spent writing shared blocks. Usually low unless the backend is forced to write (background writer falling behind). |
+| `local_blk_read_time_us` | `Int64` | 17+ | Time spent reading local (temp table) blocks. |
+| `local_blk_write_time_us` | `Int64` | 17+ | Time spent writing local blocks. |
+| `temp_blk_read_time_us` | `Int64` | 16+ | Time spent reading temp files. High values combined with high `temp_blks_read` indicate `work_mem` spills are causing an I/O bottleneck. |
+| `temp_blk_write_time_us` | `Int64` | 16+ | Time spent writing temp files. Often dominates total query time when `work_mem` is undersized. |
+
+## WAL usage
+
+Write-Ahead Log metrics show write activity. Useful for replication bandwidth planning and understanding checkpoint behavior.
+
+| Column | Type | Description |
+|---|---|---|
+| `wal_records` | `Int64` | Number of WAL records generated. High values indicate write-intensive queries. |
+| `wal_fpi` | `Int64` | WAL full-page images generated. These spike after each checkpoint then decrease, creating a sawtooth pattern. High FPI counts increase WAL volume significantly. |
+| `wal_bytes` | `UInt64` | Total WAL bytes generated. Sum over time to estimate WAL generation rate for capacity planning. Directly impacts replication lag. |
+
+## CPU time
+
+User vs system CPU time breakdown. Measured via `getrusage()`.
+
+| Column | Type | Description |
+|---|---|---|
+| `cpu_user_time_us` | `Int64` | CPU time in user mode (microseconds). High user time with high `duration_us` means a CPU-bound query. Low user time with high `duration_us` means an I/O-bound query. |
+| `cpu_sys_time_us` | `Int64` | CPU time in kernel mode (microseconds). Usually low relative to user time. Very high values may indicate lock contention or excessive I/O syscalls. |
+
+## JIT compilation
+
+JIT (Just-In-Time) compilation can speed up complex queries but has compilation overhead. These fields are zero when JIT is not triggered (query cost below `jit_above_cost`).
+
+| Column | Type | PG version | Description |
+|---|---|---|---|
+| `jit_functions` | `Int32` | 16+ | Number of functions JIT-compiled. Non-zero means JIT was triggered for this query. |
+| `jit_generation_time_us` | `Int32` | 16+ | Time generating JIT IR code. If this is high relative to `duration_us`, JIT overhead exceeds its benefit for this query. Consider raising `jit_above_cost`. |
+| `jit_deform_time_us` | `Int32` | 17+ | Time JIT-compiling tuple deform functions. High values indicate queries touching many columns or complex types. |
+| `jit_inlining_time_us` | `Int32` | 16+ | Time inlining functions. Inlining can speed up execution but has compile cost. |
+| `jit_optimization_time_us` | `Int32` | 16+ | Time running LLVM optimization passes. |
+| `jit_emission_time_us` | `Int32` | 16+ | Time emitting final machine code. |
+
+## Parallel query
+
+Parallel query statistics show how many workers were planned vs actually launched.
+
+| Column | Type | PG version | Description |
+|---|---|---|---|
+| `parallel_workers_planned` | `Int16` | 18+ | Workers planned by the query optimizer based on table size and cost settings. |
+| `parallel_workers_launched` | `Int16` | 18+ | Workers actually launched. If less than planned, the system is hitting `max_parallel_workers` limits. |
+
+## Error information
+
+Error fields are populated when a query produces an error or warning (captured via PostgreSQL's `emit_log_hook`). For successful queries, `err_elevel` is 0.
+
+| Column | Type | Description |
+|---|---|---|
+| `err_sqlstate` | `FixedString(5)` | 5-character SQLSTATE error code. See [common SQLSTATE codes](#common-sqlstate-codes) below. |
+| `err_elevel` | `UInt8` | Error severity: 0 = success, 19 = WARNING, 21 = ERROR, 22 = FATAL, 23 = PANIC. Filter `err_elevel >= 21` for actual errors. |
+| `err_message` | `String` | Human-readable error description, truncated to 2 KB. |
+
+The minimum captured severity is controlled by [`pg_stat_ch.log_min_elevel`](/reference/configuration#pg_stat_chlog_min_elevel) (default: `warning`).
+
+### Common SQLSTATE codes
+
+| Code | Name | Typical cause |
+|---|---|---|
+| `42P01` | undefined_table | Table does not exist |
+| `42703` | undefined_column | Column does not exist |
+| `23505` | unique_violation | Duplicate key on INSERT/UPDATE |
+| `23503` | foreign_key_violation | Referenced row does not exist |
+| `42601` | syntax_error | SQL syntax error |
+| `57014` | query_canceled | `statement_timeout` or manual cancel |
+| `40001` | serialization_failure | Serializable isolation conflict (retry) |
+| `53100` | disk_full | Out of disk space |
+| `53200` | out_of_memory | PostgreSQL out of memory |
+
+### Error level values
+
+| Level | Value | Captured by default |
+|---|---|---|
+| DEBUG5-DEBUG1 | 10-14 | No |
+| LOG | 15 | No |
+| INFO | 17 | No |
+| NOTICE | 18 | No |
+| WARNING | 19 | Yes |
+| ERROR | 21 | Yes |
+| FATAL | 22 | Yes |
+| PANIC | 23 | Yes |
+
+## Client context
+
+| Column | Type | Description |
+|---|---|---|
+| `app` | `LowCardinality(String)` | Application name from the `application_name` connection parameter or GUC. Common values: `psql`, `pgAdmin`, `myapp-api`, `pg_dump`. |
+| `client_addr` | `String` | Client IP address. Local connections show as `127.0.0.1`. |

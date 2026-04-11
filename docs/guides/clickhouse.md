@@ -1,234 +1,109 @@
 ---
-title: ClickHouse Setup & Schema Guide
-description: Schema, materialized views, and Docker setup for the ClickHouse backend
+title: ClickHouse setup
+description: Set up the ClickHouse backend for pg_stat_ch
 ---
 
-## Quick Start (Docker)
+## Quick start with Docker
 
-From the repo root:
+From the repository root:
 
 ```bash
 ./scripts/quickstart.sh up
 ```
 
-This brings up local PostgreSQL + ClickHouse with the `pg_stat_ch` schema preloaded. For endpoints and stack details, see [docker/quickstart/README.md](https://github.com/ClickHouse/pg_stat_ch/blob/main/docker/quickstart/README.md).
+This starts PostgreSQL (with pg_stat_ch pre-loaded) and ClickHouse with the full schema applied. See `docker/quickstart/` for stack details.
 
-## Manual Setup
+To stop the stack:
 
-For production deployments, apply the canonical schema directly (from the repo root):
+```bash
+./scripts/quickstart.sh down
+```
+
+## Production setup
+
+For production, apply the schema directly to your ClickHouse instance:
 
 ```bash
 clickhouse-client < docker/init/00-schema.sql
 ```
 
-The schema file ([`docker/init/00-schema.sql`](https://github.com/ClickHouse/pg_stat_ch/blob/main/docker/init/00-schema.sql)) is the single source of truth and includes:
-- Full `events_raw` table with all columns documented (what metrics mean, when values are HIGH/LOW)
-- 4 materialized views for common analytics patterns
-- Column comments explaining how to interpret each metric
-- Canonical table/materialized-view DDL used by deployments
+The schema file ([`docker/init/00-schema.sql`](https://github.com/ClickHouse/pg_stat_ch/blob/main/docker/init/00-schema.sql)) is the single source of truth. It creates:
 
-## Schema Overview
+- The `pg_stat_ch` database
+- The `events_raw` table with all columns
+- Four materialized views for common analytics
 
-### `events_raw` Table
+### Configure PostgreSQL to connect
 
-The primary table stores one row per query execution. Events are exported in batches by the pg_stat_ch background worker. Key column groups:
+Set the ClickHouse connection parameters in `postgresql.conf`:
 
-| Category | Columns | Notes |
-|----------|---------|-------|
-| **Identity & Timing** | `ts_start`, `duration_us`, `db`, `username`, `pid`, `query_id` | Core fields for every event |
-| **Query** | `cmd_type`, `rows`, `query` | Command classification and text |
-| **Shared Buffers** | `shared_blks_hit/read/dirtied/written` | Cache hit ratio = hit / (hit + read) |
-| **Local Buffers** | `local_blks_hit/read/dirtied/written` | Temp table I/O |
-| **Temp Files** | `temp_blks_read/written` | Non-zero = work_mem pressure |
-| **I/O Timing** | `shared/local/temp_blk_read/write_time_us` | Requires `track_io_timing=on` |
-| **WAL** | `wal_records`, `wal_fpi`, `wal_bytes` | Write-ahead log metrics |
-| **CPU** | `cpu_user_time_us`, `cpu_sys_time_us` | User vs kernel time |
-| **JIT** (PG15+) | `jit_functions`, `jit_*_time_us` | JIT compilation overhead |
-| **Parallel** (PG18+) | `parallel_workers_planned/launched` | Worker efficiency |
-| **Errors** | `err_sqlstate`, `err_elevel`, `err_message` | Error tracking |
-| **Client** | `app`, `client_addr` | Load attribution |
-
-See the schema file for detailed COMMENT annotations on each column explaining what HIGH/LOW values mean and tuning guidance.
-
-### Materialized Views
-
-The schema includes 4 materialized views. All aggregation happens in ClickHouse, not in PostgreSQL.
-
-#### 1. `events_recent_1h` — Real-time Debugging
-
-A copy of `events_raw` with a 1-hour TTL for fast access to recent events.
-
-**Use cases:** Real-time dashboards, "what just happened?" debugging, sub-second refresh monitoring.
-
-#### 2. `query_stats_5m` — Query Performance Dashboard
-
-Pre-aggregated query statistics in 5-minute buckets using ClickHouse AggregateFunction columns.
-
-**Use cases:** QPS trends, latency percentiles (p95/p99), identifying slow queries, capacity planning.
-
-**Querying aggregate states:** This MV uses `-State` / `-Merge` functions:
-
-```sql
-SELECT
-    query_id,
-    cmd_type,
-    countMerge(calls_state) AS calls,
-    round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
-    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
-    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
-FROM pg_stat_ch.query_stats_5m
-WHERE bucket >= now() - INTERVAL 1 HOUR
-GROUP BY query_id, cmd_type
-ORDER BY p99_ms DESC
-LIMIT 10;
+```ini
+pg_stat_ch.clickhouse_host = 'clickhouse.internal'
+pg_stat_ch.clickhouse_port = 9000
+pg_stat_ch.clickhouse_user = 'default'
+pg_stat_ch.clickhouse_password = 'your-password'
+pg_stat_ch.clickhouse_database = 'pg_stat_ch'
 ```
 
-#### 3. `db_app_user_1m` — Load by Application/User
+These parameters require a PostgreSQL restart. See the [configuration reference](/reference/configuration#clickhouse-connection) for all connection options including TLS.
 
-1-minute buckets grouped by database, application, and user with error counts.
+### Verify data flow
 
-**Use cases:** Identifying load sources, per-tenant chargeback, spotting misbehaving applications.
-
-#### 4. `errors_recent` — Error Investigation
-
-Recent errors with a 7-day TTL, filtered from `events_raw` where `err_elevel > 0`.
-
-**Use cases:** Incident investigation, error rate monitoring, recurring error patterns.
-
-## Example Queries
-
-Queries follow a typical workflow: find problems with MVs, then drill into raw events.
-
-### Find Slowest Queries (MV)
-
-Identify worst tail latency from the pre-aggregated `query_stats_5m` view. The `-State`/`-Merge` pattern is how ClickHouse finalizes pre-aggregated columns.
+After connecting, check that events are being exported:
 
 ```sql
-SELECT
-    query_id,
-    cmd_type,
-    countMerge(calls_state) AS calls,
-    round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
-    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
-    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
-FROM pg_stat_ch.query_stats_5m
-WHERE bucket >= now() - INTERVAL 1 HOUR
-GROUP BY query_id, cmd_type
-ORDER BY p99_ms DESC
-LIMIT 10;
+-- In PostgreSQL
+SELECT * FROM pg_stat_ch_stats();
 ```
 
-### Latency Trend for a Specific Query
-
-After finding a slow `query_id` above, see how its latency changes over time. Impossible with pg_stat_statements since it only stores cumulative aggregates.
+`exported_events` should increase as queries run. If `send_failures` is non-zero, check `last_error_text` for the error message.
 
 ```sql
-SELECT
-    toStartOfFiveMinutes(ts_start) AS bucket,
-    count() AS calls,
-    quantile(0.95)(duration_us) / 1000 AS p95_ms
-FROM pg_stat_ch.events_raw
-WHERE query_id = 14460383662181259114  -- from the query above
-  AND ts_start > now() - INTERVAL 24 HOUR
-GROUP BY bucket
-ORDER BY bucket;
+-- In ClickHouse
+SELECT count() FROM pg_stat_ch.events_raw;
 ```
 
-### Cache Miss Outliers
+## Schema overview
 
-Find individual executions that read the most from disk.
+The `events_raw` table stores one row per query execution with 50+ columns covering timing, buffer usage, WAL, CPU, JIT, errors, and client context.
+
+For the complete column reference, see [events schema](/reference/events-schema).
+
+Four materialized views provide pre-aggregated analytics:
+
+| View | Purpose | Retention |
+|---|---|---|
+| `events_recent_1h` | Real-time debugging | 1-hour TTL |
+| `query_stats_5m` | Query performance dashboards (p95/p99) | Unbounded |
+| `db_app_user_1m` | Load by application/user | Unbounded |
+| `errors_recent` | Error investigation | 7-day TTL |
+
+For view schemas, query patterns, and the `-State`/`-Merge` aggregation pattern, see [materialized views](/reference/materialized-views).
+
+## Data retention
+
+The `events_raw` table has no TTL by default. To limit storage, add a TTL:
 
 ```sql
-SELECT
-    ts_start,
-    query_id,
-    shared_blks_read,
-    shared_blks_hit,
-    round(100 * shared_blks_read / (shared_blks_hit + shared_blks_read), 2) AS miss_pct,
-    duration_us / 1000 AS duration_ms,
-    query
-FROM pg_stat_ch.events_raw
-WHERE shared_blks_read > 100
-  AND ts_start > now() - INTERVAL 1 HOUR
-ORDER BY shared_blks_read DESC
-LIMIT 20;
+ALTER TABLE pg_stat_ch.events_raw
+MODIFY TTL toDateTime(ts_start) + INTERVAL 30 DAY DELETE;
 ```
 
-### Errors by SQLSTATE
-
-Find which error types are most frequent. Filters on `err_elevel >= 21` (ERROR and above) to skip warnings.
+The materialized views with TTL (`events_recent_1h`, `errors_recent`) clean up automatically. For the unbounded views (`query_stats_5m`, `db_app_user_1m`), add TTLs based on your retention needs:
 
 ```sql
-SELECT
-    err_sqlstate,
-    count() AS errors,
-    any(query) AS sample_query
-FROM pg_stat_ch.events_raw
-WHERE err_elevel >= 21
-  AND ts_start > now() - INTERVAL 24 HOUR
-GROUP BY err_sqlstate
-ORDER BY errors DESC;
+ALTER TABLE pg_stat_ch.query_stats_5m
+MODIFY TTL toDateTime(bucket) + INTERVAL 90 DAY DELETE;
 ```
 
-### QPS Over Time (MV)
+## ClickHouse sizing
 
-Time-series throughput from the pre-aggregated view. Each bucket is 5 minutes, so divide by 300 for per-second rate.
+pg_stat_ch events compress well in ClickHouse. Rough estimates:
 
-```sql
-SELECT
-    bucket,
-    countMerge(calls_state) / 300 AS qps
-FROM pg_stat_ch.query_stats_5m
-WHERE bucket >= now() - INTERVAL 24 HOUR
-GROUP BY bucket
-ORDER BY bucket;
-```
+| QPS | Events/day | Raw size/day | Compressed/day |
+|---|---|---|---|
+| 100 | 8.6M | ~39 GB | ~2-4 GB |
+| 1,000 | 86M | ~390 GB | ~20-40 GB |
+| 10,000 | 864M | ~3.9 TB | ~200-400 GB |
 
-### Load by Application (MV)
-
-Rank applications by total query time to find the heaviest consumers.
-
-```sql
-SELECT
-    app,
-    countMerge(calls_state) AS total_queries,
-    round(sumMerge(duration_sum_state) / 1000000, 2) AS total_seconds,
-    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms,
-    sumMerge(errors_sum_state) AS errors
-FROM pg_stat_ch.db_app_user_1m
-WHERE bucket >= now() - INTERVAL 24 HOUR
-GROUP BY app
-ORDER BY total_seconds DESC;
-```
-
-### WAL and Full Page Images Over Time
-
-Shows the checkpoint cycle - FPIs spike right after each checkpoint then drop until the next one. This sawtooth pattern is invisible in pg_stat_statements.
-
-```sql
-SELECT
-    toStartOfMinute(ts_start) AS bucket,
-    sum(wal_fpi) AS total_fpi,
-    sum(wal_bytes) AS total_wal_bytes
-FROM pg_stat_ch.events_raw
-WHERE cmd_type IN ('INSERT', 'UPDATE', 'DELETE')
-  AND ts_start > now() - INTERVAL 24 HOUR
-GROUP BY bucket
-ORDER BY bucket;
-```
-
-### Dirty Blocks Over Time
-
-Buffer write pressure by block type. Spikes in shared blocks indicate write-heavy batches; non-zero local/temp indicates temp table or work_mem spill activity.
-
-```sql
-SELECT
-    toStartOfMinute(ts_start) AS bucket,
-    sum(shared_blks_dirtied) AS shared_dirtied,
-    sum(local_blks_dirtied) AS local_dirtied,
-    sum(temp_blks_written) AS temp_written
-FROM pg_stat_ch.events_raw
-WHERE ts_start > now() - INTERVAL 24 HOUR
-GROUP BY bucket
-ORDER BY bucket;
-```
+Actual compression depends on query diversity. Workloads with many similar queries compress better due to ClickHouse's column-oriented storage and LZ4 compression.

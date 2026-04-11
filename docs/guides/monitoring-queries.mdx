@@ -1,0 +1,299 @@
+---
+title: Monitoring queries
+description: Practical query recipes for common performance monitoring use cases
+---
+
+This guide covers common monitoring scenarios with ready-to-use SQL queries. Each section starts with the question you're trying to answer, then provides the query.
+
+## Find slow queries
+
+### Top queries by tail latency
+
+Use the pre-aggregated `query_stats_5m` view to find the worst p99 latencies without scanning raw events:
+
+```sql
+SELECT
+    query_id,
+    cmd_type,
+    countMerge(calls_state) AS calls,
+    round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 1 HOUR
+GROUP BY query_id, cmd_type
+ORDER BY p99_ms DESC
+LIMIT 10;
+```
+
+### Latency trend for a specific query
+
+After identifying a slow `query_id`, see how its performance changes over time. This is something `pg_stat_statements` cannot do since it only stores cumulative counters.
+
+```sql
+SELECT
+    toStartOfFiveMinutes(ts_start) AS bucket,
+    count() AS calls,
+    round(avg(duration_us) / 1000, 2) AS avg_ms,
+    round(quantile(0.95)(duration_us) / 1000, 2) AS p95_ms
+FROM pg_stat_ch.events_raw
+WHERE query_id = 14460383662181259114  -- replace with your query_id
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Individual slow executions
+
+Find the specific query executions that were slowest:
+
+```sql
+SELECT
+    ts_start,
+    duration_us / 1000 AS ms,
+    rows,
+    db,
+    username,
+    app,
+    substring(query, 1, 200) AS query_preview
+FROM pg_stat_ch.events_raw
+WHERE duration_us > 1000000  -- > 1 second
+  AND ts_start > now() - INTERVAL 1 HOUR
+ORDER BY duration_us DESC
+LIMIT 20;
+```
+
+## Diagnose cache problems
+
+### Cache miss outliers
+
+Find individual executions with the most disk reads:
+
+```sql
+SELECT
+    ts_start,
+    query_id,
+    shared_blks_read,
+    shared_blks_hit,
+    round(100 * shared_blks_read / (shared_blks_hit + shared_blks_read), 2) AS miss_pct,
+    duration_us / 1000 AS ms,
+    substring(query, 1, 100) AS query_preview
+FROM pg_stat_ch.events_raw
+WHERE shared_blks_read > 100
+  AND ts_start > now() - INTERVAL 1 HOUR
+ORDER BY shared_blks_read DESC
+LIMIT 20;
+```
+
+### Cache hit ratio trend
+
+Track cache efficiency over time:
+
+```sql
+SELECT
+    toStartOfFiveMinutes(ts_start) AS bucket,
+    count() AS queries,
+    sum(shared_blks_hit) AS hits,
+    sum(shared_blks_read) AS reads,
+    round(100 * sum(shared_blks_hit) / (sum(shared_blks_hit) + sum(shared_blks_read) + 1), 2) AS hit_ratio
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 24 HOUR
+  AND (shared_blks_hit + shared_blks_read) > 0
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Queries spilling to temp files
+
+Non-zero `temp_blks_written` means sorts or hashes are exceeding `work_mem`:
+
+```sql
+SELECT
+    query_id,
+    count() AS executions,
+    round(avg(temp_blks_written), 0) AS avg_temp_blks,
+    round(avg(duration_us) / 1000, 2) AS avg_ms,
+    any(substring(query, 1, 150)) AS sample_query
+FROM pg_stat_ch.events_raw
+WHERE temp_blks_written > 0
+  AND ts_start > now() - INTERVAL 1 HOUR
+GROUP BY query_id
+ORDER BY avg_temp_blks DESC
+LIMIT 10;
+```
+
+## Track errors
+
+### Errors by SQLSTATE
+
+```sql
+SELECT
+    err_sqlstate,
+    count() AS errors,
+    uniq(query_id) AS unique_queries,
+    any(err_message) AS sample_message
+FROM pg_stat_ch.events_raw
+WHERE err_elevel >= 21  -- ERROR and above
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY err_sqlstate
+ORDER BY errors DESC;
+```
+
+### Error rate over time
+
+```sql
+SELECT
+    toStartOfFiveMinutes(ts_start) AS bucket,
+    count() AS total_queries,
+    countIf(err_elevel >= 21) AS errors,
+    round(100 * countIf(err_elevel >= 21) / count(), 2) AS error_pct
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Errors for a specific query
+
+```sql
+SELECT
+    ts_start,
+    err_sqlstate,
+    err_elevel,
+    err_message,
+    substring(query, 1, 200) AS query_preview
+FROM pg_stat_ch.errors_recent
+WHERE query_id = 14460383662181259114  -- replace with your query_id
+ORDER BY ts_start DESC
+LIMIT 20;
+```
+
+## Understand load patterns
+
+### QPS over time
+
+```sql
+SELECT
+    bucket,
+    countMerge(calls_state) / 300 AS qps
+FROM pg_stat_ch.query_stats_5m
+WHERE bucket >= now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Load by application
+
+Rank applications by total query time to find the heaviest consumers:
+
+```sql
+SELECT
+    app,
+    countMerge(calls_state) AS total_queries,
+    round(sumMerge(duration_sum_state) / 1000000, 2) AS total_seconds,
+    round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms,
+    sumMerge(errors_sum_state) AS errors
+FROM pg_stat_ch.db_app_user_1m
+WHERE bucket >= now() - INTERVAL 24 HOUR
+GROUP BY app
+ORDER BY total_seconds DESC;
+```
+
+### Workload breakdown by command type
+
+```sql
+SELECT
+    cmd_type,
+    count() AS queries,
+    round(100 * count() / sum(count()) OVER (), 1) AS pct,
+    round(avg(duration_us) / 1000, 2) AS avg_ms,
+    sum(rows) AS total_rows
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 1 HOUR
+GROUP BY cmd_type
+ORDER BY queries DESC;
+```
+
+## Monitor WAL and write activity
+
+### WAL generation rate
+
+```sql
+SELECT
+    toStartOfMinute(ts_start) AS bucket,
+    sum(wal_bytes) AS wal_bytes,
+    round(sum(wal_bytes) / 1048576, 2) AS wal_mb,
+    sum(wal_fpi) AS full_page_images
+FROM pg_stat_ch.events_raw
+WHERE cmd_type IN ('INSERT', 'UPDATE', 'DELETE')
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+Full-page images (FPI) spike after each checkpoint then drop until the next one. This sawtooth pattern is visible in per-execution data but invisible in `pg_stat_statements`.
+
+### Dirty blocks over time
+
+Buffer write pressure by block type. Spikes in shared blocks indicate write-heavy batches; non-zero local/temp indicate temp table or `work_mem` spill activity.
+
+```sql
+SELECT
+    toStartOfMinute(ts_start) AS bucket,
+    sum(shared_blks_dirtied) AS shared_dirtied,
+    sum(local_blks_dirtied) AS local_dirtied,
+    sum(temp_blks_written) AS temp_written
+FROM pg_stat_ch.events_raw
+WHERE ts_start > now() - INTERVAL 24 HOUR
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+## Analyze parallel query usage
+
+Available on PostgreSQL 18+.
+
+### Queries where workers couldn't be launched
+
+```sql
+SELECT
+    query_id,
+    cmd_type,
+    count() AS executions,
+    round(avg(parallel_workers_planned), 1) AS avg_planned,
+    round(avg(parallel_workers_launched), 1) AS avg_launched,
+    round(avg(parallel_workers_planned - parallel_workers_launched), 1) AS avg_missed
+FROM pg_stat_ch.events_raw
+WHERE parallel_workers_planned > parallel_workers_launched
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY query_id, cmd_type
+ORDER BY avg_missed DESC
+LIMIT 10;
+```
+
+If `avg_missed` is consistently high, consider increasing `max_parallel_workers` or `max_worker_processes`.
+
+## Analyze JIT compilation
+
+### Queries where JIT overhead exceeds benefit
+
+```sql
+SELECT
+    query_id,
+    count() AS executions,
+    round(avg(duration_us) / 1000, 2) AS avg_total_ms,
+    round(avg(jit_generation_time_us + jit_inlining_time_us +
+              jit_optimization_time_us + jit_emission_time_us) / 1000, 2) AS avg_jit_ms,
+    round(100 * avg(jit_generation_time_us + jit_inlining_time_us +
+                    jit_optimization_time_us + jit_emission_time_us) /
+          greatest(avg(duration_us), 1), 1) AS jit_pct_of_total
+FROM pg_stat_ch.events_raw
+WHERE jit_functions > 0
+  AND ts_start > now() - INTERVAL 24 HOUR
+GROUP BY query_id
+HAVING avg_jit_ms > 10  -- only queries with significant JIT time
+ORDER BY jit_pct_of_total DESC
+LIMIT 10;
+```
+
+If JIT compilation takes a large percentage of total execution time for frequently-run queries, consider raising `jit_above_cost` to prevent JIT for those queries.

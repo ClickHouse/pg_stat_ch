@@ -1,0 +1,109 @@
+---
+title: OpenTelemetry export
+description: Send query telemetry to an OpenTelemetry collector instead of ClickHouse
+---
+
+pg_stat_ch can export query telemetry as OpenTelemetry logs and metrics instead of inserting directly into ClickHouse. This lets you route data through your existing observability pipeline (Grafana, Datadog, Honeycomb, etc.) without running a separate ClickHouse instance.
+
+## Enable OpenTelemetry mode
+
+Set these parameters in `postgresql.conf` and restart PostgreSQL:
+
+```ini
+pg_stat_ch.use_otel = on
+pg_stat_ch.otel_endpoint = 'localhost:4317'
+```
+
+When `use_otel` is enabled, the ClickHouse connection parameters are ignored. The background worker sends events to the OTel collector via gRPC.
+
+## How it works
+
+The OTel exporter maps pg_stat_ch events to OpenTelemetry semantic conventions:
+
+- **Logs**: Each query execution becomes an OTel log record with attributes following the [database semantic conventions](https://opentelemetry.io/docs/specs/semconv/database/) (`db.name`, `db.user`, `db.operation.name`, `db.statement`).
+- **Metrics**: Query duration is exported as a histogram metric at a configurable interval, allowing you to view latency distributions in your metrics backend.
+
+The exporter uses a batch log processor internally: events are buffered in a queue and flushed in batches to reduce gRPC overhead.
+
+## Configuration
+
+All OTel-specific parameters require a PostgreSQL restart.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `pg_stat_ch.otel_endpoint` | `localhost:4317` | OTel collector gRPC endpoint (`host:port`) |
+| `pg_stat_ch.otel_log_queue_size` | `65536` | Max log records buffered before dropping |
+| `pg_stat_ch.otel_log_batch_size` | `8192` | Records per gRPC export call |
+| `pg_stat_ch.otel_log_max_bytes` | `3145728` (3 MiB) | Max gRPC message size |
+| `pg_stat_ch.otel_log_delay_ms` | `100` | Delay between batch exports |
+| `pg_stat_ch.otel_metric_interval_ms` | `5000` | Metric histogram export interval |
+
+See the [configuration reference](/reference/configuration#opentelemetry) for details on each parameter.
+
+## Example: OTel Collector to ClickHouse
+
+You can use the OpenTelemetry Collector as a middle layer between pg_stat_ch and ClickHouse. This is useful when you want to fan out data to multiple backends or apply transformations.
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000
+    database: pg_stat_ch
+  otlphttp:
+    endpoint: https://your-observability-platform.com
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [clickhouse, otlphttp]
+    metrics:
+      receivers: [otlp]
+      exporters: [otlphttp]
+```
+
+## Example: Grafana with Tempo/Loki
+
+Route pg_stat_ch logs to Loki and metrics to Prometheus/Mimir for Grafana dashboards:
+
+```yaml
+exporters:
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+  prometheusremotewrite:
+    endpoint: http://mimir:9009/api/v1/push
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [loki]
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+```
+
+## Verify data is flowing
+
+Check export health the same way as with ClickHouse:
+
+```sql
+SELECT
+    exported_events,
+    send_failures,
+    last_error_text,
+    queue_usage_pct
+FROM pg_stat_ch_stats();
+```
+
+If `send_failures` is increasing, check:
+1. The OTel collector is running and reachable at the configured endpoint
+2. The collector's gRPC receiver is listening on port 4317
+3. PostgreSQL logs for connection error details
