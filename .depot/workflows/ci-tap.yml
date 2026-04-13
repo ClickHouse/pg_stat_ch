@@ -1,0 +1,107 @@
+# Depot CI Migration
+# Source: .github/workflows/ci-tap.yml
+#
+# Changes made:
+# - Changed GitHub runs-on labels to their Depot equivalents
+
+name: TAP Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+env:
+  CI: true
+  PG_VERSION: REL_18_STABLE
+  PG_TAP_DIR: ${{ github.workspace }}/pg-tap
+jobs:
+  tap-tests:
+    name: TAP Tests (PG 18)
+    runs-on: depot-ubuntu-24.04 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install PostgreSQL build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libreadline-dev \
+            zlib1g-dev \
+            flex \
+            bison \
+            libxml2-dev \
+            libxslt1-dev \
+            libssl-dev \
+            libicu-dev \
+            pkg-config \
+            libipc-run-perl \
+            cmake \
+            ninja-build
+      - name: Cache PostgreSQL build
+        id: cache-pg
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PG_TAP_DIR }}
+          key: pg-tap-${{ env.PG_VERSION }}-v2
+      - name: Build PostgreSQL with TAP support
+        if: steps.cache-pg.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch=${{ env.PG_VERSION }} https://github.com/postgres/postgres.git postgres-src
+          cd postgres-src
+          ./configure --enable-tap-tests --prefix=${{ env.PG_TAP_DIR }}
+          make -j$(nproc)
+          make install
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: tap-tests
+          max-size: 500M
+      - name: Build extension
+        run: |
+          export PATH="${{ env.PG_TAP_DIR }}/bin:$PATH"
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPG_CONFIG=${{ env.PG_TAP_DIR }}/bin/pg_config \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+          cmake --install build
+      - name: Start ClickHouse
+        run: |
+          docker rm -f clickhouse-test 2>/dev/null || true
+          docker run -d --name clickhouse-test \
+            --network host \
+            clickhouse/clickhouse-server:26.1
+          # Wait for ClickHouse to be ready
+          for i in {1..30}; do
+            if curl -sf 'http://localhost:8123/' --data 'SELECT 1' >/dev/null 2>&1; then
+              echo "ClickHouse ready"
+              exit 0
+            fi
+            echo "Waiting for ClickHouse... ($i/30)"
+            sleep 1
+          done
+          echo "ClickHouse not ready after 30s"
+          docker logs clickhouse-test
+          exit 1
+      - name: Initialize ClickHouse schema
+        run: |
+          docker exec clickhouse-test clickhouse-client --multiquery < docker/init/00-schema.sql
+      - name: Run TAP tests
+        run: |
+          export PATH="${{ env.PG_TAP_DIR }}/bin:$PATH"
+          export PG_REGRESS="${{ env.PG_TAP_DIR }}/lib/postgresql/pgxs/src/test/regress/pg_regress"
+          export PERL_LIB="${{ env.PG_TAP_DIR }}/lib/postgresql/pgxs/src/test/perl"
+          prove -v --timer -I "$PERL_LIB" -I t t/*.pl
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-test-logs
+          path: t/tmp_check/
+      - name: Cleanup ClickHouse
+        if: always()
+        run: docker rm -f clickhouse-test 2>/dev/null || true
