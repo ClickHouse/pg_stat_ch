@@ -17,53 +17,6 @@
 }
 
 /* ============================================
-   Code Blocks - Dark Mode
-   ============================================ */
-
-.dark .code-block-background,
-.dark [data-component-part="code-block-root"],
-:is(.dark) .code-block-background,
-:is(.dark) [data-component-part="code-block-root"] {
-    background-color: #282828 !important;
-    --shiki-dark-bg: #282828 !important;
-}
-
-.dark pre.shiki,
-:is(.dark) pre.shiki {
-    background-color: #282828 !important;
-    --shiki-dark-bg: #282828 !important;
-}
-
-/* Highlighted lines */
-.dark [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight,
-:is(.dark) [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight {
-    background: #424242 !important;
-}
-
-.dark [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::before,
-:is(.dark) [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::before {
-    background-color: #424242 !important;
-    border-left-color: #FAFF69 !important;
-}
-
-.dark [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::after,
-:is(.dark) [data-component-part=code-block-root]:not(.has-line-numbers) .line-highlight::after {
-    background-color: #424242 !important;
-}
-
-/* Fade overlay */
-.dark [data-fade-overlay="true"],
-:is(.dark) [data-fade-overlay="true"] {
-    --fade-color-dark: #282828 !important;
-}
-
-/* Copy button checkmark - yellow in dark mode */
-.dark [data-testid="copy-code-button"] svg[viewBox="0 0 16 11"],
-:is(.dark) [data-testid="copy-code-button"] svg[viewBox="0 0 16 11"] {
-    fill: #FAFF69 !important;
-}
-
-/* ============================================
    Eyebrow Element Color Override
    ============================================ */
 
@@ -97,7 +50,6 @@ html.dark .eyebrow {
    Table of Contents Links - Dark Mode
    ============================================ */
 
-/* Yellow text and border for active TOC links */
 /* Active nav anchor - yellow in dark mode */
 html.dark a.nav-anchor.dark\:text-primary-light,
 :is(.dark) a.nav-anchor.dark\:text-primary-light {
@@ -127,7 +79,7 @@ html.dark a[href^="#"].dark\:hover\:text-gray-300:hover {
 }
 
 /* ============================================
-   Pagination Links - Dark Mode
+   Pagination Links
    ============================================ */
 
 html:not(.dark) .pagination-next,
@@ -182,28 +134,12 @@ html:not(.dark) .pagination-prev:hover {
     color: #E6E7E9 !important;
 }
 
-
-
 /* ============================================
    Navbar & Sidebar
    ============================================ */
 
 .nav-logo {
     height: 2rem;
-}
-
-#navbar {
-    background-color: #f7f7f7 !important;
-}
-
-.dark #navbar,
-:is(.dark) #navbar {
-    background-color: #151515 !important;
-}
-
-.dark #almond-background-color,
-:is(.dark) #almond-background-color {
-    background-color: #151515 !important;
 }
 
 /* ============================================
@@ -254,7 +190,6 @@ html.dark [data-component-part="card-icon"] {
 .dark .card:hover {
     border-color: #fdff75 !important;
 }
-
 
 /* ============================================
    Content Area Width & Padding

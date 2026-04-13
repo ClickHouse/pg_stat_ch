@@ -1,19 +1,55 @@
 ---
 title: Installation
-description: Build pg_stat_ch from source and load it into PostgreSQL
+description: Install pg_stat_ch from prebuilt binaries or build from source
 ---
 
 ## Prerequisites
 
-- **PostgreSQL 16, 17, or 18** with development headers (`postgresql-server-dev-*` or built from source)
-- **CMake 3.20+** and **Ninja** (or Make)
-- **A C++17 compiler** (GCC 10+, Clang 13+)
+- **PostgreSQL 16, 17, or 18**
 - **Docker and Docker Compose** (for the quickstart and ClickHouse setup)
 - **ClickHouse** (for the default export backend) or an OpenTelemetry collector
 
+## Install from prebuilt binaries
+
+Prebuilt binaries are published for every release on Linux (amd64 and arm64) for PostgreSQL 16, 17, and 18.
+
+<Steps>
+  <Step title="Download the tarball">
+    Go to the [latest release](https://github.com/ClickHouse/pg_stat_ch/releases/latest) and download the tarball matching your PostgreSQL version and architecture. For example, for PostgreSQL 18 on amd64:
+
+    ```bash
+    curl -LO https://github.com/ClickHouse/pg_stat_ch/releases/latest/download/pg_stat_ch-v0.3.4-pg18-linux-amd64.tar.gz
+    ```
+
+    Available variants:
+
+    | PostgreSQL | amd64 | arm64 |
+    |---|---|---|
+    | 16 | `pg_stat_ch-*-pg16-linux-amd64.tar.gz` | `pg_stat_ch-*-pg16-linux-arm64.tar.gz` |
+    | 17 | `pg_stat_ch-*-pg17-linux-amd64.tar.gz` | `pg_stat_ch-*-pg17-linux-arm64.tar.gz` |
+    | 18 | `pg_stat_ch-*-pg18-linux-amd64.tar.gz` | `pg_stat_ch-*-pg18-linux-arm64.tar.gz` |
+  </Step>
+  <Step title="Extract and install">
+    ```bash
+    tar -xzf pg_stat_ch-*.tar.gz
+    cd pg_stat_ch-*/
+    sudo cp pg_stat_ch.so $(pg_config --pkglibdir)/
+    sudo cp pg_stat_ch.control pg_stat_ch--*.sql $(pg_config --sharedir)/extension/
+    ```
+  </Step>
+</Steps>
+
+See `INSTALL.md` in the tarball for full instructions.
+
+<Tip>
+Debug symbol packages (`*-debuginfo.tar.gz`) are also available for crash analysis. Extract and point `gdb` at the debug directory.
+</Tip>
+
 ## Build from source
 
-Clone the repository with submodules (the ClickHouse C++ client is vendored):
+Building from source requires **CMake 3.20+**, **Ninja** (or Make), a **C++17 compiler** (GCC 10+, Clang 13+), and PostgreSQL development headers (`postgresql-server-dev-*`).
+
+Clone the repository with submodules:
 
 ```bash
 git clone --recurse-submodules https://github.com/ClickHouse/pg_stat_ch.git
@@ -121,8 +157,19 @@ jit = on
 
 ## Next steps
 
-With the extension loaded, set up the ClickHouse backend to start receiving events:
+With the extension loaded, connect it to a backend to start receiving events:
 
-<Card title="Quick start" icon="bolt" href="/get-started/quick-start">
-  Docker-based setup that gets you from zero to querying events
-</Card>
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="bolt" href="/get-started/quick-start">
+    Docker-based setup that gets you from zero to querying events in ClickHouse
+  </Card>
+  <Card title="ClickHouse setup" icon="database" href="/guides/clickhouse">
+    Production ClickHouse deployment, schema, and data retention
+  </Card>
+  <Card title="OpenTelemetry export" icon="signal-stream" href="/guides/opentelemetry">
+    Route telemetry through your existing OTel collector to Grafana, Datadog, etc.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/reference/configuration">
+    Tune queue size, flush interval, and connection settings
+  </Card>
+</CardGroup>
