@@ -355,6 +355,106 @@ TEST(ParseSqlcommenter, UrlEncodedSpecialChars) {
 }
 
 // ============================================================================
+// Spec compliance: real-world samples and edge cases
+// ============================================================================
+
+TEST(ParseSqlcommenter, RealWorldDjangoSample) {
+  // Exact sample from the sqlcommenter homepage (Django ORM output)
+  auto result = ParseSqlcommenter(
+      "controller='index',db_driver='django.db.backends.postgresql',"
+      "framework='django%3A2.2.1',route='%5Epolls/%24',"
+      "traceparent='00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01',"
+      "tracestate='congo%3Dt61rcWkgMzE%2Crojo%3D00f067aa0ba902b7'");
+  EXPECT_EQ(result.count, 6);
+  EXPECT_EQ(result.labels[0].key, "controller");
+  EXPECT_EQ(result.labels[0].value, "index");
+  EXPECT_EQ(result.labels[1].key, "db_driver");
+  EXPECT_EQ(result.labels[1].value, "django.db.backends.postgresql");
+  EXPECT_EQ(result.labels[2].key, "framework");
+  EXPECT_EQ(result.labels[2].value, "django:2.2.1");
+  EXPECT_EQ(result.labels[3].key, "route");
+  EXPECT_EQ(result.labels[3].value, "^polls/$");
+  EXPECT_EQ(result.labels[4].key, "traceparent");
+  EXPECT_EQ(result.labels[4].value,
+            "00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01");
+  EXPECT_EQ(result.labels[5].key, "tracestate");
+  EXPECT_EQ(result.labels[5].value, "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7");
+}
+
+TEST(ExtractLastComment, MultiLineComment) {
+  // sqlcommenter comments can span multiple lines in logs
+  auto result = ExtractLastComment(
+      "INSERT INTO t1 VALUES ($1, $2)\n"
+      "/*controller='index',\n"
+      "framework='django%3A2.2.1'*/");
+  EXPECT_EQ(result,
+            "controller='index',\n"
+            "framework='django%3A2.2.1'");
+}
+
+TEST(ExtractLastComment, MultipleBlocksReturnsLast) {
+  // Non-sqlcommenter comment followed by sqlcommenter — only last is returned
+  auto result = ExtractLastComment(
+      "SELECT /*+ IndexScan(t1) */ * FROM t1 "
+      "/* controller='index',action='show' */");
+  EXPECT_EQ(result, " controller='index',action='show' ");
+}
+
+TEST(ExtractLastComment, DashDashCommentIgnored) {
+  // -- style comments don't affect /* */ extraction
+  auto result = ExtractLastComment(
+      "SELECT * FROM t1 -- this is a line comment\n"
+      "/* controller='index' */");
+  EXPECT_EQ(result, " controller='index' ");
+}
+
+TEST(EndToEnd, RealWorldDjangoFullPipeline) {
+  // Full pipeline with the real-world Django sample from the sqlcommenter docs
+  std::string_view query =
+      "INSERT INTO \"polls_question\" (\"question_text\", \"pub_date\") VALUES "
+      "($1, $2) RETURNING \"polls_question\".\"id\" "
+      "/*controller='index',db_driver='django.db.backends.postgresql',"
+      "framework='django%3A2.2.1',route='%5Epolls/%24',"
+      "traceparent='00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01',"
+      "tracestate='congo%3Dt61rcWkgMzE%2Crojo%3D00f067aa0ba902b7'*/";
+  auto comment = ExtractLastComment(query);
+  EXPECT_FALSE(comment.empty());
+  auto parsed = ParseSqlcommenter(comment);
+  EXPECT_EQ(parsed.count, 6);
+  EXPECT_EQ(parsed.labels[2].value, "django:2.2.1");
+  EXPECT_EQ(parsed.labels[3].value, "^polls/$");
+  std::string json = SerializeLabelsJson(parsed);
+  // Verify JSON contains all keys
+  EXPECT_NE(json.find("\"controller\""), std::string::npos);
+  EXPECT_NE(json.find("\"traceparent\""), std::string::npos);
+  EXPECT_NE(json.find("\"tracestate\""), std::string::npos);
+}
+
+TEST(EndToEnd, NonSqlcommenterLastComment) {
+  // If the last comment is not sqlcommenter format, no labels are extracted
+  std::string_view query =
+      "SELECT * FROM t1 /* controller='index' */ WHERE id = $1 /* regular comment */";
+  auto comment = ExtractLastComment(query);
+  EXPECT_EQ(comment, " regular comment ");
+  auto parsed = ParseSqlcommenter(comment);
+  EXPECT_EQ(parsed.count, 0);
+}
+
+TEST(EndToEnd, MultiLineCommentParsing) {
+  std::string_view query =
+      "SELECT $1\n"
+      "/*controller='index',\n"
+      "framework='django%3A2.2.1',\n"
+      "route='%5Epolls/%24'*/";
+  auto comment = ExtractLastComment(query);
+  auto parsed = ParseSqlcommenter(comment);
+  EXPECT_EQ(parsed.count, 3);
+  EXPECT_EQ(parsed.labels[0].value, "index");
+  EXPECT_EQ(parsed.labels[1].value, "django:2.2.1");
+  EXPECT_EQ(parsed.labels[2].value, "^polls/$");
+}
+
+// ============================================================================
 // SerializeLabelsJson tests
 // ============================================================================
 
