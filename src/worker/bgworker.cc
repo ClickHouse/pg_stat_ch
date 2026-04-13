@@ -36,6 +36,7 @@ extern "C" {
 #include "utils/wait_event.h"
 }
 
+#include "queue/psch_dsa.h"
 #include "queue/shmem.h"
 
 #include <csignal>
@@ -189,6 +190,9 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
 
   // Store our PID for signaling (used by pg_stat_ch_flush())
   PschSetBgworkerPid(MyProcPid);
+
+  // Attach to DSA area eagerly so the first dequeue doesn't hit lazy init
+  PschDsaAttach();
 
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
 

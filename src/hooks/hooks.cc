@@ -309,20 +309,15 @@ static void CopyWalUsage(PschEvent* event, const WalUsage* wal) {
   event->wal_bytes = wal->wal_bytes;
 }
 
-// Initialize PschEvent by zeroing only fixed-size fields (~550 bytes) instead of
-// the full struct (~4.5KB). The two large text buffers (err_message: 2KB, query: 2KB)
-// are just null-terminated since they'll be overwritten by CopyTrimmed/strlcpy or
-// left at len=0.
+// Initialize PschEvent by zeroing only the fixed-size prefix instead of the full
+// struct (~4.5KB).  After the field reorder in event.h, everything before
+// err_message is fixed-size, so one memset covers the numeric fields, names,
+// client context, and stored lengths. The two large text buffers only need a
+// leading '\0'; later code either overwrites them or leaves len=0.
 static void InitEventPartial(PschEvent* event) {
-  // Zero header: all fixed fields before err_message (~430 bytes)
-  const size_t header_size = offsetof(PschEvent, err_message);
-  memset(event, 0, header_size);
+  const size_t fixed_prefix_size = offsetof(PschEvent, err_message);
+  memset(event, 0, fixed_prefix_size);
   event->err_message[0] = '\0';
-
-  // Zero mid section: application_name through query_len (~114 bytes)
-  const size_t mid_offset = offsetof(PschEvent, application_name);
-  const size_t mid_size = offsetof(PschEvent, query) - mid_offset;
-  memset(reinterpret_cast<char*>(event) + mid_offset, 0, mid_size);
   event->query[0] = '\0';
 }
 

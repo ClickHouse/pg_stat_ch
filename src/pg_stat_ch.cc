@@ -55,7 +55,7 @@ Datum pg_stat_ch_version(PG_FUNCTION_ARGS) {
 }
 
 // SQL function: pg_stat_ch_stats()
-// Returns queue statistics as a single row with 10 columns:
+// Returns queue statistics as a single row with 11 columns:
 //   1. enqueued        - Total events enqueued
 //   2. dropped         - Total events dropped due to overflow
 //   3. exported        - Total events exported to ClickHouse
@@ -66,11 +66,12 @@ Datum pg_stat_ch_version(PG_FUNCTION_ARGS) {
 //   8. queue_size      - Current number of events in queue
 //   9. queue_capacity  - Maximum queue capacity
 //  10. queue_pct       - Queue usage percentage
+//  11. dsa_oom_count   - DSA string allocation failures
 PG_FUNCTION_INFO_V1(pg_stat_ch_stats);
 Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   TupleDesc tupdesc;
-  Datum values[10];
-  bool nulls[10];
+  Datum values[11];
+  bool nulls[11];
   HeapTuple tuple;
 
   // Build tuple descriptor
@@ -92,9 +93,11 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   TimestampTz last_success_ts = 0;
   char last_error_text[256] = {0};
   TimestampTz last_error_ts = 0;
+  uint64 dsa_oom_count = 0;
 
   PschGetStats(&enqueued, &dropped, &exported, &queue_size, &queue_capacity, &send_failures,
-               &last_success_ts, last_error_text, sizeof(last_error_text), &last_error_ts);
+               &last_success_ts, last_error_text, sizeof(last_error_text), &last_error_ts,
+               &dsa_oom_count);
 
   // Fill values
   MemSet(nulls, false, sizeof(nulls));
@@ -137,6 +140,7 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
     usage_pct = 100.0 * queue_size / queue_capacity;
   }
   values[9] = Float8GetDatum(usage_pct);
+  values[10] = Int64GetDatum(dsa_oom_count);
 
   tuple = heap_form_tuple(tupdesc, values, nulls);
 

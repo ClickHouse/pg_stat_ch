@@ -12,7 +12,7 @@ LANGUAGE C STRICT;
 COMMENT ON FUNCTION pg_stat_ch_version()
 IS 'Returns the pg_stat_ch extension version';
 
--- Stats function (10 columns)
+-- Stats function (11 columns)
 CREATE FUNCTION pg_stat_ch_stats(
   OUT enqueued_events bigint,
   OUT dropped_events bigint,
@@ -23,7 +23,8 @@ CREATE FUNCTION pg_stat_ch_stats(
   OUT last_error_ts timestamptz,
   OUT queue_size integer,
   OUT queue_capacity integer,
-  OUT queue_usage_pct double precision
+  OUT queue_usage_pct double precision,
+  OUT dsa_oom_count bigint
 )
 RETURNS record
 AS 'MODULE_PATHNAME'

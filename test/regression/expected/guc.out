@@ -23,13 +23,20 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.otel_log_queue_size
  pg_stat_ch.otel_metric_interval_ms
  pg_stat_ch.queue_capacity
+ pg_stat_ch.string_area_size
  pg_stat_ch.use_otel
-(21 rows)
+(22 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
 --------------------
  on
+(1 row)
+
+SHOW pg_stat_ch.string_area_size;
+ pg_stat_ch.string_area_size 
+-----------------------------
+ 64MB
 (1 row)
 
 -- Test log_min_elevel GUC

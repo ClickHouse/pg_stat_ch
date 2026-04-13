@@ -150,6 +150,18 @@ To reset the counter after resolving the issue:
 SELECT pg_stat_ch_reset();
 ```
 
+## DSA String Area Full
+
+Check the `dsa_oom_count` counter:
+
+```sql
+SELECT dsa_oom_count FROM pg_stat_ch_stats();
+```
+
+If it increases, the fixed ring entry was captured but the variable-length query
+or error text could not be stored. Increase `pg_stat_ch.string_area_size`
+and restart PostgreSQL.
+
 ## Missing I/O timing data
 
 If `shared_blk_read_time_us` and related columns are always zero:

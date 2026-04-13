@@ -135,17 +135,18 @@ struct PschEvent {
   uint8 err_elevel;        // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
   uint8 _padding3;         // Alignment
   uint16 err_message_len;  // Actual length of error message
-  char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
 
   // Client context
   char application_name[64];   // Application name (NAMEDATALEN=64)
   uint8 application_name_len;  // Actual length
   char client_addr[46];        // Client IP address (INET6_ADDRSTRLEN=46)
   uint8 client_addr_len;       // Actual length
+  uint16 query_len;            // Actual length of query text
 
-  // Query text (null-terminated, truncated if necessary)
-  uint16 query_len;  // Actual length of query text
-  char query[PSCH_MAX_QUERY_LEN];
+  // Variable-length text fields — kept last so the fixed-size prefix can be
+  // block-copied between PschEvent and PschRingEntry with a single memcpy.
+  char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
+  char query[PSCH_MAX_QUERY_LEN];          // Query text (null-terminated)
 };
 
 // Ensure the struct has expected size characteristics
