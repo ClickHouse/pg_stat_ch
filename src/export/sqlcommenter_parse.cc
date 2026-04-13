@@ -1,31 +1,32 @@
 #include "export/sqlcommenter_parse.h"
 
+#include <charconv>
 #include <cstdio>
 
 namespace {
 
 int DecodeHexByte(char hi, char lo) {
-  auto hex = [](char c) -> int {
-    if (c >= '0' && c <= '9')
-      return c - '0';
-    if (c >= 'a' && c <= 'f')
-      return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-      return c - 'A' + 10;
+  char buf[2] = {hi, lo};
+  unsigned value = 0;
+  auto [ptr, ec] = std::from_chars(buf, buf + 2, value, 16);
+  if (ec != std::errc{} || ptr != buf + 2)
     return -1;
-  };
-  int h = hex(hi);
-  int l = hex(lo);
-  if (h < 0 || l < 0)
-    return -1;
-  return (h << 4) | l;
+  return static_cast<int>(value);
+}
+
+bool IsWhitespace(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+bool IsKeyTerminator(char c) {
+  return c == '=' || c == ',' || IsWhitespace(c);
 }
 
 bool NeedsDecode(std::string_view sv) {
   return sv.find('%') != std::string_view::npos || sv.find('\\') != std::string_view::npos;
 }
 
-// Meta-unescape (\' → ') and URL-decode in a single pass.
+// Meta-unescape (\' -> ') and URL-decode (%XX) in a single pass.
 // Per sqlcommenter spec, meta unescaping happens before URL decoding,
 // but the two transforms don't overlap so a combined pass is equivalent.
 size_t MetaUnescapeAndUrlDecode(std::string_view src, char* dst, size_t max_len) {
@@ -48,6 +49,15 @@ size_t MetaUnescapeAndUrlDecode(std::string_view src, char* dst, size_t max_len)
     }
   }
   return written;
+}
+
+// Decode a raw field (meta-unescape + URL-decode) into buf, or truncate if no decoding needed.
+std::string_view DecodeField(std::string_view raw, char* buf, size_t max_len) {
+  if (NeedsDecode(raw)) {
+    size_t len = MetaUnescapeAndUrlDecode(raw, buf, max_len);
+    return {buf, len};
+  }
+  return raw.substr(0, max_len);
 }
 
 void AppendJsonEscaped(std::string& out, std::string_view sv) {
@@ -86,6 +96,56 @@ void AppendJsonEscaped(std::string& out, std::string_view sv) {
   }
 }
 
+// Lightweight scanner for walking through a sqlcommenter comment.
+struct Scanner {
+  std::string_view text;
+  size_t pos = 0;
+
+  bool AtEnd() const { return pos >= text.size(); }
+
+  void SkipWhitespace() {
+    while (!AtEnd() && IsWhitespace(text[pos]))
+      ++pos;
+  }
+
+  // Consume a specific character; returns false without advancing if not matched.
+  bool Consume(char expected) {
+    if (AtEnd() || text[pos] != expected)
+      return false;
+    ++pos;
+    return true;
+  }
+
+  // Scan a key: sequence of non-terminator characters.
+  std::string_view ScanKey() {
+    size_t start = pos;
+    while (!AtEnd() && !IsKeyTerminator(text[pos]))
+      ++pos;
+    return text.substr(start, pos - start);
+  }
+
+  // Scan a single-quoted value, handling \' escapes per sqlcommenter spec.
+  // Assumes the opening quote was already consumed.
+  // Returns the raw content (before decoding). Sets *ok = false on unterminated quote.
+  std::string_view ScanQuotedValue(bool* ok) {
+    size_t start = pos;
+    while (!AtEnd()) {
+      if (text[pos] == '\\' && pos + 1 < text.size() && text[pos + 1] == '\'') {
+        pos += 2;
+      } else if (text[pos] == '\'') {
+        auto val = text.substr(start, pos - start);
+        ++pos;
+        *ok = true;
+        return val;
+      } else {
+        ++pos;
+      }
+    }
+    *ok = false;
+    return {};
+  }
+};
+
 }  // namespace
 
 std::string_view ExtractLastComment(std::string_view query) {
@@ -105,85 +165,41 @@ std::string_view ExtractLastComment(std::string_view query) {
 
 ParseResult ParseSqlcommenter(std::string_view comment) {
   ParseResult result;
-  size_t pos = 0;
+  Scanner scan{comment};
 
-  auto skip_ws = [&]() {
-    while (pos < comment.size() && (comment[pos] == ' ' || comment[pos] == '\t' ||
-                                    comment[pos] == '\n' || comment[pos] == '\r')) {
-      ++pos;
+  while (!scan.AtEnd() && result.count < kMaxLabels) {
+    scan.SkipWhitespace();
+
+    auto raw_key = scan.ScanKey();
+    if (raw_key.empty()) {
+      if (!scan.AtEnd())
+        ++scan.pos;
+      continue;
     }
-  };
 
-  while (pos < comment.size() && result.count < kMaxLabels) {
-    skip_ws();
-    if (pos >= comment.size())
+    scan.SkipWhitespace();
+    if (!scan.Consume('='))
+      continue;
+    scan.SkipWhitespace();
+    if (!scan.Consume('\''))
+      continue;
+
+    bool ok = false;
+    auto raw_value = scan.ScanQuotedValue(&ok);
+    if (!ok)
       break;
 
-    // Parse key: read until '=', whitespace, or ','
-    size_t key_start = pos;
-    while (pos < comment.size() && comment[pos] != '=' && comment[pos] != ' ' &&
-           comment[pos] != '\t' && comment[pos] != '\n' && comment[pos] != '\r' &&
-           comment[pos] != ',') {
-      ++pos;
-    }
-    if (pos == key_start) {
-      ++pos;
-      continue;
-    }
-    std::string_view raw_key = comment.substr(key_start, pos - key_start);
+    Label& label = result.labels[result.count++];
+    label.key = DecodeField(raw_key, label.decoded_key, kMaxKeyLen);
+    label.value = DecodeField(raw_value, label.decoded_value, kMaxValueLen);
 
-    skip_ws();
-    if (pos >= comment.size() || comment[pos] != '=')
-      continue;
-    ++pos;
-
-    skip_ws();
-    if (pos >= comment.size() || comment[pos] != '\'')
-      continue;
-    ++pos;
-
-    // Parse value: read until unescaped closing single quote.
-    // Per sqlcommenter spec, \' is an escaped quote inside the value.
-    size_t val_start = pos;
-    while (pos < comment.size()) {
-      if (comment[pos] == '\\' && pos + 1 < comment.size() && comment[pos + 1] == '\'') {
-        pos += 2;  // skip escaped quote
-      } else if (comment[pos] == '\'') {
-        break;
-      } else {
-        ++pos;
-      }
-    }
-    if (pos >= comment.size())
-      break;
-    std::string_view raw_value = comment.substr(val_start, pos - val_start);
-    ++pos;
-
-    Label& label = result.labels[result.count];
-    if (NeedsDecode(raw_key)) {
-      size_t len = MetaUnescapeAndUrlDecode(raw_key, label.decoded_key, kMaxKeyLen);
-      label.key = std::string_view(label.decoded_key, len);
-    } else {
-      label.key = raw_key.substr(0, kMaxKeyLen);
-    }
-
-    if (NeedsDecode(raw_value)) {
-      size_t len = MetaUnescapeAndUrlDecode(raw_value, label.decoded_value, kMaxValueLen);
-      label.value = std::string_view(label.decoded_value, len);
-    } else {
-      label.value = raw_value.substr(0, kMaxValueLen);
-    }
-
-    ++result.count;
-
-    skip_ws();
-    if (pos < comment.size() && comment[pos] == ',')
-      ++pos;
+    scan.SkipWhitespace();
+    scan.Consume(',');
   }
 
   if (result.count == kMaxLabels) {
-    skip_ws();
-    if (pos < comment.size())
+    scan.SkipWhitespace();
+    if (!scan.AtEnd())
       result.truncated = true;
   }
 
