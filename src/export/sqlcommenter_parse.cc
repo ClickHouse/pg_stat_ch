@@ -1,7 +1,8 @@
 #include "export/sqlcommenter_parse.h"
 
 #include <charconv>
-#include <cstdio>
+
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -58,42 +59,6 @@ std::string_view DecodeField(std::string_view raw, char* buf, size_t max_len) {
     return {buf, len};
   }
   return raw.substr(0, max_len);
-}
-
-void AppendJsonEscaped(std::string& out, std::string_view sv) {
-  for (char c : sv) {
-    switch (c) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\b':
-        out += "\\b";
-        break;
-      case '\f':
-        out += "\\f";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-          out += buf;
-        } else {
-          out += c;
-        }
-    }
-  }
 }
 
 // Lightweight scanner for walking through a sqlcommenter comment.
@@ -207,19 +172,9 @@ ParseResult ParseSqlcommenter(std::string_view comment) {
 }
 
 std::string SerializeLabelsJson(const ParseResult& result) {
-  if (result.count == 0)
-    return "{}";
-
-  std::string json = "{";
+  nlohmann::ordered_json obj = nlohmann::ordered_json::object();
   for (int i = 0; i < result.count; ++i) {
-    if (i > 0)
-      json += ',';
-    json += '"';
-    AppendJsonEscaped(json, result.labels[i].key);
-    json += "\":\"";
-    AppendJsonEscaped(json, result.labels[i].value);
-    json += '"';
+    obj[std::string(result.labels[i].key)] = std::string(result.labels[i].value);
   }
-  json += '}';
-  return json;
+  return obj.dump(-1, ' ', false, nlohmann::ordered_json::error_handler_t::replace);
 }

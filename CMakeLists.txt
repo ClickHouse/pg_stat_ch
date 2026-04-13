@@ -79,6 +79,7 @@ target_include_directories(pg_stat_ch SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
   ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
   ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
+  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/third_party/nlohmann-json/single_include
 )
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
@@ -154,6 +155,9 @@ if(PSCH_BUILD_UNIT_TESTS)
     src/export/sqlcommenter_parse.cc
   )
   target_include_directories(sqlcommenter_parse_test PRIVATE src include)
+  target_include_directories(sqlcommenter_parse_test SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/third_party/nlohmann-json/single_include
+  )
   target_compile_features(sqlcommenter_parse_test PRIVATE cxx_std_17)
   target_link_libraries(sqlcommenter_parse_test PRIVATE GTest::gtest_main)
   pg_stat_ch_set_warnings(sqlcommenter_parse_test)
