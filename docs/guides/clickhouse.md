@@ -80,6 +80,32 @@ Four materialized views provide pre-aggregated analytics:
 
 For view schemas, query patterns, and the `-State`/`-Merge` aggregation pattern, see [materialized views](/reference/materialized-views).
 
+## Schema migrations
+
+When upgrading pg_stat_ch, new columns or schema changes may be required. Migration scripts are provided in [`docker/migrations/`](https://github.com/ClickHouse/pg_stat_ch/tree/main/docker/migrations) and are safe to re-run (idempotent).
+
+Apply all pending migrations:
+
+```bash
+for f in docker/migrations/*.sql; do
+  clickhouse-client < "$f"
+done
+```
+
+Or apply a specific migration:
+
+```bash
+clickhouse-client < docker/migrations/001_add_labels_column.sql
+```
+
+| Migration | Version | Description |
+|---|---|---|
+| `001_add_labels_column.sql` | 0.2+ | Adds `labels JSON` column for [sqlcommenter](https://google.github.io/sqlcommenter/) query label support |
+
+<Note>
+New installations using `docker/init/00-schema.sql` already include all schema changes. Migrations are only needed for existing ClickHouse instances.
+</Note>
+
 ## Data retention
 
 The `events_raw` table has no TTL by default. To limit storage, add a TTL:

@@ -15,6 +15,7 @@ extern "C" {
 #include "export/clickhouse_exporter.h"
 #include "export/exporter_interface.h"
 #include "export/otel_exporter.h"
+#include "export/sqlcommenter_parse.h"
 #include "export/stats_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -201,6 +202,18 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
                               "client_addr_len");
     col_app->Append(std::string(ev.application_name, alen));
     col_client_addr->Append(std::string(ev.client_addr, clen));
+
+    if (psch_track_labels) {
+      std::string_view query_text(ev.query, qlen);
+      std::string_view comment = ExtractLastComment(query_text);
+      if (!comment.empty()) {
+        exporter->AppendLabels(ParseSqlcommenter(comment));
+      } else {
+        exporter->AppendLabels(ParseResult{});
+      }
+    } else {
+      exporter->AppendLabels(ParseResult{});
+    }
   }
   elog(DEBUG1, "pg_stat_ch: finished processing %zu events", events.size());
 }

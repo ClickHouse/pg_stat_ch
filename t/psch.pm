@@ -240,12 +240,13 @@ sub psch_stop_otelcol {
 sub psch_init_node_with_otel {
     my ($name, %opts) = @_;
 
-    my $queue_capacity    = $opts{queue_capacity}    // 65536;
-    my $flush_interval_ms = $opts{flush_interval_ms} // 100;   # Fast flush for tests
-    my $batch_max         = $opts{batch_max}         // 1000;
-    my $enabled           = $opts{enabled}           // 'on';
-    my $otel_endpoint     = $opts{otel_endpoint}     // 'localhost:4317';
-    my $hostname          = $opts{hostname}          // 'test-host';
+    my $queue_capacity          = $opts{queue_capacity}          // 65536;
+    my $flush_interval_ms       = $opts{flush_interval_ms}       // 100;   # Fast flush for tests
+    my $batch_max               = $opts{batch_max}               // 1000;
+    my $enabled                 = $opts{enabled}                 // 'on';
+    my $otel_endpoint           = $opts{otel_endpoint}           // 'localhost:4317';
+    my $hostname                = $opts{hostname}                // 'test-host';
+    my $otel_metric_interval_ms = $opts{otel_metric_interval_ms} // 1000;
 
     my $node = PostgreSQL::Test::Cluster->new($name);
     $node->init();
@@ -258,6 +259,7 @@ pg_stat_ch.batch_max = $batch_max
 pg_stat_ch.use_otel = on
 pg_stat_ch.otel_endpoint = '$otel_endpoint'
 pg_stat_ch.hostname = '$hostname'
+pg_stat_ch.otel_metric_interval_ms = $otel_metric_interval_ms
 });
     $node->start();
     $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');

@@ -14,7 +14,7 @@ use Test::More;
 use psch;
 
 # Skip if Docker not available
-if (!system("docker ps >/dev/null 2>&1") == 0) {
+if (system("docker ps >/dev/null 2>&1") != 0) {
     plan skip_all => 'Docker not available, skipping OTel tests';
 }
 
@@ -26,8 +26,9 @@ if (!psch_otelcol_available()) {
 
 # Initialize node with OTel export enabled
 my $node = psch_init_node_with_otel('otel_export',
-    flush_interval_ms => 100,
-    batch_max         => 100,
+    flush_interval_ms        => 100,
+    batch_max                => 100,
+    otel_metric_interval_ms  => 1000,
 );
 
 # Test 1: Basic export - run queries and verify events are exported
@@ -48,8 +49,11 @@ subtest 'basic export' => sub {
     my $stats = psch_get_stats($node);
     is($stats->{send_failures}, 0, 'No send failures');
 
+    # Wait for OTel periodic metric reader to export (1s interval + margin)
+    sleep(3);
+
     # Verify metrics arrived at the collector (Prometheus endpoint)
-    my $count = psch_get_otel_histogram_total('pg_stat_ch_duration_us_unit');
+    my $count = psch_get_otel_histogram_total('pg_stat_ch_db_client_operation_duration_seconds');
     cmp_ok($count, '>=', 3, "duration_us metric has >= 3 observations (got $count)");
 };
 
@@ -95,7 +99,8 @@ subtest 'metric labels populated' => sub {
     $node->safe_psql('postgres', 'DROP TABLE test_otel_labels');
 
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
-    sleep(2);
+    # Wait for OTel periodic metric reader to export (1s interval + margin)
+    sleep(3);
 
     # service.name resource attribute is mapped to the job label by the Prometheus exporter
     my $prometheus_output = `curl -s 'http://localhost:9091/metrics' 2>/dev/null`;
@@ -103,7 +108,7 @@ subtest 'metric labels populated' => sub {
         'metrics carry job="pg_stat_ch" label (from service.name resource attribute)');
 
     # db tag should appear as a label on duration_us observations
-    ok(psch_otel_metric_has_label('pg_stat_ch_duration_us_unit', 'db', 'postgres'),
+    ok(psch_otel_metric_has_label('pg_stat_ch_db_client_operation_duration_seconds', 'db_name', 'postgres'),
         'duration_us metric has db="postgres" label');
 
     # rows metric captures how many rows were returned/affected
@@ -114,7 +119,7 @@ subtest 'metric labels populated' => sub {
     my $sum = 0;
     for my $line (split /\n/, $prometheus_output) {
         next if $line =~ /^#/;
-        if ($line =~ /^pg_stat_ch_duration_us_unit_sum(?:\{[^}]*\})?\s+(\d+(?:\.\d+)?)/) {
+        if ($line =~ /^pg_stat_ch_db_client_operation_duration_seconds_sum(?:\{[^}]*\})?\s+(\S+)/) {
             $sum += $1;
         }
     }

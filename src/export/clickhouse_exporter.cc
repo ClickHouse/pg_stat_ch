@@ -75,10 +75,15 @@ class ClickHouseExporter : public StatsExporter {
   shared_ptr<Column<string>> DbOperationColumn() final { return TagString("cmd_type"); }
   shared_ptr<Column<string_view>> DbQueryTextColumn() final { return RecordString("query"); }
 
+  void AppendLabels(const ParseResult& labels) final {
+    labels_col_->Append(SerializeLabelsJson(labels));
+  }
+
   void BeginBatch() final {
     block = std::make_unique<clickhouse::Block>();
     columns.clear();
     exported_count = 0;
+    labels_col_ = Wrap<clickhouse::ColumnString, string_view>("labels");
   }
   void BeginRow() final { ++exported_count; }
   bool CommitBatch() final;
@@ -116,6 +121,7 @@ class ClickHouseExporter : public StatsExporter {
   std::unique_ptr<clickhouse::Client> client;
   std::unique_ptr<clickhouse::Block> block;
   std::vector<shared_ptr<BasicColumn>> columns;
+  shared_ptr<Column<string_view>> labels_col_;
   int consecutive_failures = 0;
   int exported_count = 0;
 };

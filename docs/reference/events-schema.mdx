@@ -30,6 +30,16 @@ The table is partitioned by date (`toDate(ts_start)`) and ordered by `ts_start` 
 Query normalization replaces literals with placeholders (`$N`). This means `SELECT * FROM users WHERE id = 42` becomes `SELECT * FROM users WHERE id = $1`. No passwords, tokens, or PII are exported in query text.
 </Note>
 
+## Query labels
+
+| Column | Type | Description |
+|---|---|---|
+| `labels` | `String DEFAULT '{}'` | Key-value labels extracted from [sqlcommenter](https://google.github.io/sqlcommenter/) comments appended to the query. For example, `/* controller='users',action='show' */` produces `{"controller":"users","action":"show"}`. Access subpaths directly in ClickHouse: `labels.controller`, `labels.action`. Empty `{}` when no labels are present. |
+
+<Note>
+Labels are parsed from the **last** `/* */` comment block in the query text. The parser supports URL-encoded values and escaped single quotes per the sqlcommenter specification. Controlled by the [`pg_stat_ch.track_labels`](/reference/configuration) GUC (default: `true`).
+</Note>
+
 ## Shared buffer usage
 
 These columns show how queries interact with PostgreSQL's `shared_buffers` cache. The cache hit ratio for a query is `shared_blks_hit / (shared_blks_hit + shared_blks_read)`. Target above 99% for OLTP workloads.
