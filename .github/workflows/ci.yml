@@ -93,6 +93,102 @@ jobs:
             specs/results/
             specs/tmp_check/log/
 
+  clickhouse-tap:
+    name: ClickHouse TAP Tests
+    runs-on: depot-ubuntu-24.04-16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
+          echo "deb [arch=amd64] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install PostgreSQL 18
+        run: sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: clickhouse-tap
+          max-size: 500M
+
+      - name: Build and install extension
+        run: |
+          cmake --preset default \
+            -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+          sudo cmake --install build
+
+      - name: Start ClickHouse
+        run: docker compose -f docker/docker-compose.test.yml up -d --wait
+
+      - name: Run ClickHouse TAP tests
+        run: ./scripts/run-tests.sh 18 clickhouse
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker/docker-compose.test.yml down --volumes 2>/dev/null || true
+
+  otel-tap:
+    name: OTel TAP Tests
+    runs-on: depot-ubuntu-24.04-16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
+          echo "deb [arch=amd64] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install PostgreSQL 18
+        run: sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: otel-tap
+          max-size: 500M
+
+      - name: Build and install extension
+        run: |
+          cmake --preset default \
+            -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+          sudo cmake --install build
+
+      - name: Start OTel collector
+        run: docker compose -f docker/docker-compose.otel.yml up -d --wait
+
+      - name: Run OTel TAP tests
+        run: ./scripts/run-tests.sh 18 otel
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker/docker-compose.otel.yml down --volumes 2>/dev/null || true
+
   unit-tests:
     name: C++ Unit Tests
     runs-on: depot-ubuntu-24.04-16
