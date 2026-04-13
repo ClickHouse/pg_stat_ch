@@ -18,9 +18,9 @@ jobs:
         arch: [amd64, arm64]
         include:
           - arch: amd64
-            runner: ubuntu-22.04
+            runner: depot-ubuntu-22.04-16
           - arch: arm64
-            runner: ubuntu-22.04-arm
+            runner: depot-ubuntu-22.04-arm-16
 
     steps:
       - uses: actions/checkout@v4
@@ -115,7 +115,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04-16
 
     steps:
       - uses: actions/checkout@v4
