@@ -106,19 +106,25 @@ subtest 'track_labels off' => sub {
     $node->safe_psql('postgres',
         "ALTER SYSTEM SET pg_stat_ch.track_labels = off");
     $node->reload();
-    sleep(1);
+    sleep(2);  # Give bgworker time to pick up SIGHUP
 
     $node->safe_psql('postgres',
-        "SELECT 1 /* controller='ignored' */");
+        "CREATE TABLE labels_off_test(id int)");
+    $node->safe_psql('postgres',
+        "DROP TABLE labels_off_test");
 
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
-    my $labels = psch_wait_for_clickhouse_query(
-        "SELECT labels FROM pg_stat_ch.events_raw "
-        . "WHERE query LIKE '%ignored%' LIMIT 1",
-        sub { $_[0] ne '' },
+    # Wait for rows to arrive in ClickHouse first
+    psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query LIKE '%labels_off_test%'",
+        sub { $_[0] >= 1 },
         10
     );
+
+    my $labels = psch_query_clickhouse(
+        "SELECT labels FROM pg_stat_ch.events_raw "
+        . "WHERE query LIKE '%labels_off_test%' LIMIT 1");
     like($labels, qr/^\{\}$/, 'track_labels=off produces empty labels');
 
     # Re-enable
