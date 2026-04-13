@@ -14,7 +14,7 @@ use Test::More;
 use psch;
 
 # Skip if Docker not available
-if (!system("docker ps >/dev/null 2>&1") == 0) {
+if (system("docker ps >/dev/null 2>&1") != 0) {
     plan skip_all => 'Docker not available, skipping OTel tests';
 }
 

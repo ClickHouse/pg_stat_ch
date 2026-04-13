@@ -10,6 +10,6 @@
 -- Safe to re-run: ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent.
 
 ALTER TABLE pg_stat_ch.events_raw
-    ADD COLUMN IF NOT EXISTS labels JSON(max_dynamic_paths=64)
+    ADD COLUMN IF NOT EXISTS labels String DEFAULT '{}'
     COMMENT 'Query labels from sqlcommenter comments (key=value pairs in /* */ blocks). Access subpaths directly: labels.controller, labels.action. Empty {} when no labels present. See: https://google.github.io/sqlcommenter/'
     AFTER query;

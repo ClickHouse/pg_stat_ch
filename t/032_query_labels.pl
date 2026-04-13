@@ -59,13 +59,14 @@ subtest 'no comment produces empty labels' => sub {
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
-    $node->safe_psql('postgres', 'SELECT 42');
+    $node->safe_psql('postgres', 'CREATE TABLE nocomment_test(id int)');
+    $node->safe_psql('postgres', 'DROP TABLE nocomment_test');
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
     my $labels = psch_wait_for_clickhouse_query(
         "SELECT labels FROM pg_stat_ch.events_raw "
-        . "WHERE query LIKE '%42%' LIMIT 1",
-        sub { $_[0] ne '' },
+        . "WHERE query LIKE '%nocomment_test%' LIMIT 1",
+        sub { defined $_[0] && $_[0] ne '' },
         10
     );
 
@@ -82,9 +83,9 @@ subtest 'multiple labels' => sub {
 
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
-    # Query individual label subpaths via ClickHouse JSON syntax
+    # Query individual label values via JSONExtractString
     my $controller = psch_wait_for_clickhouse_query(
-        "SELECT labels.controller FROM pg_stat_ch.events_raw "
+        "SELECT JSONExtractString(labels, 'controller') FROM pg_stat_ch.events_raw "
         . "WHERE query LIKE '%orders%' LIMIT 1",
         sub { $_[0] =~ /orders/ },
         10
@@ -92,7 +93,7 @@ subtest 'multiple labels' => sub {
     like($controller, qr/orders/, 'labels.controller = orders');
 
     my $framework = psch_query_clickhouse(
-        "SELECT labels.framework FROM pg_stat_ch.events_raw "
+        "SELECT JSONExtractString(labels, 'framework') FROM pg_stat_ch.events_raw "
         . "WHERE query LIKE '%orders%' LIMIT 1");
     like($framework, qr/rails/, 'labels.framework = rails');
 };

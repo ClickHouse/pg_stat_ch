@@ -14,7 +14,7 @@ use Test::More;
 use psch;
 
 # Skip if Docker not available
-if (!system("docker ps >/dev/null 2>&1") == 0) {
+if (system("docker ps >/dev/null 2>&1") != 0) {
     plan skip_all => 'Docker not available, skipping OTel tests';
 }
 
@@ -49,7 +49,7 @@ subtest 'basic export' => sub {
     is($stats->{send_failures}, 0, 'No send failures');
 
     # Verify metrics arrived at the collector (Prometheus endpoint)
-    my $count = psch_get_otel_histogram_total('pg_stat_ch_duration_us_unit');
+    my $count = psch_get_otel_histogram_total('pg_stat_ch_db_client_operation_duration_seconds');
     cmp_ok($count, '>=', 3, "duration_us metric has >= 3 observations (got $count)");
 };
 
@@ -103,7 +103,7 @@ subtest 'metric labels populated' => sub {
         'metrics carry job="pg_stat_ch" label (from service.name resource attribute)');
 
     # db tag should appear as a label on duration_us observations
-    ok(psch_otel_metric_has_label('pg_stat_ch_duration_us_unit', 'db', 'postgres'),
+    ok(psch_otel_metric_has_label('pg_stat_ch_db_client_operation_duration_seconds', 'db_name', 'postgres'),
         'duration_us metric has db="postgres" label');
 
     # rows metric captures how many rows were returned/affected
@@ -114,7 +114,7 @@ subtest 'metric labels populated' => sub {
     my $sum = 0;
     for my $line (split /\n/, $prometheus_output) {
         next if $line =~ /^#/;
-        if ($line =~ /^pg_stat_ch_duration_us_unit_sum(?:\{[^}]*\})?\s+(\d+(?:\.\d+)?)/) {
+        if ($line =~ /^pg_stat_ch_db_client_operation_duration_seconds_sum(?:\{[^}]*\})?\s+(\S+)/) {
             $sum += $1;
         }
     }
