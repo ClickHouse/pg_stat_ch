@@ -17,7 +17,7 @@ env:
 jobs:
   tap-tests:
     name: TAP Tests (PG 18)
-    runs-on: depot-ubuntu-24.04 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
+    runs-on: depot-ubuntu-24.04-16 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
     steps:
       - uses: actions/checkout@v4
         with:

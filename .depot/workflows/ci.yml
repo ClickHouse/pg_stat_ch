@@ -15,7 +15,7 @@ env:
 jobs:
   build-and-test:
     name: Build & Test (PG ${{ matrix.pg_version }})
-    runs-on: depot-ubuntu-24.04 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
+    runs-on: depot-ubuntu-24.04-16 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
     strategy:
       fail-fast: false
       matrix:
@@ -25,20 +25,24 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+      - name: Purge pre-installed PostgreSQL packages
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y 'postgresql-*' || true
+          sudo rm -f /etc/apt/sources.list.d/pgdg*.list
       - name: Add PostgreSQL APT repository
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl ca-certificates gnupg
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg
           curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
           echo "deb [arch=amd64] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
       - name: Install PostgreSQL ${{ matrix.pg_version }}
         run: |
-          sudo apt-get install -y \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             postgresql-${{ matrix.pg_version }} \
             postgresql-server-dev-${{ matrix.pg_version }}
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
+        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake ninja-build g++ libssl-dev
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -86,23 +90,27 @@ jobs:
             specs/tmp_check/log/
   unit-tests:
     name: C++ Unit Tests
-    runs-on: depot-ubuntu-24.04 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
+    runs-on: depot-ubuntu-24.04-16 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
+      - name: Purge pre-installed PostgreSQL packages
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y 'postgresql-*' || true
+          sudo rm -f /etc/apt/sources.list.d/pgdg*.list
       - name: Add PostgreSQL APT repository
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl ca-certificates gnupg
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg
           curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
           echo "deb [arch=amd64] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
       - name: Install PostgreSQL 18 headers
-        run: sudo apt-get install -y postgresql-server-dev-18
+        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-server-dev-18
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
+        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake ninja-build g++ libssl-dev
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -121,7 +129,7 @@ jobs:
         run: ctest --test-dir build_unit --output-on-failure
   bench-otel:
     name: OTel Throughput Benchmark
-    runs-on: depot-ubuntu-24.04 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
+    runs-on: depot-ubuntu-24.04-16 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -212,10 +220,10 @@ jobs:
         run: docker compose -f docker/docker-compose.perf.yml down --volumes 2>/dev/null || true
   lint:
     name: Code Style
-    runs-on: depot-ubuntu-24.04 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
+    runs-on: depot-ubuntu-24.04-16 # was: ubuntu-24.04. Mapped standard GitHub runner to Depot equivalent.
     steps:
       - uses: actions/checkout@v4
       - name: Check formatting
         run: |
-          sudo apt-get update && sudo apt-get install -y clang-format
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang-format
           find src include -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror
