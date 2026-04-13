@@ -253,6 +253,108 @@ TEST(ParseSqlcommenter, RealWorldSqlcommenter) {
 }
 
 // ============================================================================
+// Spec compliance: meta character escaping (\' → ')
+// Per sqlcommenter spec, single quotes in values are escaped as \'
+// ============================================================================
+
+TEST(ParseSqlcommenter, EscapedSingleQuoteInValue) {
+  // key='it\'s' → value is "it's"
+  auto result = ParseSqlcommenter("key='it\\'s'");
+  EXPECT_EQ(result.count, 1);
+  EXPECT_EQ(result.labels[0].key, "key");
+  EXPECT_EQ(result.labels[0].value, "it's");
+}
+
+TEST(ParseSqlcommenter, MultipleEscapedQuotesInValue) {
+  // key='can\'t won\'t' → value is "can't won't"
+  auto result = ParseSqlcommenter("key='can\\'t won\\'t'");
+  EXPECT_EQ(result.count, 1);
+  EXPECT_EQ(result.labels[0].value, "can't won't");
+}
+
+TEST(ParseSqlcommenter, EscapedQuoteAtValueStart) {
+  auto result = ParseSqlcommenter("key='\\'hello'");
+  EXPECT_EQ(result.count, 1);
+  EXPECT_EQ(result.labels[0].value, "'hello");
+}
+
+TEST(ParseSqlcommenter, EscapedQuoteAtValueEnd) {
+  auto result = ParseSqlcommenter("key='hello\\''");
+  EXPECT_EQ(result.count, 1);
+  EXPECT_EQ(result.labels[0].value, "hello'");
+}
+
+TEST(ParseSqlcommenter, EscapedQuoteWithUrlEncoding) {
+  // Meta unescaping and URL decoding combined
+  auto result = ParseSqlcommenter("key='it\\'s%20great'");
+  EXPECT_EQ(result.count, 1);
+  EXPECT_EQ(result.labels[0].value, "it's great");
+}
+
+TEST(ParseSqlcommenter, BackslashNotFollowedByQuote) {
+  // Backslash followed by non-quote char is kept literally
+  // Input string: key='path\to' (one backslash before 't')
+  auto result = ParseSqlcommenter("key='path\\to'");
+  EXPECT_EQ(result.count, 1);
+  EXPECT_EQ(result.labels[0].value, "path\\to");
+}
+
+// ============================================================================
+// Spec compliance: spec exhibit round-trip
+// ============================================================================
+
+TEST(ParseSqlcommenter, SpecExhibitParsing) {
+  // From the sqlcommenter spec exhibit:
+  // action='%2Fparam*d',controller='index',framework='spring',
+  // traceparent='00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01',
+  // tracestate='congo%3Dt61rcWkgMzE%2Crojo%3D00f067aa0ba902b7'
+  auto result = ParseSqlcommenter(
+      "action='%2Fparam*d',"
+      "controller='index',"
+      "framework='spring',"
+      "traceparent='00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01',"
+      "tracestate='congo%3Dt61rcWkgMzE%2Crojo%3D00f067aa0ba902b7'");
+  EXPECT_EQ(result.count, 5);
+  EXPECT_EQ(result.labels[0].key, "action");
+  EXPECT_EQ(result.labels[0].value, "/param*d");
+  EXPECT_EQ(result.labels[1].key, "controller");
+  EXPECT_EQ(result.labels[1].value, "index");
+  EXPECT_EQ(result.labels[2].key, "framework");
+  EXPECT_EQ(result.labels[2].value, "spring");
+  EXPECT_EQ(result.labels[3].key, "traceparent");
+  EXPECT_EQ(result.labels[3].value,
+            "00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01");
+  EXPECT_EQ(result.labels[4].key, "tracestate");
+  EXPECT_EQ(result.labels[4].value, "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7");
+}
+
+TEST(ParseSqlcommenter, SpecExhibitFullPipeline) {
+  // Full pipeline: extract comment from the spec exhibit SQL, parse, serialize
+  std::string_view query =
+      "SELECT * FROM FOO "
+      "/*action='%2Fparam*d',controller='index',framework='spring',"
+      "traceparent='00-5bd66ef5095369c7b0d1f8f4bd33716a-c532cb4098ac3dd2-01',"
+      "tracestate='congo%3Dt61rcWkgMzE%2Crojo%3D00f067aa0ba902b7'*/";
+  auto comment = ExtractLastComment(query);
+  EXPECT_FALSE(comment.empty());
+  auto parsed = ParseSqlcommenter(comment);
+  EXPECT_EQ(parsed.count, 5);
+  EXPECT_EQ(parsed.labels[0].value, "/param*d");
+  EXPECT_EQ(parsed.labels[4].value, "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7");
+}
+
+TEST(ParseSqlcommenter, UrlEncodedSpecialChars) {
+  // Slash, equals, ampersand — common in route and tracestate values
+  auto result = ParseSqlcommenter(
+      "route='%2Fpolls%201000',state='k1%3Dv1%26k2%3Dv2'");
+  EXPECT_EQ(result.count, 2);
+  EXPECT_EQ(result.labels[0].key, "route");
+  EXPECT_EQ(result.labels[0].value, "/polls 1000");
+  EXPECT_EQ(result.labels[1].key, "state");
+  EXPECT_EQ(result.labels[1].value, "k1=v1&k2=v2");
+}
+
+// ============================================================================
 // SerializeLabelsJson tests
 // ============================================================================
 

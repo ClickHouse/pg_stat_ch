@@ -131,7 +131,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build_unit --target hostname_test --parallel
+        run: cmake --build build_unit --parallel
 
       - name: Run unit tests
         run: ctest --test-dir build_unit --output-on-failure

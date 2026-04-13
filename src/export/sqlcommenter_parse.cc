@@ -21,26 +21,33 @@ int DecodeHexByte(char hi, char lo) {
   return (h << 4) | l;
 }
 
-// URL-decode src into dst buffer. Returns the number of bytes written.
-size_t UrlDecode(std::string_view src, char* dst, size_t max_len) {
+bool NeedsDecode(std::string_view sv) {
+  return sv.find('%') != std::string_view::npos || sv.find('\\') != std::string_view::npos;
+}
+
+// Meta-unescape (\' → ') and URL-decode in a single pass.
+// Per sqlcommenter spec, meta unescaping happens before URL decoding,
+// but the two transforms don't overlap so a combined pass is equivalent.
+size_t MetaUnescapeAndUrlDecode(std::string_view src, char* dst, size_t max_len) {
   size_t written = 0;
   size_t i = 0;
   while (i < src.size() && written < max_len) {
-    if (src[i] == '%' && i + 2 < src.size()) {
+    if (src[i] == '\\' && i + 1 < src.size() && src[i + 1] == '\'') {
+      dst[written++] = '\'';
+      i += 2;
+    } else if (src[i] == '%' && i + 2 < src.size()) {
       int byte = DecodeHexByte(src[i + 1], src[i + 2]);
       if (byte >= 0) {
         dst[written++] = static_cast<char>(byte);
         i += 3;
         continue;
       }
+      dst[written++] = src[i++];
+    } else {
+      dst[written++] = src[i++];
     }
-    dst[written++] = src[i++];
   }
   return written;
-}
-
-bool NeedsUrlDecode(std::string_view sv) {
-  return sv.find('%') != std::string_view::npos;
 }
 
 void AppendJsonEscaped(std::string& out, std::string_view sv) {
@@ -135,10 +142,17 @@ ParseResult ParseSqlcommenter(std::string_view comment) {
       continue;
     ++pos;
 
-    // Parse value: read until closing single quote
+    // Parse value: read until unescaped closing single quote.
+    // Per sqlcommenter spec, \' is an escaped quote inside the value.
     size_t val_start = pos;
-    while (pos < comment.size() && comment[pos] != '\'') {
-      ++pos;
+    while (pos < comment.size()) {
+      if (comment[pos] == '\\' && pos + 1 < comment.size() && comment[pos + 1] == '\'') {
+        pos += 2;  // skip escaped quote
+      } else if (comment[pos] == '\'') {
+        break;
+      } else {
+        ++pos;
+      }
     }
     if (pos >= comment.size())
       break;
@@ -146,15 +160,15 @@ ParseResult ParseSqlcommenter(std::string_view comment) {
     ++pos;
 
     Label& label = result.labels[result.count];
-    if (NeedsUrlDecode(raw_key)) {
-      size_t len = UrlDecode(raw_key, label.decoded_key, kMaxKeyLen);
+    if (NeedsDecode(raw_key)) {
+      size_t len = MetaUnescapeAndUrlDecode(raw_key, label.decoded_key, kMaxKeyLen);
       label.key = std::string_view(label.decoded_key, len);
     } else {
       label.key = raw_key.substr(0, kMaxKeyLen);
     }
 
-    if (NeedsUrlDecode(raw_value)) {
-      size_t len = UrlDecode(raw_value, label.decoded_value, kMaxValueLen);
+    if (NeedsDecode(raw_value)) {
+      size_t len = MetaUnescapeAndUrlDecode(raw_value, label.decoded_value, kMaxValueLen);
       label.value = std::string_view(label.decoded_value, len);
     } else {
       label.value = raw_value.substr(0, kMaxValueLen);
