@@ -23,7 +23,7 @@ The OTel exporter maps pg_stat_ch events to OpenTelemetry semantic conventions:
 - **Logs**: Each query execution becomes an OTel log record with attributes following the [database semantic conventions](https://opentelemetry.io/docs/specs/semconv/database/) (`db.name`, `db.user`, `db.operation.name`, `db.statement`).
 - **Metrics**: Query duration is exported as a histogram metric at a configurable interval, allowing you to view latency distributions in your metrics backend.
 
-The exporter uses a batch log processor internally: events are buffered in a queue and flushed in batches to reduce gRPC overhead.
+The exporter builds OTLP log requests directly in the bgworker. pg_stat_ch's shared-memory queue already buffers events, and the exporter chunks those events into bounded gRPC requests.
 
 ## Configuration
 
@@ -32,10 +32,10 @@ All OTel-specific parameters require a PostgreSQL restart.
 | Parameter | Default | Description |
 |---|---|---|
 | `pg_stat_ch.otel_endpoint` | `localhost:4317` | OTel collector gRPC endpoint (`host:port`) |
-| `pg_stat_ch.otel_log_queue_size` | `65536` | Max log records buffered before dropping |
-| `pg_stat_ch.otel_log_batch_size` | `8192` | Records per gRPC export call |
-| `pg_stat_ch.otel_log_max_bytes` | `3145728` (3 MiB) | Max gRPC message size |
-| `pg_stat_ch.otel_log_delay_ms` | `100` | Delay between batch exports |
+| `pg_stat_ch.otel_log_queue_size` | `65536` | Compatibility no-op; pg_stat_ch's shared-memory queue already buffers events |
+| `pg_stat_ch.otel_log_batch_size` | `8192` | Max records per OTLP log export call |
+| `pg_stat_ch.otel_log_max_bytes` | `3145728` (3 MiB) | Soft byte budget per OTLP log export call |
+| `pg_stat_ch.otel_log_delay_ms` | `100` | Per-export gRPC deadline |
 | `pg_stat_ch.otel_metric_interval_ms` | `5000` | Metric histogram export interval |
 
 See the [configuration reference](/reference/configuration#opentelemetry) for details on each parameter.
