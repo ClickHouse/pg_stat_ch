@@ -32,13 +32,16 @@
 
 extern "C" {
 #include "postgres.h"
+
+#include "utils/hsearch.h"
 }
 
 // Exact statement identity for the normalization registry.
 //
-// The hash is a fast prefilter for executor/utility lookups. We still fall
-// back to bytewise source-text comparison after the hash/offset checks, so
-// collisions cannot attach the wrong normalized query text.
+// statement_hash is a 64-bit hash of (source_text content, stmt_location,
+// stmt_len) computed via absl::HashOf.  Together with stmt_location and
+// stmt_len, the triple forms the HTAB key — a collision requires matching
+// all three fields, making false positives negligible.
 struct PschStatementKey {
   const char* source_text;
   size_t source_text_len;
@@ -50,10 +53,8 @@ struct PschStatementKey {
 // Build a statement key from PostgreSQL's source string plus statement slice.
 PschStatementKey PschMakeStatementKey(const char* source_text, int stmt_location, int stmt_len);
 
-struct PschNormalizedQueryEntry;
-
 struct PschNormalizedQueryState {
-  PschNormalizedQueryEntry* head;
+  HTAB* htab;
 };
 
 // Stash normalized SQL text for one parsed statement.

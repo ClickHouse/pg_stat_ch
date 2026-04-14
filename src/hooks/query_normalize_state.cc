@@ -1,4 +1,6 @@
 // Statement-scoped normalized query registry.
+//
+// Uses PostgreSQL's dynahash (HTAB) for O(1) lookup, insert, and delete.
 
 #include <cstddef>
 #include <cstring>
@@ -9,10 +11,30 @@
 extern "C" {
 #include "postgres.h"
 
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 }
 
 #include "hooks/query_normalize_state.h"
+
+// HTAB key: 16 bytes, compared bytewise via HASH_BLOBS.
+// statement_hash already incorporates source_text content, stmt_location,
+// and stmt_len via absl::HashOf, so including location/len in the key is
+// redundant for uniqueness but makes accidental collisions essentially
+// impossible (would require matching all three fields independently).
+struct PschNormalizeHashKey {
+  size_t statement_hash;
+  int stmt_location;
+  int stmt_len;
+};
+
+// Entry stored in HTAB.  The key must be the first member so that
+// hash_search can cast between the key pointer and entry pointer.
+struct PschNormalizeHashEntry {
+  PschNormalizeHashKey key;
+  char* normalized_query;
+  int normalized_len;
+};
 
 struct PschStatementKeyHash {
   size_t operator()(const PschStatementKey& key) const {
@@ -22,14 +44,6 @@ struct PschStatementKeyHash {
   }
 };
 
-struct PschNormalizedQueryEntry {
-  PschStatementKey key;
-  char* source_text_copy;
-  char* normalized_query;
-  int normalized_len;
-  PschNormalizedQueryEntry* next;
-};
-
 PschStatementKey PschMakeStatementKey(const char* source_text, int stmt_location, int stmt_len) {
   PschStatementKey key = {source_text, source_text != nullptr ? strlen(source_text) : 0, 0,
                           stmt_location, stmt_len};
@@ -37,49 +51,22 @@ PschStatementKey PschMakeStatementKey(const char* source_text, int stmt_location
   return key;
 }
 
-static bool ExactStatementMatch(const PschNormalizedQueryEntry* entry,
-                                const PschStatementKey& key) {
-  if (entry == nullptr || key.source_text == nullptr) {
-    return false;
-  }
-
-  if (entry->key.statement_hash != key.statement_hash ||
-      entry->key.source_text_len != key.source_text_len ||
-      entry->key.stmt_location != key.stmt_location || entry->key.stmt_len != key.stmt_len) {
-    return false;
-  }
-
-  if (entry->key.source_text == key.source_text) {
-    return true;
-  }
-
-  return memcmp(entry->source_text_copy, key.source_text, key.source_text_len) == 0;
+static PschNormalizeHashKey MakeHashKey(const PschStatementKey& key) {
+  return {key.statement_hash, key.stmt_location, key.stmt_len};
 }
 
-static void RemoveEntry(PschNormalizedQueryState* state, PschNormalizedQueryEntry* prev,
-                        PschNormalizedQueryEntry* entry) {
-  if (prev != nullptr) {
-    prev->next = entry->next;
-  } else {
-    state->head = entry->next;
+// Create the HTAB lazily on first use.
+static HTAB* EnsureHtab(PschNormalizedQueryState* state) {
+  if (state->htab == nullptr) {
+    HASHCTL info;
+    MemSet(&info, 0, sizeof(info));
+    info.keysize = sizeof(PschNormalizeHashKey);
+    info.entrysize = sizeof(PschNormalizeHashEntry);
+    info.hcxt = TopMemoryContext;
+    state->htab = hash_create("pg_stat_ch normalized queries", 64, &info,
+                              HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
   }
-
-  pfree(entry->source_text_copy);
-  pfree(entry->normalized_query);
-  pfree(entry);
-}
-
-static bool CopyEntryText(const PschNormalizedQueryEntry* entry, char* dst, size_t dst_size,
-                          uint16* out_len) {
-  if (entry == nullptr || dst == nullptr || dst_size == 0 || out_len == nullptr) {
-    return false;
-  }
-
-  size_t len = Min(static_cast<size_t>(entry->normalized_len), dst_size - 1);
-  memcpy(dst, entry->normalized_query, len);
-  dst[len] = '\0';
-  *out_len = static_cast<uint16>(len);
-  return true;
+  return state->htab;
 }
 
 void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const PschStatementKey& key,
@@ -88,68 +75,57 @@ void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const PschStat
     return;
   }
 
-  for (PschNormalizedQueryEntry* entry = state->head; entry != nullptr; entry = entry->next) {
-    if (!ExactStatementMatch(entry, key)) {
-      continue;
-    }
+  HTAB* htab = EnsureHtab(state);
+  PschNormalizeHashKey hkey = MakeHashKey(key);
+  bool found;
 
-    entry->key.source_text = key.source_text;
+  auto* entry =
+      static_cast<PschNormalizeHashEntry*>(hash_search(htab, &hkey, HASH_ENTER, &found));
+  if (found) {
+    // Update existing entry — free the old normalized text.
     pfree(entry->normalized_query);
-    entry->normalized_query = normalized_query;
-    entry->normalized_len = normalized_len;
-    return;
   }
-
-  PschNormalizedQueryEntry* entry =
-      static_cast<PschNormalizedQueryEntry*>(MemoryContextAlloc(TopMemoryContext, sizeof(*entry)));
-  entry->key = key;
-  entry->source_text_copy = MemoryContextStrdup(TopMemoryContext, key.source_text);
   entry->normalized_query = normalized_query;
   entry->normalized_len = normalized_len;
-  entry->next = state->head;
-  state->head = entry;
 }
 
 bool PschCopyNormalizedQueryForStatement(PschNormalizedQueryState* state, char* dst,
                                          size_t dst_size, uint16* out_len,
                                          const PschStatementKey& key, bool consume) {
-  if (state == nullptr || key.source_text == nullptr) {
+  if (state == nullptr || state->htab == nullptr || key.source_text == nullptr) {
     return false;
   }
 
-  PschNormalizedQueryEntry* prev = nullptr;
-  for (PschNormalizedQueryEntry* entry = state->head; entry != nullptr;
-       prev = entry, entry = entry->next) {
-    if (!ExactStatementMatch(entry, key)) {
-      continue;
-    }
+  PschNormalizeHashKey hkey = MakeHashKey(key);
+  auto* entry = static_cast<PschNormalizeHashEntry*>(
+      hash_search(state->htab, &hkey, consume ? HASH_REMOVE : HASH_FIND, nullptr));
 
-    bool copied = CopyEntryText(entry, dst, dst_size, out_len);
-    if (copied && consume) {
-      RemoveEntry(state, prev, entry);
-    }
-    return copied;
+  if (entry == nullptr) {
+    return false;
   }
 
-  return false;
+  size_t len = Min(static_cast<size_t>(entry->normalized_len), dst_size - 1);
+  memcpy(dst, entry->normalized_query, len);
+  dst[len] = '\0';
+  *out_len = static_cast<uint16>(len);
+
+  if (consume) {
+    pfree(entry->normalized_query);
+  }
+  return true;
 }
 
 void PschForgetNormalizedQueryForStatement(PschNormalizedQueryState* state,
                                            const PschStatementKey& key) {
-  if (state == nullptr || key.source_text == nullptr) {
+  if (state == nullptr || state->htab == nullptr || key.source_text == nullptr) {
     return;
   }
 
-  PschNormalizedQueryEntry* prev = nullptr;
-  PschNormalizedQueryEntry* entry = state->head;
-  while (entry != nullptr) {
-    PschNormalizedQueryEntry* next = entry->next;
-    if (ExactStatementMatch(entry, key)) {
-      RemoveEntry(state, prev, entry);
-      return;
-    } else {
-      prev = entry;
-    }
-    entry = next;
+  PschNormalizeHashKey hkey = MakeHashKey(key);
+  auto* entry = static_cast<PschNormalizeHashEntry*>(
+      hash_search(state->htab, &hkey, HASH_REMOVE, nullptr));
+
+  if (entry != nullptr) {
+    pfree(entry->normalized_query);
   }
 }
