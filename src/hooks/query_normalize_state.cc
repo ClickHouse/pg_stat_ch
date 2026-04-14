@@ -79,8 +79,7 @@ void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const PschStat
   PschNormalizeHashKey hkey = MakeHashKey(key);
   bool found;
 
-  auto* entry =
-      static_cast<PschNormalizeHashEntry*>(hash_search(htab, &hkey, HASH_ENTER, &found));
+  auto* entry = static_cast<PschNormalizeHashEntry*>(hash_search(htab, &hkey, HASH_ENTER, &found));
   if (found) {
     // Update existing entry — free the old normalized text.
     pfree(entry->normalized_query);
@@ -122,8 +121,8 @@ void PschForgetNormalizedQueryForStatement(PschNormalizedQueryState* state,
   }
 
   PschNormalizeHashKey hkey = MakeHashKey(key);
-  auto* entry = static_cast<PschNormalizeHashEntry*>(
-      hash_search(state->htab, &hkey, HASH_REMOVE, nullptr));
+  auto* entry =
+      static_cast<PschNormalizeHashEntry*>(hash_search(state->htab, &hkey, HASH_REMOVE, nullptr));
 
   if (entry != nullptr) {
     pfree(entry->normalized_query);
