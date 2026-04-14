@@ -7,6 +7,7 @@ extern "C" {
 }
 
 #include <array>
+#include <climits>
 
 #include "config/guc.h"
 
@@ -33,6 +34,8 @@ int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
 bool psch_debug_force_locked_overflow = false;
+int psch_min_duration_us = 0;
+double psch_sample_rate = 1.0;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -237,9 +240,9 @@ void PschInitGuc(void) {
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_queue_size",
-      "OTel batch log processor queue size.",
-      "Maximum number of log records buffered before dropping. "
-      "Only used when use_otel is enabled.",
+      "Compatibility setting for legacy OTel queue sizing.",
+      "Retained for compatibility. The direct OTLP log exporter uses pg_stat_ch's "
+      "shared-memory queue instead of allocating a second OTel queue.",
       &psch_otel_log_queue_size,
       65536,              // bootValue
       512, 1048576,       // min, max
@@ -249,9 +252,9 @@ void PschInitGuc(void) {
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_batch_size",
-      "OTel batch log processor export batch size.",
-      "Number of log records per gRPC export call. "
-      "Only used when use_otel is enabled.",
+      "Maximum records per OTLP log export call.",
+      "Caps how many log records the direct OTLP exporter puts into a single "
+      "gRPC ExportLogs request.",
       &psch_otel_log_batch_size,
       8192,               // bootValue
       1, 131072,          // min, max
@@ -261,10 +264,9 @@ void PschInitGuc(void) {
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_max_bytes",
-      "Maximum gRPC message size (bytes) for OTel log export.",
-      "Each gRPC ExportLogs call is capped at this many serialized bytes. "
-      "The gRPC default is 4 MiB; this default leaves a safety margin. "
-      "Only used when use_otel is enabled.",
+      "Soft byte budget for a single OTLP log export call.",
+      "The direct OTLP exporter chunks log records to stay under this per-request "
+      "budget. The gRPC default is 4 MiB; the default leaves a safety margin.",
       &psch_otel_log_max_bytes,
       3 * 1024 * 1024,        // bootValue: 3 MiB
       65536, 64 * 1024 * 1024,  // min: 64 KiB, max: 64 MiB
@@ -274,9 +276,9 @@ void PschInitGuc(void) {
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_delay_ms",
-      "OTel batch log processor schedule delay in milliseconds.",
-      "Time between batch export attempts. "
-      "Only used when use_otel is enabled.",
+      "Deadline in milliseconds for a single OTLP log export call.",
+      "The direct OTLP exporter uses this as the per-request gRPC timeout so "
+      "the bgworker cannot block indefinitely on a slow collector.",
       &psch_otel_log_delay_ms,
       100,                // bootValue
       10, 60000,          // min, max
@@ -307,6 +309,30 @@ void PschInitGuc(void) {
       PGC_SUSET,
       0,
       nullptr, nullptr, nullptr);
+  DefineCustomIntVariable(
+      "pg_stat_ch.min_duration_us",
+      "Minimum query duration in microseconds to always capture.",
+      "Queries faster than this threshold are sampled at pg_stat_ch.sample_rate "
+      "instead of being captured unconditionally. Set to 0 to capture all queries.",
+      &psch_min_duration_us,
+      0,              // bootValue
+      0, INT_MAX,     // min, max
+      PGC_SUSET,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomRealVariable(
+      "pg_stat_ch.sample_rate",
+      "Sampling rate for queries below min_duration_us.",
+      "Fraction of sub-threshold queries to capture (0.0 = none, 1.0 = all). "
+      "Queries at or above min_duration_us are always captured regardless.",
+      &psch_sample_rate,
+      1.0,            // bootValue
+      0.0, 1.0,       // min, max
+      PGC_SUSET,
+      0,
+      nullptr, nullptr, nullptr);
+
   DefineCustomBoolVariable(
       "pg_stat_ch.debug_force_locked_overflow",
       "Force HandleOverflow in locked path (debug/test only).",

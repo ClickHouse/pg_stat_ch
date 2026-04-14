@@ -29,6 +29,8 @@ extern int psch_otel_log_max_bytes;
 extern int psch_otel_log_delay_ms;
 extern int psch_otel_metric_interval_ms;
 extern bool psch_debug_force_locked_overflow;
+extern int psch_min_duration_us;
+extern double psch_sample_rate;
 
 // Initialize GUC variables
 void PschInitGuc(void);

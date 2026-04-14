@@ -81,6 +81,54 @@ SET pg_stat_ch.log_min_elevel = 'error';
 SET pg_stat_ch.log_min_elevel = 'debug5';
 ```
 
+### `pg_stat_ch.min_duration_us`
+
+Minimum query duration in microseconds to always capture.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `0` (capture all) |
+| **Min** | `0` |
+| **Max** | `2147483647` |
+| **Context** | suset |
+
+Queries with duration at or above this threshold are always captured. Queries below this threshold are sampled at `sample_rate`. Set to `0` to capture all queries unconditionally (subject to `sample_rate`).
+
+```sql
+-- Only guarantee capture of queries taking >= 1ms
+ALTER SYSTEM SET pg_stat_ch.min_duration_us = 1000;
+SELECT pg_reload_conf();
+
+-- Per-session override for debugging
+SET pg_stat_ch.min_duration_us = 0;
+```
+
+### `pg_stat_ch.sample_rate`
+
+Sampling rate for queries below `min_duration_us`.
+
+| | |
+|---|---|
+| **Type** | real |
+| **Default** | `1.0` (capture all) |
+| **Min** | `0.0` |
+| **Max** | `1.0` |
+| **Context** | suset |
+
+Fraction of sub-threshold queries to randomly capture. Queries at or above `min_duration_us` are always captured regardless of this setting.
+
+```sql
+-- Capture all queries >= 500us, sample 10% of faster queries
+ALTER SYSTEM SET pg_stat_ch.min_duration_us = 500;
+ALTER SYSTEM SET pg_stat_ch.sample_rate = 0.1;
+SELECT pg_reload_conf();
+
+-- Drop all sub-threshold queries (hard cutoff)
+ALTER SYSTEM SET pg_stat_ch.sample_rate = 0.0;
+SELECT pg_reload_conf();
+```
+
 ## Queue
 
 The shared-memory ring buffer sits between the foreground hooks and the background worker. These settings control its size and drain behavior.
@@ -261,7 +309,7 @@ The `host:port` of the OTel collector's gRPC receiver. Port 4317 is the standard
 
 ### `pg_stat_ch.otel_log_queue_size`
 
-Maximum number of log records buffered in the OTel batch processor before dropping.
+Compatibility setting for legacy OTel queue sizing.
 
 | | |
 |---|---|
@@ -271,9 +319,11 @@ Maximum number of log records buffered in the OTel batch processor before droppi
 | **Max** | `1048576` |
 | **Context** | postmaster |
 
+The direct OTLP exporter uses pg_stat_ch's shared-memory queue instead of allocating a second OTel queue, so this setting is retained for compatibility only.
+
 ### `pg_stat_ch.otel_log_batch_size`
 
-Number of log records per gRPC export call.
+Maximum records per OTLP log export call.
 
 | | |
 |---|---|
@@ -283,9 +333,11 @@ Number of log records per gRPC export call.
 | **Max** | `131072` |
 | **Context** | postmaster |
 
+Caps how many log records the direct OTLP exporter puts into a single `ExportLogs` request.
+
 ### `pg_stat_ch.otel_log_max_bytes`
 
-Maximum gRPC message size in bytes for OTel log export.
+Soft byte budget in bytes for a single OTLP log export call.
 
 | | |
 |---|---|
@@ -296,11 +348,11 @@ Maximum gRPC message size in bytes for OTel log export.
 | **Context** | postmaster |
 | **Unit** | bytes |
 
-The gRPC default maximum is 4 MiB. The default value of 3 MiB leaves a safety margin.
+The direct OTLP exporter chunks log records to stay under this per-request budget. The gRPC default maximum is 4 MiB, so the default value of 3 MiB leaves a safety margin.
 
 ### `pg_stat_ch.otel_log_delay_ms`
 
-Delay between OTel batch export attempts.
+Deadline for a single OTLP log export call.
 
 | | |
 |---|---|
@@ -310,6 +362,8 @@ Delay between OTel batch export attempts.
 | **Max** | `60000` |
 | **Context** | postmaster |
 | **Unit** | milliseconds |
+
+The direct OTLP exporter uses this as the per-request gRPC timeout so the bgworker cannot block indefinitely on a slow collector.
 
 ### `pg_stat_ch.otel_metric_interval_ms`
 
