@@ -369,16 +369,11 @@ static void CopyRawStatementText(PschEvent* event, const PschStatementKey& state
 }
 
 // Copy query text into the event buffer, preferring a previously normalized
-// form from post_parse_analyze_hook.
-//
-// Entries are consumed (removed) after copying. For cached plans the entry
-// will be re-created by post_parse_analyze_hook on the next execution, so
-// consuming here is safe and prevents unbounded HTAB growth under
-// simple-query workloads where every query has unique source text.
+// form from post_parse_analyze_hook. The entry is consumed (removed) after
+// copying — see PschCopyNormalizedQueryForStatement.
 static void CopyQueryText(PschEvent* event, const PschStatementKey& statement_key) {
   if (PschCopyNormalizedQueryForStatement(&backend_state.normalized_queries, event->query,
-                                          sizeof(event->query), &event->query_len, statement_key,
-                                          true)) {
+                                          sizeof(event->query), &event->query_len, statement_key)) {
     return;
   }
 

@@ -90,14 +90,14 @@ void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const PschStat
 
 bool PschCopyNormalizedQueryForStatement(PschNormalizedQueryState* state, char* dst,
                                          size_t dst_size, uint16* out_len,
-                                         const PschStatementKey& key, bool consume) {
+                                         const PschStatementKey& key) {
   if (state == nullptr || state->htab == nullptr || key.source_text == nullptr) {
     return false;
   }
 
   PschNormalizeHashKey hkey = MakeHashKey(key);
-  auto* entry = static_cast<PschNormalizeHashEntry*>(
-      hash_search(state->htab, &hkey, consume ? HASH_REMOVE : HASH_FIND, nullptr));
+  auto* entry =
+      static_cast<PschNormalizeHashEntry*>(hash_search(state->htab, &hkey, HASH_REMOVE, nullptr));
 
   if (entry == nullptr) {
     return false;
@@ -108,9 +108,7 @@ bool PschCopyNormalizedQueryForStatement(PschNormalizedQueryState* state, char* 
   dst[len] = '\0';
   *out_len = static_cast<uint16>(len);
 
-  if (consume) {
-    pfree(entry->normalized_query);
-  }
+  pfree(entry->normalized_query);
   return true;
 }
 

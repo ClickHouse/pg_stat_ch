@@ -20,11 +20,6 @@
 // post_parse_analyze_hook runs once per statement and stores two entries that
 // share one source string but have different stmt_location/stm_len values.
 //
-// Example:
-//   A plpgsql function executes the same SPI statement multiple times.
-// We keep one reusable normalized entry for that exact statement identity so
-// each execution can export "SELECT ... WHERE id = $1" instead of falling back
-// to the raw SQL text on later executions.
 #ifndef PG_STAT_CH_SRC_HOOKS_QUERY_NORMALIZE_STATE_H_
 #define PG_STAT_CH_SRC_HOOKS_QUERY_NORMALIZE_STATE_H_
 
@@ -74,23 +69,15 @@ struct PschNormalizedQueryState {
 void PschRememberNormalizedQuery(PschNormalizedQueryState* state, const PschStatementKey& key,
                                  char* normalized_query, int normalized_len);
 
-// Copy normalized text for one exact statement match.
+// Copy normalized text for one exact statement match and remove the entry.
 //
 // Called from ExecutorEnd and ProcessUtility when building the final event.
-// These paths know the original source_text plus stmt_location/stm_len, so they
-// can do an exact lookup.
-//
-// When consume is true, remove the matched entry after copying it. That mode is
-// useful for one-shot statements where a later reuse would indicate stale state.
-// When consume is false, keep the entry for cached-plan or SPI cases where the
-// same statement identity may execute again.
-//
-// Example:
-//   A plpgsql function caches "SELECT child(depth - 1) + 42 WHERE 7 = 7".
-//   The first and third executions should both see the same normalized form.
+// The entry is always consumed: for simple-query mode the source text is
+// unique per execution, and for cached plans post_parse_analyze_hook
+// re-creates the entry on the next parse cycle.
 bool PschCopyNormalizedQueryForStatement(PschNormalizedQueryState* state, char* dst,
                                          size_t dst_size, uint16* out_len,
-                                         const PschStatementKey& key, bool consume);
+                                         const PschStatementKey& key);
 
 // Forget one pending normalized entry by exact statement identity.
 //
