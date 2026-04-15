@@ -27,6 +27,13 @@ our @EXPORT = qw(
     psch_otel_metric_has_label
 );
 
+sub _psch_conf_quote {
+    my ($value) = @_;
+    $value //= '';
+    $value =~ s/'/''/g;
+    return $value;
+}
+
 # Initialize a PostgreSQL node with pg_stat_ch loaded
 sub psch_init_node {
     my ($name, %opts) = @_;
@@ -240,12 +247,32 @@ sub psch_stop_otelcol {
 sub psch_init_node_with_otel {
     my ($name, %opts) = @_;
 
-    my $queue_capacity    = $opts{queue_capacity}    // 65536;
-    my $flush_interval_ms = $opts{flush_interval_ms} // 100;   # Fast flush for tests
-    my $batch_max         = $opts{batch_max}         // 1000;
-    my $enabled           = $opts{enabled}           // 'on';
-    my $otel_endpoint     = $opts{otel_endpoint}     // 'localhost:4317';
-    my $hostname          = $opts{hostname}          // 'test-host';
+    my $queue_capacity         = $opts{queue_capacity}         // 65536;
+    my $flush_interval_ms      = $opts{flush_interval_ms}      // 100;   # Fast flush for tests
+    my $batch_max              = $opts{batch_max}              // 1000;
+    my $enabled                = $opts{enabled}                // 'on';
+    my $otel_endpoint          = _psch_conf_quote($opts{otel_endpoint} // 'localhost:4317');
+    my $hostname               = _psch_conf_quote($opts{hostname} // 'test-host');
+    my $otel_arrow_passthrough = $opts{otel_arrow_passthrough};
+    my $otel_max_block_bytes   = $opts{otel_max_block_bytes};
+    my $extra_attributes       = $opts{extra_attributes};
+    my $debug_arrow_dump_dir   = $opts{debug_arrow_dump_dir};
+
+    my $extra_conf = '';
+    if (defined $otel_arrow_passthrough) {
+        $extra_conf .= "pg_stat_ch.otel_arrow_passthrough = $otel_arrow_passthrough\n";
+    }
+    if (defined $otel_max_block_bytes) {
+        $extra_conf .= "pg_stat_ch.otel_max_block_bytes = $otel_max_block_bytes\n";
+    }
+    if (defined $extra_attributes) {
+        $extra_conf .= "pg_stat_ch.extra_attributes = '" .
+            _psch_conf_quote($extra_attributes) . "'\n";
+    }
+    if (defined $debug_arrow_dump_dir) {
+        $extra_conf .= "pg_stat_ch.debug_arrow_dump_dir = '" .
+            _psch_conf_quote($debug_arrow_dump_dir) . "'\n";
+    }
 
     my $node = PostgreSQL::Test::Cluster->new($name);
     $node->init();
@@ -258,6 +285,7 @@ pg_stat_ch.batch_max = $batch_max
 pg_stat_ch.use_otel = on
 pg_stat_ch.otel_endpoint = '$otel_endpoint'
 pg_stat_ch.hostname = '$hostname'
+$extra_conf
 });
     $node->start();
     $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');

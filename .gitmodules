@@ -7,3 +7,9 @@
 [submodule "third_party/arrow"]
 	path = third_party/arrow
 	url = https://github.com/apache/arrow.git
+[submodule "third_party/zstd"]
+	path = third_party/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "third_party/grpc"]
+	path = third_party/grpc
+	url = https://github.com/grpc/grpc.git

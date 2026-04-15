@@ -40,6 +40,7 @@ double psch_sample_rate = 1.0;
 bool psch_otel_arrow_passthrough = false;
 int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB
 char* psch_extra_attributes = nullptr;
+char* psch_debug_arrow_dump_dir = nullptr;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -378,6 +379,17 @@ void PschInitGuc(void) {
       "Semicolon-separated k:v pairs for resource columns: "
       "'instance_ubid:abc;server_role:primary;region:us-east-1'.",
       &psch_extra_attributes,
+      "",
+      PGC_SIGHUP,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.debug_arrow_dump_dir",
+      "Directory for dumping raw Arrow IPC payloads before gRPC send.",
+      "When non-empty, each Arrow IPC payload is written to this directory before "
+      "being sent through OTLP. Intended for test validation and debugging only.",
+      &psch_debug_arrow_dump_dir,
       "",
       PGC_SIGHUP,
       0,

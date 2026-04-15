@@ -177,6 +177,7 @@ class OTelExporter : public StatsExporter {
   int NumConsecutiveFailures() const final { return consecutive_failures_; }
   void ResetFailures() final { consecutive_failures_ = 0; }
   int NumExported() const final { return exported_count_; }
+  bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) final;
 
  private:
   // -- Lightweight column types (no SDK, no Crunch, direct proto writes) -----
@@ -421,6 +422,53 @@ bool OTelExporter::CommitBatch() {
     return ok;
   } catch (const std::exception& e) {
     LogExporterWarning("export exception", e.what());
+    RecordExporterFailure(e.what());
+    consecutive_failures_++;
+    return false;
+  }
+}
+
+bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) {
+  if (stub_ == nullptr || ipc_data == nullptr || ipc_len == 0 || num_rows <= 0) {
+    return false;
+  }
+
+  try {
+    google::protobuf::ArenaOptions arena_opts;
+    arena_opts.initial_block_size = 4096;
+    arena_opts.max_block_size = 65536;
+    auto arena = std::make_unique<google::protobuf::Arena>(arena_opts);
+
+    auto* request =
+        google::protobuf::Arena::Create<collector_logs::ExportLogsServiceRequest>(arena.get());
+    auto* resource_logs = request->add_resource_logs();
+    PopulateResource(resource_logs->mutable_resource());
+    auto* scope_logs = resource_logs->add_scope_logs();
+    scope_logs->mutable_scope()->set_name("pg_stat_ch");
+    scope_logs->mutable_scope()->set_version(PG_STAT_CH_VERSION);
+
+    auto* record = scope_logs->add_log_records();
+    record->mutable_body()->set_bytes_value(reinterpret_cast<const char*>(ipc_data), ipc_len);
+    SetString(AddAttr(record), "pg_stat_ch.block_format", "arrow_ipc");
+    SetInt(AddAttr(record), "pg_stat_ch.block_rows", num_rows);
+
+    auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
+    collector_logs::ExportLogsServiceResponse response;
+    auto status = otlp::OtlpGrpcClient::DelegateExport(
+        stub_.get(), std::move(context), std::move(arena), std::move(*request), &response);
+
+    if (status.ok()) {
+      exported_count_ += num_rows;
+      consecutive_failures_ = 0;
+      return true;
+    }
+
+    LogExporterWarning("Arrow batch gRPC failed", status.error_message().c_str());
+    RecordExporterFailure(status.error_message().c_str());
+    consecutive_failures_++;
+    return false;
+  } catch (const std::exception& e) {
+    LogExporterWarning("Arrow batch export exception", e.what());
     RecordExporterFailure(e.what());
     consecutive_failures_++;
     return false;
