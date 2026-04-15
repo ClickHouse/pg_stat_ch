@@ -11,6 +11,12 @@ SET pg_stat_ch.log_min_elevel = 'notice';
 SHOW pg_stat_ch.log_min_elevel;
 RESET pg_stat_ch.log_min_elevel;
 SHOW pg_stat_ch.log_min_elevel;
+-- Test normalize_cache_max GUC
+SHOW pg_stat_ch.normalize_cache_max;
+SET pg_stat_ch.normalize_cache_max = 128;
+SHOW pg_stat_ch.normalize_cache_max;
+RESET pg_stat_ch.normalize_cache_max;
+SHOW pg_stat_ch.normalize_cache_max;
 -- Test that clickhouse_password is hidden from non-superusers (issue #3)
 CREATE ROLE psch_test_user LOGIN;
 SET ROLE psch_test_user;
