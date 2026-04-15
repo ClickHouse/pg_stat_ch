@@ -46,6 +46,9 @@ set(WITH_ABSEIL ON CACHE BOOL "Use Abseil for OTel" FORCE)
 # This prevents find_package(gRPC) from short-circuiting FetchContent
 # and leaving absl:: targets undefined.
 set(CMAKE_DISABLE_FIND_PACKAGE_gRPC TRUE)
+# Use system OpenSSL for gRPC instead of BoringSSL to avoid symbol
+# conflicts with clickhouse-cpp which also links OpenSSL.
+set(gRPC_SSL_PROVIDER "package" CACHE STRING "Use system OpenSSL for gRPC" FORCE)
 add_subdirectory(third_party/opentelemetry-cpp EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------------------------
