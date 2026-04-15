@@ -32,6 +32,9 @@ extern bool psch_debug_force_locked_overflow;
 extern int psch_min_duration_us;
 extern int psch_normalize_cache_max;
 extern double psch_sample_rate;
+extern bool psch_otel_arrow_passthrough;
+extern int psch_otel_max_block_bytes;
+extern char* psch_extra_attributes;
 
 // Initialize GUC variables
 void PschInitGuc(void);

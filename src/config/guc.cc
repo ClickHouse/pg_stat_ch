@@ -37,6 +37,9 @@ bool psch_debug_force_locked_overflow = false;
 int psch_min_duration_us = 0;
 int psch_normalize_cache_max = 32768;
 double psch_sample_rate = 1.0;
+bool psch_otel_arrow_passthrough = false;
+int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB
+char* psch_extra_attributes = nullptr;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -343,6 +346,40 @@ void PschInitGuc(void) {
       1.0,            // bootValue
       0.0, 1.0,       // min, max
       PGC_SUSET,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.otel_arrow_passthrough",
+      "Send Arrow IPC batches via OTel instead of per-record proto.",
+      "When enabled together with use_otel, the bgworker builds Arrow RecordBatches "
+      "from the event queue and sends them as opaque OTLP LogRecord bodies.",
+      &psch_otel_arrow_passthrough,
+      false,
+      PGC_SIGHUP,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.otel_max_block_bytes",
+      "Maximum Arrow batch size in bytes per OTLP request.",
+      "Controls the soft byte budget for a single Arrow IPC batch before it is "
+      "flushed to the OTel exporter. Must stay under gRPC max message size.",
+      &psch_otel_max_block_bytes,
+      3 * 1024 * 1024,          // bootValue: 3 MiB
+      65536, 4 * 1024 * 1024,   // min: 64 KiB, max: 4 MiB
+      PGC_SIGHUP,
+      GUC_UNIT_BYTE,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomStringVariable(
+      "pg_stat_ch.extra_attributes",
+      "Key-value pairs appended to exported Arrow batches.",
+      "Semicolon-separated k:v pairs for resource columns: "
+      "'instance_ubid:abc;server_role:primary;region:us-east-1'.",
+      &psch_extra_attributes,
+      "",
+      PGC_SIGHUP,
       0,
       nullptr, nullptr, nullptr);
 

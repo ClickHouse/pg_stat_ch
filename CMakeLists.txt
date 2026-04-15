@@ -30,37 +30,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build third-party libs as static" FORCE)
 
 # ---------------------------------------------------------------------------
-# Add opentelemetry-cpp FIRST (fetches gRPC + abseil via FetchContent).
-# This must come before clickhouse-cpp to avoid duplicate abseil targets.
+# Third-party dependencies (order matters: otel → arrow → clickhouse-cpp)
 # ---------------------------------------------------------------------------
-include(FetchContent)
-set(WITH_OTLP_GRPC ON CACHE BOOL "Enable OTel OTLP gRPC exporter" FORCE)
-set(WITH_OTLP_HTTP OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "Disable tests" FORCE)
-set(WITH_BENCHMARK OFF CACHE BOOL "Disable benchmarks" FORCE)
-set(WITH_EXAMPLES OFF CACHE BOOL "Disable OTel examples" FORCE)
-set(WITH_FUNC_TESTS OFF CACHE BOOL "Disable OTel functional tests" FORCE)
-set(OPENTELEMETRY_INSTALL OFF CACHE BOOL "" FORCE)
-set(WITH_ABSEIL ON CACHE BOOL "Use Abseil for OTel" FORCE)
-# Always use vendored gRPC + abseil (never pick up system packages).
-# This prevents find_package(gRPC) from short-circuiting FetchContent
-# and leaving absl:: targets undefined.
-set(CMAKE_DISABLE_FIND_PACKAGE_gRPC TRUE)
-# Use system OpenSSL for gRPC instead of BoringSSL to avoid symbol
-# conflicts with clickhouse-cpp which also links OpenSSL.
-set(gRPC_SSL_PROVIDER "package" CACHE STRING "Use system OpenSSL for gRPC" FORCE)
-add_subdirectory(third_party/opentelemetry-cpp EXCLUDE_FROM_ALL)
+include(ThirdPartyOTel)
+pg_stat_ch_setup_otel()
 
-# ---------------------------------------------------------------------------
-# Add clickhouse-cpp AFTER opentelemetry-cpp.
-# Use WITH_SYSTEM_ABSEIL so it finds the abseil already built by gRPC above
-# (via our cmake/Findabsl.cmake shim).
-# ---------------------------------------------------------------------------
-set(WITH_SYSTEM_ABSEIL ON CACHE BOOL "Use abseil from gRPC build" FORCE)
-set(WITH_OPENSSL ${WITH_OPENSSL} CACHE BOOL "Pass OpenSSL setting to clickhouse-cpp" FORCE)
-set(BUILD_TESTS OFF CACHE BOOL "Disable clickhouse-cpp tests" FORCE)
-set(BUILD_BENCHMARK OFF CACHE BOOL "Disable clickhouse-cpp benchmarks" FORCE)
-add_subdirectory(third_party/clickhouse-cpp EXCLUDE_FROM_ALL)
+include(ThirdPartyArrow)
+pg_stat_ch_setup_arrow()
+
+include(ThirdPartyClickHouse)
+pg_stat_ch_setup_clickhouse()
 
 # Collect source files
 file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
@@ -82,6 +61,8 @@ target_include_directories(pg_stat_ch SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
   ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
   ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
+  ${CMAKE_SOURCE_DIR}/third_party/arrow/cpp/src
+  ${CMAKE_BINARY_DIR}/third_party/arrow/cpp/src
 )
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
@@ -92,6 +73,7 @@ target_link_libraries(pg_stat_ch PRIVATE
   opentelemetry_exporter_otlp_grpc_log
   opentelemetry_metrics
   opentelemetry_logs
+  arrow_static
 )
 if(WITH_OPENSSL)
   target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
