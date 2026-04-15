@@ -10,6 +10,7 @@ extern "C" {
 #include "access/xact.h"
 #include "commands/dbcommands.h"
 #include "common/ip.h"
+#include "common/pg_prng.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
@@ -245,6 +246,25 @@ static int GetClientAddress(char* buf, int buf_size) {
 
   size_t src_len = strlcpy(buf, remote_host.data(), buf_size);
   return static_cast<int>(Min(src_len, static_cast<size_t>(buf_size - 1)));
+}
+
+// Check whether an event should be captured based on duration thresholds
+// and sampling rate. Queries at or above min_duration_us are always captured;
+// faster queries are randomly sampled at the configured rate.
+static bool ShouldSampleEvent(uint64 duration_us) {
+  if (psch_min_duration_us == 0 && psch_sample_rate >= 1.0) {
+    return true;
+  }
+  if (duration_us >= static_cast<uint64>(psch_min_duration_us)) {
+    return true;
+  }
+  if (psch_sample_rate <= 0.0) {
+    return false;
+  }
+  if (psch_sample_rate >= 1.0) {
+    return true;
+  }
+  return pg_prng_double(&pg_global_prng_state) < psch_sample_rate;
 }
 
 static void CopyBufferUsage(PschEvent* event, const BufferUsage* buf) {
@@ -599,6 +619,27 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     InstrEndLoop(query_desc->totaltime);
   }
 
+  // Compute duration early for sampling filter
+  uint64 duration_us;
+  if (query_desc->totaltime != nullptr) {
+#if PG_VERSION_NUM >= 190000
+    duration_us = static_cast<uint64>(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
+#else
+    duration_us = static_cast<uint64>(query_desc->totaltime->total * 1000000.0);
+#endif
+  } else {
+    duration_us = static_cast<uint64>(GetCurrentTimestamp() - query_start_ts);
+  }
+
+  if (!ShouldSampleEvent(duration_us)) {
+    if (prev_executor_end != nullptr) {
+      prev_executor_end(query_desc);
+    } else {
+      standard_ExecutorEnd(query_desc);
+    }
+    return;
+  }
+
   // Compute CPU time delta from getrusage
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
@@ -667,6 +708,13 @@ static bool ShouldTrackUtility(Node* parsetree) {
   // Skip EXECUTE/PREPARE/DEALLOCATE to avoid double-counting
   if (IsA(parsetree, ExecuteStmt) || IsA(parsetree, PrepareStmt) ||
       IsA(parsetree, DeallocateStmt)) {
+    return false;
+  }
+  // Skip transaction control statements (BEGIN, COMMIT, ROLLBACK, SAVEPOINT,
+  // etc.).  They carry no meaningful telemetry — no query text, no buffer
+  // stats, no duration — and at high TPS they consume a significant share of
+  // queue capacity (2 out of 7 events per pgbench TPC-B transaction).
+  if (IsA(parsetree, TransactionStmt)) {
     return false;
   }
   return true;
@@ -740,6 +788,11 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   INSTR_TIME_SET_CURRENT(duration);
   INSTR_TIME_SUBTRACT(duration, start_time);
 
+  uint64 duration_us = INSTR_TIME_GET_MICROSEC(duration);
+  if (!ShouldSampleEvent(duration_us)) {
+    return;
+  }
+
   BufferUsage bufusage_delta;
   WalUsage walusage_delta;
   MemSet(&bufusage_delta, 0, sizeof(BufferUsage));
@@ -756,7 +809,7 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   }
 
   PschEvent event;
-  BuildEventForUtility(&event, query_id, start_ts, INSTR_TIME_GET_MICROSEC(duration), is_top_level,
+  BuildEventForUtility(&event, query_id, start_ts, duration_us, is_top_level,
                        GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta, cpu_user_us,
                        cpu_sys_us);
   PschEnqueueEvent(&event);

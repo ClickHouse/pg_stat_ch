@@ -16,6 +16,7 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.flush_interval_ms
  pg_stat_ch.hostname
  pg_stat_ch.log_min_elevel
+ pg_stat_ch.min_duration_us
  pg_stat_ch.normalize_cache_max
  pg_stat_ch.otel_endpoint
  pg_stat_ch.otel_log_batch_size
@@ -24,9 +25,10 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.otel_log_queue_size
  pg_stat_ch.otel_metric_interval_ms
  pg_stat_ch.queue_capacity
+ pg_stat_ch.sample_rate
  pg_stat_ch.string_area_size
  pg_stat_ch.use_otel
-(23 rows)
+(25 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
@@ -70,21 +72,21 @@ SHOW pg_stat_ch.log_min_elevel;
 
 -- Test normalize_cache_max GUC
 SHOW pg_stat_ch.normalize_cache_max;
- pg_stat_ch.normalize_cache_max
+ pg_stat_ch.normalize_cache_max 
 --------------------------------
  32768
 (1 row)
 
 SET pg_stat_ch.normalize_cache_max = 128;
 SHOW pg_stat_ch.normalize_cache_max;
- pg_stat_ch.normalize_cache_max
+ pg_stat_ch.normalize_cache_max 
 --------------------------------
  128
 (1 row)
 
 RESET pg_stat_ch.normalize_cache_max;
 SHOW pg_stat_ch.normalize_cache_max;
- pg_stat_ch.normalize_cache_max
+ pg_stat_ch.normalize_cache_max 
 --------------------------------
  32768
 (1 row)
