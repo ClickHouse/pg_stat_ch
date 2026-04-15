@@ -32,10 +32,14 @@ extern "C" {
 #endif
 }
 
+extern "C" {
+#include "hooks/query_normalize_state.h"
+}
+
 #include "config/guc.h"
 #include "hooks/hooks.h"
 #include "hooks/query_normalize.h"
-#include "hooks/query_normalize_state.h"
+#include "hooks/string_utils.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
 
@@ -69,17 +73,12 @@ static bool system_init = false;
 static int GetClientAddress(char* buf, int buf_size);
 static void ResolveNames(PschEvent* event);
 
-static uint8 CopyName(char* dst, size_t dst_size, const char* src) {
-  size_t len = strlcpy(dst, src, dst_size);
-  return static_cast<uint8>(Min(len, dst_size - 1));
-}
-
 // Cache for session-stable values to avoid repeated catalog lookups on every query.
 // Following pg_stat_monitor's pattern of caching client IP (pg_stat_monitor.c:73-96).
 // Database name and client address never change within a session. Username is
 // re-resolved when userid changes (handles SET ROLE). This also carries the
-// session-local registry of normalized statements waiting to be consumed by
-// ExecutorEnd, ProcessUtility, or emit_log_hook.
+// session-local registry of parse-time query text looked up later by
+// ExecutorEnd or ProcessUtility.
 struct PschBackendState {
   bool initialized;
   char datname[NAMEDATALEN];
@@ -89,7 +88,7 @@ struct PschBackendState {
   uint8 username_len;
   char client_addr[46];  // INET6_ADDRSTRLEN
   uint8 client_addr_len;
-  PschNormalizedQueryState normalized_queries;
+  PschNormalizedQueryCache normalize_cache;
 };
 static PschBackendState backend_state = {};
 
@@ -101,11 +100,11 @@ static void CacheUsername(Oid userid, bool fallback_on_null) {
   const char* username = GetUserNameFromId(userid, true);
   if (username != nullptr) {
     backend_state.username_len =
-        CopyName(backend_state.username, sizeof(backend_state.username), username);
+        PschCopyName(backend_state.username, sizeof(backend_state.username), username);
     backend_state.cached_userid = userid;
   } else if (fallback_on_null) {
     backend_state.username_len =
-        CopyName(backend_state.username, sizeof(backend_state.username), "<unknown>");
+        PschCopyName(backend_state.username, sizeof(backend_state.username), "<unknown>");
     backend_state.cached_userid = userid;
   }
 }
@@ -124,8 +123,8 @@ static void EnsureBackendCache(void) {
 
     // Database name (session-stable)
     const char* datname = get_database_name(MyDatabaseId);
-    backend_state.datname_len = CopyName(backend_state.datname, sizeof(backend_state.datname),
-                                         datname != nullptr ? datname : "<unknown>");
+    backend_state.datname_len = PschCopyName(backend_state.datname, sizeof(backend_state.datname),
+                                             datname != nullptr ? datname : "<unknown>");
 
     // Client address (session-stable)
     backend_state.client_addr_len = static_cast<uint8>(
@@ -183,30 +182,6 @@ static void UnpackSqlState(int sql_state, char* buf) {
   buf[5] = '\0';
 }
 
-static size_t TrimTrailing(char* str, size_t len) {
-  while (len > 0 && isspace(static_cast<unsigned char>(str[len - 1]))) {
-    len--;
-  }
-  str[len] = '\0';
-  return len;
-}
-
-// Copy string to destination, skipping leading whitespace and trimming trailing.
-// This avoids memmove by skipping leading whitespace BEFORE the copy.
-// Returns the final length of the trimmed string in dst.
-static size_t CopyTrimmed(char* dst, size_t dst_size, const char* src) {
-  if (src == nullptr || dst_size == 0) {
-    if (dst_size > 0)
-      dst[0] = '\0';
-    return 0;
-  }
-  while (*src != '\0' && isspace(static_cast<unsigned char>(*src)))
-    src++;
-  size_t src_len = strlcpy(dst, src, dst_size);
-  size_t len = Min(src_len, dst_size - 1);
-  return TrimTrailing(dst, len);
-}
-
 // Get PgBackendStatus for the current backend (version-compatible)
 static PgBackendStatus* GetBackendStatus(void) {
 #if PG_VERSION_NUM >= 170000
@@ -232,12 +207,12 @@ static PgBackendStatus* GetBackendStatus(void) {
 static int GetApplicationName(char* buf, int buf_size) {
   // Try application_name GUC first (always up-to-date)
   if (application_name != nullptr && application_name[0] != '\0') {
-    return static_cast<int>(CopyTrimmed(buf, buf_size, application_name));
+    return static_cast<int>(PschCopyTrimmed(buf, buf_size, application_name));
   }
 
   PgBackendStatus* beentry = GetBackendStatus();
   if (beentry != nullptr && beentry->st_appname != nullptr) {
-    return static_cast<int>(CopyTrimmed(buf, buf_size, beentry->st_appname));
+    return static_cast<int>(PschCopyTrimmed(buf, buf_size, beentry->st_appname));
   }
 
   buf[0] = '\0';
@@ -347,43 +322,16 @@ static void CopyClientContext(PschEvent* event) {
   }
 }
 
-// Copy the original SQL text for one statement into the event buffer.
+// Copy query text into the event buffer from the parse-time LRU cache.
 //
-// PostgreSQL can hand us a multi-statement source string plus stmt_location /
-// stmt_len. CleanQuerytext trims that down to just the current statement, but
-// it does not parameterize literals. This helper is the raw-text fallback when
-// we have no normalized entry for the statement.
-static void CopyRawStatementText(PschEvent* event, const PschStatementKey& statement_key) {
-  if (statement_key.source_text == nullptr) {
-    return;
-  }
-
-  const char* query_text = statement_key.source_text;
-  if (statement_key.stmt_location >= 0) {
-    int query_loc = statement_key.stmt_location;
-    int query_len = statement_key.stmt_len;
-    query_text = CleanQuerytext(query_text, &query_loc, &query_len);
-  }
-
-  event->query_len = static_cast<uint16>(CopyTrimmed(event->query, PSCH_MAX_QUERY_LEN, query_text));
-}
-
-// Copy query text into the event buffer, preferring a previously normalized
-// form from post_parse_analyze_hook.
-//
-// The normalized registry is keyed by statement identity and reused across
-// repeated executions of cached plans, so this helper first looks up the
-// normalized entry stashed at parse time. If no match exists, it falls back to
-// CopyRawStatementText, which preserves the literal SQL text for the current
-// statement only.
-static void CopyQueryText(PschEvent* event, const PschStatementKey& statement_key) {
-  if (PschCopyNormalizedQueryForStatement(&backend_state.normalized_queries, event->query,
-                                          sizeof(event->query), &event->query_len, statement_key,
-                                          false)) {
-    return;
-  }
-
-  CopyRawStatementText(event, statement_key);
+// We only export text that was stashed during post_parse_analyze_hook:
+// - constant-bearing statements export normalized text
+// - constant-free statements export the unchanged statement slice
+// - on a cache miss, query text is left empty instead of falling back to
+//   raw SQL at execution time
+static void CopyQueryText(PschEvent* event, uint64 query_id) {
+  PschLookupNormalizedQuery(&backend_state.normalize_cache, query_id, event->query,
+                            sizeof(event->query), &event->query_len);
 }
 
 // Resolve database and user names, using the session cache when available.
@@ -408,10 +356,10 @@ static void ResolveNames(PschEvent* event) {
     username = GetUserNameFromId(event->userid, true);
   }
 
-  event->datname_len =
-      CopyName(event->datname, sizeof(event->datname), datname != nullptr ? datname : "<unknown>");
-  event->username_len = CopyName(event->username, sizeof(event->username),
-                                 username != nullptr ? username : "<unknown>");
+  event->datname_len = PschCopyName(event->datname, sizeof(event->datname),
+                                    datname != nullptr ? datname : "<unknown>");
+  event->username_len = PschCopyName(event->username, sizeof(event->username),
+                                     username != nullptr ? username : "<unknown>");
 }
 
 // Copy JIT instrumentation to event (PG15+)
@@ -475,56 +423,56 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
   CopyJitInstrumentation(event, query_desc);
   CopyParallelWorkerInfo(event, query_desc);
   CopyClientContext(event);
-  const PschStatementKey statement_key =
-      PschMakeStatementKey(query_desc->sourceText, query_desc->plannedstmt->stmt_location,
-                           query_desc->plannedstmt->stmt_len);
-  CopyQueryText(event, statement_key);
+  CopyQueryText(event, query_desc->plannedstmt->queryId);
 }
 
 extern "C" {
 
-// Remove a pending normalized entry for one statement when execution exits
-// without building a normal executor/utility event from it.
-static void ForgetNormalizedStatement(const char* source_text, int stmt_location, int stmt_len) {
-  const PschStatementKey statement_key = PschMakeStatementKey(source_text, stmt_location, stmt_len);
-  PschForgetNormalizedQueryForStatement(&backend_state.normalized_queries, statement_key);
-}
-
-// post_parse_analyze_hook — normalize query text at parse time.
+// post_parse_analyze_hook — decide query text at parse time.
 // The JumbleState (with constant locations) is only available here, so we
-// must generate the normalized text now and stash it for ExecutorEnd.
+// must generate any normalized form now and stash the final exported text for
+// ExecutorEnd.
 static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* jstate) {
   if (prev_post_parse_analyze != nullptr) {
     prev_post_parse_analyze(pstate, query, jstate);
   }
 
-  // Only normalize if enabled and the query has constants to replace.
-  if (!psch_enabled || IsParallelWorker() || jstate == nullptr || jstate->clocations_count <= 0) {
+  if (!psch_enabled || IsParallelWorker()) {
     return;
   }
 
-  const char* source_text = pstate->p_sourcetext;
-  const int stmt_location = query->stmt_location;
-  const int stmt_len = query->stmt_len;
-  const char* query_text = source_text;
-  int query_loc = stmt_location;
-  int query_len = stmt_len;
+  // Nothing to cache without a queryId (the executor/utility paths also skip
+  // queryId == 0, so there is no consumer for this text).
+  if (query->queryId == UINT64CONST(0)) {
+    return;
+  }
+
+  const char* query_text = pstate->p_sourcetext;
+  int query_loc = query->stmt_location;
+  int query_len = query->stmt_len;
 
   // CleanQuerytext slices a multi-statement source string down to the current
-  // statement before we replace literal constants with placeholders.
+  // statement before we either normalize literals or store the unchanged text.
   query_text = CleanQuerytext(query_text, &query_loc, &query_len);
 
-  // Allocate in TopMemoryContext so the normalized text survives until
-  // ExecutorEnd or ProcessUtility copies it into the exported event.
-  MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-  char* normalized_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
-  if (normalized_query != nullptr) {
-    const PschStatementKey statement_key =
-        PschMakeStatementKey(source_text, stmt_location, stmt_len);
-    PschRememberNormalizedQuery(&backend_state.normalized_queries, statement_key, normalized_query,
-                                query_len);
+  // Allocate the normalized/trimmed text in CurrentMemoryContext (typically the
+  // query context). PschRememberNormalizedQuery copies it into the cache's own
+  // long-lived context, so this allocation can be short-lived.
+  char* exported_query = nullptr;
+  if (jstate != nullptr && jstate->clocations_count > 0) {
+    exported_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
+  } else {
+    exported_query = PschCopyTrimmedStatement(query_text, query_len);
+    if (exported_query != nullptr) {
+      query_len = static_cast<int>(strlen(exported_query));
+    }
   }
-  MemoryContextSwitchTo(oldcxt);
+
+  if (exported_query != nullptr) {
+    PschRememberNormalizedQuery(&backend_state.normalize_cache, query->queryId, exported_query,
+                                query_len);
+    pfree(exported_query);
+  }
 }
 
 static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
@@ -639,8 +587,6 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
 
 static void PschExecutorEnd(QueryDesc* query_desc) {
   if (!psch_enabled || IsParallelWorker() || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
-    ForgetNormalizedStatement(query_desc->sourceText, query_desc->plannedstmt->stmt_location,
-                              query_desc->plannedstmt->stmt_len);
     if (prev_executor_end != nullptr) {
       prev_executor_end(query_desc);
     } else {
@@ -674,11 +620,12 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
 }
 
 // Build a PschEvent for utility statements (no QueryDesc available)
-static void BuildEventForUtility(PschEvent* event, const char* queryString, TimestampTz start_ts,
-                                 int stmt_location, int stmt_len, uint64 duration_us,
-                                 bool is_top_level, uint64 rows, BufferUsage* bufusage,
-                                 WalUsage* walusage, int64 cpu_user_us, int64 cpu_sys_us) {
+static void BuildEventForUtility(PschEvent* event, uint64 query_id, TimestampTz start_ts,
+                                 uint64 duration_us, bool is_top_level, uint64 rows,
+                                 BufferUsage* bufusage, WalUsage* walusage, int64 cpu_user_us,
+                                 int64 cpu_sys_us) {
   InitBaseEvent(event, start_ts, is_top_level, PSCH_CMD_UTILITY);
+  event->queryid = query_id;
   event->duration_us = duration_us;
   event->rows = rows;
   event->cpu_user_time_us = cpu_user_us;
@@ -688,8 +635,7 @@ static void BuildEventForUtility(PschEvent* event, const char* queryString, Time
   CopyIoTiming(event, bufusage);
   CopyWalUsage(event, walusage);
   CopyClientContext(event);
-  const PschStatementKey statement_key = PschMakeStatementKey(queryString, stmt_location, stmt_len);
-  CopyQueryText(event, statement_key);
+  CopyQueryText(event, query_id);
 }
 
 // Helper macro to call ProcessUtility (previous hook or standard)
@@ -769,18 +715,14 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
                                QueryCompletion* qc) {
 #endif
   if (!ShouldTrackUtility(pstmt->utilityStmt)) {
-    int stmt_location = pstmt->stmt_location;
-    int stmt_len = pstmt->stmt_len;
     CALL_PROCESS_UTILITY();
-    ForgetNormalizedStatement(queryString, stmt_location, stmt_len);
     return;
   }
 
   // Capture state before execution
   bool is_top_level = (nesting_level == 0);
   TimestampTz start_ts = GetCurrentTimestamp();
-  int stmt_location = pstmt->stmt_location;
-  int stmt_len = pstmt->stmt_len;
+  uint64 query_id = pstmt->queryId;
   BufferUsage bufusage_start = pgBufferUsage;
   WalUsage walusage_start = pgWalUsage;
   struct rusage rusage_util_start;
@@ -814,9 +756,9 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   }
 
   PschEvent event;
-  BuildEventForUtility(&event, queryString, start_ts, stmt_location, stmt_len,
-                       INSTR_TIME_GET_MICROSEC(duration), is_top_level, GetUtilityRowCount(qc),
-                       &bufusage_delta, &walusage_delta, cpu_user_us, cpu_sys_us);
+  BuildEventForUtility(&event, query_id, start_ts, INSTR_TIME_GET_MICROSEC(duration), is_top_level,
+                       GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta, cpu_user_us,
+                       cpu_sys_us);
   PschEnqueueEvent(&event);
 }
 
@@ -868,8 +810,8 @@ static void CaptureLogEvent(ErrorData* edata) {
   event.err_elevel = static_cast<uint8>(edata->elevel);
 
   if (edata->message != nullptr) {
-    event.err_message_len =
-        static_cast<uint16>(CopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
+    event.err_message_len = static_cast<uint16>(
+        PschCopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
   }
 
   CopyClientContext(&event);

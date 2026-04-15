@@ -10,6 +10,7 @@ extern "C" {
 #include "lib/stringinfo.h"
 #include "nodes/queryjumble.h"
 #include "parser/scanner.h"
+#include "utils/memutils.h"
 }
 
 #include "hooks/query_normalize.h"
@@ -121,7 +122,20 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
   int num_constants_replaced = 0;
   StringInfoData norm_query;
 
-  FillInConstantLengths(jstate, query, query_loc);
+  // Run the lexer in a temporary context.  scanner_init() pallocs a scan
+  // buffer and yylex_init() leaks a small control struct (by design — PG
+  // expects the parsing context to be short-lived).  The caller may invoke
+  // this under a long-lived context (e.g. TopMemoryContext for older code
+  // paths), so without this the per-query scanner allocations would
+  // accumulate for the lifetime of the backend.
+  {
+    MemoryContext tmp =
+        AllocSetContextCreate(CurrentMemoryContext, "psch normalize", ALLOCSET_SMALL_SIZES);
+    MemoryContext old = MemoryContextSwitchTo(tmp);
+    FillInConstantLengths(jstate, query, query_loc);
+    MemoryContextSwitchTo(old);
+    MemoryContextDelete(tmp);
+  }
 
   InitNormalizedQueryBuffer(&norm_query, query_len + 1);
 

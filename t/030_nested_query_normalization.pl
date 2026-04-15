@@ -94,5 +94,53 @@ subtest 'recursive SPI executions of the same statement stay normalized' => sub 
         'Nested SPI queries do not fall back to raw WHERE constant expression');
 };
 
+subtest 'same backend can reuse normalized SPI text across repeated invocations' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    my $session = $node->background_psql('postgres', on_error_stop => 1);
+    my ($stdout, $ret) = $session->query('SELECT pg_backend_pid()');
+    is($ret, 0, 'Can determine backend pid');
+    my ($pid) = $stdout =~ /(\d+)/;
+    ok(defined $pid, 'Captured backend pid');
+
+    ($stdout, $ret) = $session->query('SELECT nested_normalize_same_sql(2)');
+    is($ret, 0, 'First recursive function call succeeds');
+
+    ($stdout, $ret) = $session->query('SELECT nested_normalize_same_sql(2)');
+    is($ret, 0, 'Second recursive function call succeeds in the same backend');
+
+    ($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+    is($ret, 0, 'Flush succeeds');
+    $session->quit();
+
+    my $nested_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%WHERE%' " .
+        "AND query LIKE '%nested_normalize_same_sql%'",
+        sub { $_[0] >= 4 },
+        10
+    );
+    cmp_ok($nested_count, '>=', 4,
+        'Captured repeated executions of the same SPI statement in one backend');
+
+    my $queries = psch_wait_for_clickhouse_query(
+        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%WHERE%' " .
+        "AND query LIKE '%nested_normalize_same_sql%'",
+        sub { $_[0] ne '' },
+        10
+    );
+
+    like($queries, qr/\$\d/,
+        'Repeated SPI queries retain normalized placeholders');
+    unlike($queries, qr/\b42\b/,
+        'Repeated SPI queries do not fall back to raw constant 42');
+    unlike($queries, qr/\b7\s*=\s*7\b/,
+        'Repeated SPI queries do not fall back to raw WHERE constant expression');
+};
+
 $node->stop();
 done_testing();

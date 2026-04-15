@@ -33,6 +33,7 @@ int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
 bool psch_debug_force_locked_overflow = false;
+int psch_normalize_cache_max = 32768;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -307,6 +308,18 @@ void PschInitGuc(void) {
       PGC_SUSET,
       0,
       nullptr, nullptr, nullptr);
+  DefineCustomIntVariable(
+      "pg_stat_ch.normalize_cache_max",
+      "Maximum entries in the per-backend normalized query cache.",
+      "Controls the LRU cache that bridges parse-time normalization to "
+      "executor-time event export. Takes effect at first query after backend start.",
+      &psch_normalize_cache_max,
+      32768,          // bootValue
+      64, 65536,      // min, max
+      PGC_SUSET,
+      0,
+      nullptr, nullptr, nullptr);
+
   DefineCustomBoolVariable(
       "pg_stat_ch.debug_force_locked_overflow",
       "Force HandleOverflow in locked path (debug/test only).",
