@@ -1,36 +1,50 @@
-#include <opentelemetry/common/key_value_iterable_view.h>
-#include <opentelemetry/exporters/otlp/otlp_grpc_exporter_options.h>
-#include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_factory.h>
-#include <opentelemetry/exporters/otlp/otlp_grpc_metric_exporter_factory.h>
-#include <opentelemetry/sdk/logs/batch_log_record_processor_factory.h>
-#include <opentelemetry/sdk/logs/batch_log_record_processor_options.h>
-#include <opentelemetry/sdk/logs/logger_provider.h>
-#include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
-#include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h>
-#include <opentelemetry/sdk/metrics/meter_provider.h>
-#include "opentelemetry/logs/provider.h"
-#include "opentelemetry/metrics/meter.h"
-#include "opentelemetry/metrics/provider.h"
+// Direct-proto OTel exporter.
+//
+// Builds OTLP ExportLogsServiceRequest protobuf messages directly on a
+// google::protobuf::Arena, bypassing the OTel SDK entirely. Our bgworker
+// already owns batching and retry, so the SDK's pipelines are redundant.
+//
+// Arena allocation eliminates per-object malloc/free (the largest cost in the
+// SDK path) and makes batch destruction O(1) via Arena::Reset().
+
+#include <opentelemetry/exporters/otlp/otlp_grpc_client.h>
+#include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_options.h>
+#include <opentelemetry/proto/collector/logs/v1/logs_service.grpc.pb.h>
+#include <opentelemetry/proto/collector/logs/v1/logs_service.pb.h>
+#include <opentelemetry/proto/common/v1/common.pb.h>
+#include <opentelemetry/proto/logs/v1/logs.pb.h>
+#include <opentelemetry/proto/resource/v1/resource.pb.h>
 
 #include "config/guc.h"
 #include "export/exporter_interface.h"
 
-#include <absl/container/flat_hash_map.h>
+#include <google/protobuf/arena.h>
+#include <grpcpp/grpcpp.h>
 
-#include <cassert>
-#include <chrono>
+#include <algorithm>
 #include <cstdlib>
-#include <map>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <unistd.h>
+#include <utility>
+#include <vector>
+
+namespace otlp = opentelemetry::exporter::otlp;
+namespace logs_pb = opentelemetry::proto::logs::v1;
+namespace common_pb = opentelemetry::proto::common::v1;
+namespace resource_pb = opentelemetry::proto::resource::v1;
+namespace collector_logs = opentelemetry::proto::collector::logs::v1;
 
 // Exposed with external linkage so unit tests can link against it directly.
 std::string GetAHostname(const char* fallback) {
-  if (psch_hostname && *psch_hostname)
+  if (psch_hostname != nullptr && *psch_hostname != '\0') {
     return psch_hostname;
+  }
   const char* env = getenv("HOSTNAME");
-  if (env && *env)
+  if (env != nullptr && *env != '\0') {
     return env;
+  }
   char buf[256];
   if (gethostname(buf, sizeof(buf)) == 0) {
     buf[sizeof(buf) - 1] = '\0';
@@ -41,417 +55,376 @@ std::string GetAHostname(const char* fallback) {
 
 namespace {
 
-namespace logs = opentelemetry::logs;
-namespace logs_sdk = opentelemetry::sdk::logs;
-namespace metrics = opentelemetry::metrics;
-namespace metrics_sdk = opentelemetry::sdk::metrics;
-namespace nostd = opentelemetry::nostd;
-namespace otlp = opentelemetry::exporter::otlp;
-namespace otel_common = opentelemetry::common;
+using string = std::string;
+using string_view = std::string_view;
 
-// Because Microsoft ruins everything
-template <typename T>
-using otel_shared_ptr = nostd::shared_ptr<T>;
-template <typename T>
-using otel_unique_ptr = nostd::unique_ptr<T>;
+common_pb::KeyValue* AddAttr(logs_pb::LogRecord* rec) {
+  return rec->add_attributes();
+}
 
+void SetString(common_pb::KeyValue* kv, string_view key, string_view val) {
+  kv->set_key(key.data(), key.size());
+  kv->mutable_value()->set_string_value(val.data(), val.size());
+}
+
+void SetInt(common_pb::KeyValue* kv, string_view key, int64_t val) {
+  kv->set_key(key.data(), key.size());
+  kv->mutable_value()->set_int_value(val);
+}
+
+void SetDouble(common_pb::KeyValue* kv, string_view key, double val) {
+  kv->set_key(key.data(), key.size());
+  kv->mutable_value()->set_double_value(val);
+}
+
+// Conservative sizing constants to stay under the gRPC message budget.
+constexpr size_t kMinBytesPerRecord = 1200;
+constexpr size_t kRequestOverheadBytes = 512;
+constexpr size_t kLogRecordOverheadBytes = 128;
+constexpr size_t kAttrOverheadBytes = 24;
+
+size_t EstimateStringAttrBytes(string_view key, string_view value) {
+  return kAttrOverheadBytes + key.size() + value.size();
+}
+
+size_t EstimateScalarAttrBytes(string_view key) {
+  return kAttrOverheadBytes + key.size() + sizeof(int64_t);
+}
+
+// ---------------------------------------------------------------------------
+// Direct-proto exporter — no OTel SDK dependency on the hot path.
+// ---------------------------------------------------------------------------
 class OTelExporter : public StatsExporter {
  public:
   void BeginBatch() final {
-    if (row_active)
-      EndRow();  // Just in case
-    columns.clear();
-    exported_count = 0;
+    exported_count_ = 0;
+    batch_failed_ = false;
+    ResetChunk();
   }
 
   void BeginRow() final {
-    if (row_active)
-      EndRow();  // We don't make the user call this
-    current_row_tags.clear();
-    current_log_record = logger->CreateLogRecord();
-    row_active = true;
+    if (batch_failed_) {
+      return;
+    }
+    if (ChunkFull()) {
+      if (!FlushChunk()) {
+        batch_failed_ = true;
+        return;
+      }
+      ResetChunk();
+    }
+    current_record_ = scope_logs_->add_log_records();
+    ++chunk_count_;
+    chunk_bytes_ += kLogRecordOverheadBytes;
   }
 
   bool CommitBatch() final;
 
-  shared_ptr<Column<string>> TagString(string_view name) final {
-    return Wrap<TagColumn<string>>(name);
-  }
+  // -- Column factories (all write directly to the arena-allocated LogRecord) --
+
+  shared_ptr<Column<string>> TagString(string_view name) final { return MakeStringCol(name); }
 
   shared_ptr<Column<int16_t>> MetricInt16(string_view name) final {
-    return Wrap<HistogramColumn<int16_t>>(name);
+    return MakeIntCol<int16_t>(name);
   }
   shared_ptr<Column<int32_t>> MetricInt32(string_view name) final {
-    return Wrap<HistogramColumn<int32_t>>(name);
+    return MakeIntCol<int32_t>(name);
   }
   shared_ptr<Column<int64_t>> MetricInt64(string_view name) final {
-    return Wrap<HistogramColumn<int64_t>>(name);
+    return MakeIntCol<int64_t>(name);
   }
   shared_ptr<Column<uint8_t>> MetricUInt8(string_view name) final {
-    return Wrap<HistogramColumn<uint8_t>>(name);
+    return MakeIntCol<uint8_t>(name);
   }
   shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) final {
-    return Wrap<HistogramColumn<uint64_t>>(name);
+    return MakeIntCol<uint64_t>(name);
   }
-  shared_ptr<Column<string_view>> MetricFixedString(int, string_view name) final {
-    return Wrap<CounterColumn>(name);
+  shared_ptr<Column<string_view>> MetricFixedString(int /*len*/, string_view name) final {
+    return MakeSvCol(name);
   }
 
   shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
-    return Wrap<RecordOnlyColumn<int16_t>>(name);
+    return MakeIntCol<int16_t>(name);
   }
   shared_ptr<Column<int32_t>> RecordInt32(string_view name) final {
-    return Wrap<RecordOnlyColumn<int32_t>>(name);
+    return MakeIntCol<int32_t>(name);
   }
   shared_ptr<Column<int64_t>> RecordInt64(string_view name) final {
-    return Wrap<RecordOnlyColumn<int64_t>>(name);
+    return MakeIntCol<int64_t>(name);
   }
   shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) final {
-    return Wrap<RecordOnlyColumn<uint8_t>>(name);
+    return MakeIntCol<uint8_t>(name);
   }
   shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) final {
-    return Wrap<RecordOnlyColumn<uint64_t>>(name);
+    return MakeIntCol<uint64_t>(name);
   }
   shared_ptr<Column<int64_t>> RecordDateTime(string_view name) final {
-    return Wrap<RecordOnlyColumn<int64_t>>(name);
+    return MakeDateTimeCol(name);
   }
-  shared_ptr<Column<string_view>> RecordString(string_view name) final {
-    return Wrap<RecordOnlyColumn<string_view>>(name);
-  }
+  shared_ptr<Column<string_view>> RecordString(string_view name) final { return MakeSvCol(name); }
 
   // Semantic columns
-  shared_ptr<Column<string>> DbNameColumn() final { return Wrap<TagColumn<string>>("db.name"); }
-  shared_ptr<Column<string>> DbUserColumn() final { return Wrap<TagColumn<string>>("db.user"); }
-  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return Wrap<DurationColumn>(); }
+  shared_ptr<Column<string>> DbNameColumn() final { return MakeStringCol("db.name"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return MakeStringCol("db.user"); }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return MakeDurationCol(); }
   shared_ptr<Column<string>> DbOperationColumn() final {
-    return Wrap<TagColumn<string>>("db.operation.name");
+    return MakeStringCol("db.operation.name");
   }
-  shared_ptr<Column<string_view>> DbQueryTextColumn() final {
-    return Wrap<RecordOnlyColumn<string_view>>("db.query.text");
-  }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return MakeSvCol("db.query.text"); }
 
   bool EstablishNewConnection() final;
-  bool IsConnected() const final { return metrics_provider && log_provider; }
-  int NumConsecutiveFailures() const final { return consecutive_failures; }
-  void ResetFailures() final { consecutive_failures = 0; }
-  int NumExported() const final { return exported_count; }
+  bool IsConnected() const final { return stub_ != nullptr; }
+  int NumConsecutiveFailures() const final { return consecutive_failures_; }
+  void ResetFailures() final { consecutive_failures_ = 0; }
+  int NumExported() const final { return exported_count_; }
 
  private:
-  void EndRow() {
-    if (!row_active)
-      return;
+  // -- Lightweight column types (no SDK, no Crunch, direct proto writes) -----
 
-    for (auto& col : columns) {
-      col->Crunch();  // Crunch happens for each row in OTel, not just the batch
-    }
-
-    logger->EmitLogRecord(std::move(current_log_record));
-    row_active = false;
-    ++exported_count;
-  }
-
-  opentelemetry::sdk::resource::Resource CreateResource();
-  void InitMetricsPipeline(const std::string& endpoint,
-                           const opentelemetry::sdk::resource::Resource& resource);
-  void InitLogPipeline(const std::string& endpoint,
-                       const opentelemetry::sdk::resource::Resource& resource);
-
-  // =====================================================================
-  // Column implementation classes (translate OTel concepts to CH Columns)
-  // =====================================================================
-
-  // No Instrument, Tag Column: Applies a tag to all metrics in the row.
   template <typename T>
-  class TagColumn : public Column<T> {
+  class IntColumn : public Column<T> {
    public:
-    TagColumn(OTelExporter* e, string_view n) : exp(e), name(n) {}
-
-    void Append(const T& val) final {
-      // Always add values to the log record.
-      exp->current_log_record->SetAttribute(name, val);
-      // Convert to string and store in the shared map for THIS row
-      exp->current_row_tags[name] = to_string(val);
-    }
-    void Crunch() final {}  // Nothing to do, tags are passive at EndRow
-
-    static string to_string(const string& x) { return x; }
-    static string to_string(string_view x) { return string(x); }
-    template <typename U>
-    static string to_string(U x) {
-      return std::to_string(x);
-    }
-
-   private:
-    OTelExporter* exp;
-    string name;
-  };
-
-  // Histogram Instrument Metric Column: Buckets numeric metrics.
-  template <typename T>
-  class HistogramColumn : public Column<T> {
-   public:
-    HistogramColumn(OTelExporter* e, string_view n)
-        : exp(e), name(n), instrument(exp->GetUnsignedHistogram(name)) {}
-
-    void Append(const T& val) final {
-      // Always add values to the log record.
-      exp->current_log_record->SetAttribute(name, val);
-      // Stash the value until later, when all tags have been gathered
-      // implicit cast from T (int32_t) to int64_t happens here
-      if (val < 0) {
-        LogNegativeValue(name, static_cast<int64_t>(val));
-        stash_val = 0;
-      } else {
-        stash_val = static_cast<uint64_t>(val);
+    IntColumn(OTelExporter* e, string_view n) : exp_(e), name_(n) {}
+    void Append(const T& v) final {
+      if (exp_->current_record_ == nullptr || v == 0) {
+        return;
       }
+      SetInt(AddAttr(exp_->current_record_), name_, static_cast<int64_t>(v));
+      exp_->chunk_bytes_ += EstimateScalarAttrBytes(name_);
     }
-
-    void Crunch() final { instrument->Record(stash_val, exp->current_row_tags, {}); }
+    void Crunch() final {}
 
    private:
-    OTelExporter* exp;
-    string name;
-    otel_shared_ptr<metrics::Histogram<uint64_t>> instrument;
-    uint64_t stash_val = 0;
+    OTelExporter* exp_;
+    string name_;
   };
 
-  // View over current_row_tags that appends one extra K/V pair without copying the map.
-  class MapPlusExtraPairView : public otel_common::KeyValueIterable {
+  class SvColumn : public Column<string_view> {
    public:
-    MapPlusExtraPairView(const absl::flat_hash_map<string, string>& base,
-                         nostd::string_view extra_key, nostd::string_view extra_val)
-        : base_(base), extra_key_(extra_key), extra_val_(extra_val) {}
-
-    bool ForEachKeyValue(nostd::function_ref<bool(nostd::string_view, otel_common::AttributeValue)>
-                             callback) const noexcept override {
-      for (const auto& [k, v] : base_) {
-        if (!callback(k, nostd::string_view(v)))
-          return false;
+    SvColumn(OTelExporter* e, string_view n) : exp_(e), name_(n) {}
+    void Append(const string_view& v) final {
+      if (exp_->current_record_ == nullptr) {
+        return;
       }
-      return callback(extra_key_, extra_val_);
+      SetString(AddAttr(exp_->current_record_), name_, v);
+      exp_->chunk_bytes_ += EstimateStringAttrBytes(name_, v);
     }
-
-    size_t size() const noexcept override { return base_.size() + 1; }
+    void Crunch() final {}
 
    private:
-    const absl::flat_hash_map<string, string>& base_;
-    nostd::string_view extra_key_;
-    nostd::string_view extra_val_;
+    OTelExporter* exp_;
+    string name_;
   };
 
-  // 3. Counter Instrument Metric Column (for histograms of specific tag values)
-  class CounterColumn : public Column<string_view> {
+  class StrColumn : public Column<string> {
    public:
-    CounterColumn(OTelExporter* e, string_view n)
-        : exp(e), name(n), instrument(exp->GetUnsignedCounter(name + ".count")) {}
-
-    void Append(const string_view& val) final {
-      stash_val = std::string(val);
-      exp->current_log_record->SetAttribute(name, stash_val);
+    StrColumn(OTelExporter* e, string_view n) : exp_(e), name_(n) {}
+    void Append(const string& v) final {
+      if (exp_->current_record_ == nullptr) {
+        return;
+      }
+      SetString(AddAttr(exp_->current_record_), name_, v);
+      exp_->chunk_bytes_ += EstimateStringAttrBytes(name_, v);
     }
-
-    void Crunch() final {
-      MapPlusExtraPairView view(exp->current_row_tags, name, stash_val);
-      instrument->Add(1, view);
-    }
+    void Crunch() final {}
 
    private:
-    OTelExporter* exp;
-    string name;
-    string stash_val;
-    otel_shared_ptr<metrics::Counter<uint64_t>> instrument;
+    OTelExporter* exp_;
+    string name_;
   };
 
-  // 4. Record Only Data Column: No metrics, just logs.
-  // (Note that all columns are put in records; these just do nothing else.)
-  template <typename T>
-  class RecordOnlyColumn : public Column<T> {
+  class DateTimeCol : public Column<int64_t> {
    public:
-    RecordOnlyColumn(OTelExporter* e, string_view n) : exp(e), name(n) {}
-
-    void Append(const T& val) final {
-      assert(exp->row_active && exp->current_log_record);
-      exp->current_log_record->SetAttribute(name, NoStringViews(val));
+    DateTimeCol(OTelExporter* e, string_view n) : exp_(e), name_(n) {}
+    void Append(const int64_t& v) final {
+      if (exp_->current_record_ == nullptr) {
+        return;
+      }
+      exp_->current_record_->set_time_unix_nano(static_cast<uint64_t>(v) * 1000ULL);
+      SetInt(AddAttr(exp_->current_record_), name_, v);
+      exp_->chunk_bytes_ += EstimateScalarAttrBytes(name_) + sizeof(uint64_t);
     }
-    void Crunch() final {}  // No metrics to emit
-
-    template <typename U>
-    const U& NoStringViews(const U& x) {
-      return x;
-    }
-    string NoStringViews(std::string_view x) { return string{x}; }
+    void Crunch() final {}
 
    private:
-    OTelExporter* exp;
-    std::string name;
+    OTelExporter* exp_;
+    string name_;
   };
 
-  // 5. Duration Column: converts µs → seconds for OTel db.client.operation.duration histogram.
-  class DurationColumn : public Column<uint64_t> {
+  class DurationCol : public Column<uint64_t> {
    public:
-    explicit DurationColumn(OTelExporter* e)
-        : exp(e), instrument(exp->GetDoubleHistogram("db.client.operation.duration")) {}
-
-    void Append(const uint64_t& val) final {
-      exp->current_log_record->SetAttribute("duration_us", static_cast<int64_t>(val));
-      stash_val = val;
+    explicit DurationCol(OTelExporter* e) : exp_(e) {}
+    void Append(const uint64_t& v) final {
+      if (exp_->current_record_ == nullptr) {
+        return;
+      }
+      double seconds = static_cast<double>(v) / 1e6;
+      SetDouble(AddAttr(exp_->current_record_), "db.client.operation.duration", seconds);
+      SetInt(AddAttr(exp_->current_record_), "duration_us", static_cast<int64_t>(v));
+      exp_->chunk_bytes_ += EstimateScalarAttrBytes("db.client.operation.duration") +
+                            EstimateScalarAttrBytes("duration_us");
     }
-
-    void Crunch() final {
-      double seconds = static_cast<double>(stash_val) / 1e6;
-      instrument->Record(seconds, exp->current_row_tags, {});
-    }
+    void Crunch() final {}
 
    private:
-    OTelExporter* exp;
-    uint64_t stash_val = 0;
-    otel_shared_ptr<metrics::Histogram<double>> instrument;
+    OTelExporter* exp_;
   };
+
+  // -- Column factory helpers ------------------------------------------------
 
   template <typename T>
-  std::shared_ptr<T> Wrap(string_view name) {
-    auto col = std::make_shared<T>(this, name);
-    columns.push_back(col);  // Keep alive for the batch
-    return col;
+  shared_ptr<Column<T>> MakeIntCol(string_view name) {
+    return std::make_shared<IntColumn<T>>(this, name);
   }
 
-  // Wrap overload for column types that don't take a name (e.g. DurationColumn).
-  template <typename T>
-  std::shared_ptr<T> Wrap() {
-    auto col = std::make_shared<T>(this);
-    columns.push_back(col);
-    return col;
+  shared_ptr<Column<string_view>> MakeSvCol(string_view name) {
+    return std::make_shared<SvColumn>(this, name);
   }
 
-  otel_shared_ptr<metrics::Histogram<uint64_t>> GetUnsignedHistogram(std::string_view name) {
-    // Insert a nullptr placeholder.
-    // 'inserted' is true if the key didn't exist.
-    // 'it' points to the element (either new or existing).
-    auto [it, inserted] = histogram_cache.insert(HistogramMap::value_type{name, nullptr});
-    if (inserted) {
-      // Only create the heavy OTel object if we actually inserted a new key
-      it->second = meter->CreateUInt64Histogram(it->first, "description", "unit");
+  shared_ptr<Column<string>> MakeStringCol(string_view name) {
+    return std::make_shared<StrColumn>(this, name);
+  }
+
+  shared_ptr<Column<int64_t>> MakeDateTimeCol(string_view name) {
+    return std::make_shared<DateTimeCol>(this, name);
+  }
+
+  shared_ptr<Column<uint64_t>> MakeDurationCol() { return std::make_shared<DurationCol>(this); }
+
+  // -- Chunk management ------------------------------------------------------
+
+  bool ChunkFull() const {
+    return chunk_count_ >= max_chunk_records_ || chunk_bytes_ >= max_chunk_bytes_;
+  }
+
+  void ResetChunk() {
+    google::protobuf::ArenaOptions arena_opts;
+    arena_opts.initial_block_size = 1024;
+    arena_opts.max_block_size = 65536;
+    arena_ = std::make_unique<google::protobuf::Arena>(arena_opts);
+
+    request_ =
+        google::protobuf::Arena::Create<collector_logs::ExportLogsServiceRequest>(arena_.get());
+    chunk_count_ = 0;
+    chunk_bytes_ = kRequestOverheadBytes;
+    current_record_ = nullptr;
+
+    auto* resource_logs = request_->add_resource_logs();
+    PopulateResource(resource_logs->mutable_resource());
+    scope_logs_ = resource_logs->add_scope_logs();
+    scope_logs_->mutable_scope()->set_name("pg_stat_ch");
+    scope_logs_->mutable_scope()->set_version(PG_STAT_CH_VERSION);
+  }
+
+  bool FlushChunk() {
+    if (stub_ == nullptr || chunk_count_ == 0) {
+      return true;
     }
-    return it->second;
-  }
 
-  otel_shared_ptr<metrics::Counter<uint64_t>> GetUnsignedCounter(std::string_view name) {
-    auto [it, inserted] = counter_cache.insert(CounterMap::value_type{name, nullptr});
-    if (inserted) {
-      it->second = meter->CreateUInt64Counter(it->first, "description", "unit");
+    auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
+    collector_logs::ExportLogsServiceResponse response;
+    auto status = otlp::OtlpGrpcClient::DelegateExport(
+        stub_.get(), std::move(context), std::move(arena_), std::move(*request_), &response);
+
+    request_ = nullptr;
+    scope_logs_ = nullptr;
+    current_record_ = nullptr;
+
+    if (status.ok()) {
+      exported_count_ += static_cast<int>(chunk_count_);
+      chunk_count_ = 0;
+      chunk_bytes_ = 0;
+      return true;
     }
-    return it->second;
+
+    LogExporterWarning("gRPC export failed", status.error_message().c_str());
+    RecordExporterFailure(status.error_message().c_str());
+    consecutive_failures_++;
+    return false;
   }
 
-  otel_shared_ptr<metrics::Histogram<double>> GetDoubleHistogram(std::string_view name) {
-    auto [it, inserted] =
-        double_histogram_cache.insert(DoubleHistogramMap::value_type{name, nullptr});
-    if (inserted) {
-      it->second = meter->CreateDoubleHistogram(it->first, "description", "s");
+  static void PopulateResource(resource_pb::Resource* resource) {
+    auto add = [&](string_view key, string_view val) {
+      SetString(resource->add_attributes(), key, val);
+    };
+    add("service.name", "pg_stat_ch");
+    add("service.version", PG_STAT_CH_VERSION);
+    add("host.name", GetAHostname("postgres-primary"));
+  }
+
+  void ConfigureLogExport(const string& endpoint) {
+    grpc_opts_ = otlp::OtlpGrpcLogRecordExporterOptions();
+    if (!endpoint.empty()) {
+      grpc_opts_.endpoint = endpoint;
     }
-    return it->second;
+    grpc_opts_.timeout = std::chrono::milliseconds(psch_otel_log_delay_ms);
+
+    max_chunk_bytes_ = std::max<size_t>(kMinBytesPerRecord, psch_otel_log_max_bytes);
+    max_chunk_records_ = std::max<size_t>(
+        1, std::min<size_t>(psch_otel_log_batch_size, max_chunk_bytes_ / kMinBytesPerRecord));
   }
 
-  // =====================================================================
-  // OTel connection state
-  // =====================================================================
-  otel_shared_ptr<metrics::Meter> meter;
-  otel_shared_ptr<logs::Logger> logger;
-  shared_ptr<metrics_sdk::MeterProvider> metrics_provider;
-  shared_ptr<metrics_sdk::MetricReader> metrics_reader;
-  shared_ptr<logs_sdk::LoggerProvider> log_provider;
-  int consecutive_failures = 0;
-  int exported_count = 0;
+  // gRPC state
+  otlp::OtlpGrpcLogRecordExporterOptions grpc_opts_;
+  std::unique_ptr<collector_logs::LogsService::StubInterface> stub_;
+  size_t max_chunk_records_ = 1;
+  size_t max_chunk_bytes_ = kMinBytesPerRecord;
+  int consecutive_failures_ = 0;
+  int exported_count_ = 0;
+  bool batch_failed_ = false;
 
-  using HistogramMap = std::map<string, otel_shared_ptr<metrics::Histogram<uint64_t>>, std::less<>>;
-  HistogramMap histogram_cache;
-  using DoubleHistogramMap =
-      std::map<string, otel_shared_ptr<metrics::Histogram<double>>, std::less<>>;
-  DoubleHistogramMap double_histogram_cache;
-  using CounterMap = std::map<string, otel_shared_ptr<metrics::Counter<uint64_t>>, std::less<>>;
-  CounterMap counter_cache;
-
-  // Row state
-  bool row_active = false;
-  absl::flat_hash_map<string, string> current_row_tags;
-  otel_unique_ptr<logs::LogRecord> current_log_record;
-
-  std::vector<shared_ptr<BasicColumn>> columns;
+  // Per-chunk state (arena-allocated)
+  std::unique_ptr<google::protobuf::Arena> arena_;
+  collector_logs::ExportLogsServiceRequest* request_ = nullptr;
+  logs_pb::ScopeLogs* scope_logs_ = nullptr;
+  logs_pb::LogRecord* current_record_ = nullptr;
+  size_t chunk_count_ = 0;
+  size_t chunk_bytes_ = 0;
 };
-
-opentelemetry::sdk::resource::Resource OTelExporter::CreateResource() {
-  return opentelemetry::sdk::resource::Resource::Create({
-      {"service.name", "pg_stat_ch"},
-      {"service.version", std::string(PG_STAT_CH_VERSION)},
-      {"host.name", GetAHostname("postgres-primary")},
-  });
-}
-
-void OTelExporter::InitMetricsPipeline(const std::string& endpoint,
-                                       const opentelemetry::sdk::resource::Resource& resource) {
-  otlp::OtlpGrpcMetricExporterOptions metric_opts;
-  metric_opts.endpoint = endpoint;
-
-  metrics_sdk::PeriodicExportingMetricReaderOptions reader_opts;
-  reader_opts.export_interval_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms);
-  reader_opts.export_timeout_millis = std::chrono::milliseconds(psch_otel_metric_interval_ms / 2);
-
-  metrics_reader = metrics_sdk::PeriodicExportingMetricReaderFactory::Create(
-      otlp::OtlpGrpcMetricExporterFactory::Create(metric_opts), reader_opts);
-
-  metrics_provider = std::make_shared<metrics_sdk::MeterProvider>(
-      std::make_unique<metrics_sdk::ViewRegistry>(), resource);
-  metrics_provider->AddMetricReader(metrics_reader);
-}
-
-void OTelExporter::InitLogPipeline(const std::string& endpoint,
-                                   const opentelemetry::sdk::resource::Resource& resource) {
-  otlp::OtlpGrpcLogRecordExporterOptions log_opts;
-  log_opts.endpoint = endpoint;
-
-  // Cap batch size by byte budget to stay under gRPC 4 MiB default.
-  static constexpr size_t kOtelMinBytesPerRecord = 1200;
-  size_t batch_size_by_bytes =
-      static_cast<size_t>(psch_otel_log_max_bytes) / kOtelMinBytesPerRecord;
-
-  logs_sdk::BatchLogRecordProcessorOptions batch_opts;
-  batch_opts.max_queue_size = psch_otel_log_queue_size;
-  batch_opts.max_export_batch_size =
-      std::min(static_cast<size_t>(psch_otel_log_batch_size), batch_size_by_bytes);
-  batch_opts.schedule_delay_millis = std::chrono::milliseconds(psch_otel_log_delay_ms);
-
-  log_provider = std::make_shared<logs_sdk::LoggerProvider>(
-      logs_sdk::BatchLogRecordProcessorFactory::Create(
-          otlp::OtlpGrpcLogRecordExporterFactory::Create(log_opts), batch_opts),
-      resource);
-}
 
 bool OTelExporter::EstablishNewConnection() {
   try {
-    const std::string endpoint =
-        (psch_otel_endpoint && *psch_otel_endpoint) ? psch_otel_endpoint : "localhost:4317";
+    const string endpoint =
+        (psch_otel_endpoint != nullptr && *psch_otel_endpoint != '\0') ? psch_otel_endpoint : "";
 
-    auto resource = CreateResource();
-    InitMetricsPipeline(endpoint, resource);
-    InitLogPipeline(endpoint, resource);
-
-    const std::string pgch_version = PG_STAT_CH_VERSION;
-    meter = metrics_provider->GetMeter("pg_stat_ch", pgch_version);
-    logger = log_provider->GetLogger("pg_stat_ch", "pg_stat_ch_logs");
-
+    ConfigureLogExport(endpoint);
+    auto channel = otlp::OtlpGrpcClient::MakeChannel(grpc_opts_);
+    if (channel == nullptr) {
+      LogExporterWarning("OTel init failed", "invalid or empty OTLP endpoint");
+      stub_.reset();
+      return false;
+    }
+    stub_ = collector_logs::LogsService::NewStub(channel);
     return true;
   } catch (const std::exception& e) {
     LogExporterWarning("OTel init failed", e.what());
+    stub_.reset();
     return false;
   }
 }
 
 bool OTelExporter::CommitBatch() {
-  EndRow();
-  // No ForceFlush — metrics and logs export asynchronously via background
-  // threads. Blocking here would stall dequeuing and cause shmem overflow.
-  ResetFailures();
-  return true;
+  if (batch_failed_) {
+    return false;
+  }
+
+  if (stub_ == nullptr) {
+    ResetFailures();
+    return true;
+  }
+
+  try {
+    bool ok = FlushChunk();
+    if (ok) {
+      ResetFailures();
+    }
+    return ok;
+  } catch (const std::exception& e) {
+    LogExporterWarning("export exception", e.what());
+    RecordExporterFailure(e.what());
+    consecutive_failures_++;
+    return false;
+  }
 }
 
 }  // namespace

@@ -83,6 +83,7 @@ class StatsExporter {
 // (e.g. otel_exporter.cc conflicts with libintl.h via gRPC headers).
 void LogNegativeValue(const std::string& column_name, int64_t value);
 void LogExporterWarning(const char* context, const char* message);
+void RecordExporterFailure(const char* message);
 
 // Expected usage:
 // void ProcessBatch(StatsExporter *exporter) {

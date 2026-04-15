@@ -12,6 +12,9 @@ CMakeFiles/
 # Compile database
 compile_commands.json
 
+# Local CMake presets (developer-specific)
+CMakeUserPresets.json
+
 # Editor/IDE
 .vscode/
 .idea/
