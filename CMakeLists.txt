@@ -20,10 +20,9 @@ message(STATUS "PostgreSQL ${PostgreSQLServer_VERSION} found")
 # Compiler warnings
 include(CompilerWarnings)
 
-# OpenSSL support (enables TLS connections to ClickHouse)
-option(WITH_OPENSSL "Enable OpenSSL for TLS connections" ON)
-include(PgStatChOpenSSL)
-pg_stat_ch_setup_openssl()
+# OpenSSL (required — vcpkg manifest always builds clickhouse-cpp with openssl)
+find_package(OpenSSL REQUIRED)
+message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 
 # ---------------------------------------------------------------------------
 # Third-party dependencies (via vcpkg)
@@ -53,9 +52,7 @@ target_link_libraries(pg_stat_ch PRIVATE
   opentelemetry-cpp::metrics
   opentelemetry-cpp::logs
 )
-if(WITH_OPENSSL)
-  target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-endif()
+target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES

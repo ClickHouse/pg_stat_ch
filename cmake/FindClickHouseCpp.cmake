@@ -26,13 +26,14 @@ if(ClickHouseCpp_FOUND AND NOT TARGET ClickHouseCpp::ClickHouseCpp)
   set_target_properties(ClickHouseCpp::ClickHouseCpp PROPERTIES
     IMPORTED_LOCATION "${ClickHouseCpp_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${ClickHouseCpp_INCLUDE_DIR}"
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${ClickHouseCpp_INCLUDE_DIR}"
   )
 
   # clickhouse-cpp depends on abseil, lz4, cityhash, and zstd
   find_package(absl CONFIG REQUIRED)
-  find_library(_LZ4_LIB NAMES lz4)
-  find_library(_CITYHASH_LIB NAMES cityhash)
-  find_library(_ZSTD_LIB NAMES zstd)
+  find_library(_LZ4_LIB NAMES lz4 REQUIRED)
+  find_library(_CITYHASH_LIB NAMES cityhash REQUIRED)
+  find_library(_ZSTD_LIB NAMES zstd REQUIRED)
 
   target_link_libraries(ClickHouseCpp::ClickHouseCpp INTERFACE
     absl::int128

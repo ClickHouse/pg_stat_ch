@@ -36,7 +36,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install vcpkg
-RUN git clone --depth 1 https://github.com/microsoft/vcpkg.git /opt/vcpkg \
+# Pin to the same commit as the vcpkg submodule for reproducible builds
+ARG VCPKG_COMMIT=12159785447291b4069c82a3fe9c2770a393ac7f
+RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
+    && git -C /opt/vcpkg checkout "$VCPKG_COMMIT" \
     && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 ENV VCPKG_ROOT=/opt/vcpkg
 ENV PATH="/opt/vcpkg:${PATH}"
@@ -59,7 +62,6 @@ RUN mkdir -p src include \
 # RelWithDebInfo: optimized but with debug symbols for perf/flamegraph.
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DWITH_OPENSSL=ON \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
     -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
     -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
@@ -75,7 +77,6 @@ COPY pg_stat_ch.control ./
 # Touch sources so ninja sees them as newer than the stub objects.
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DWITH_OPENSSL=ON \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
     -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
     -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
