@@ -63,6 +63,27 @@ enum PschCmdType {
   PSCH_CMD_NOTHING = 7
 };
 
+static inline const char* PschCmdTypeToString(enum PschCmdType cmd) {
+  switch (cmd) {
+    case PSCH_CMD_SELECT:
+      return "SELECT";
+    case PSCH_CMD_UPDATE:
+      return "UPDATE";
+    case PSCH_CMD_INSERT:
+      return "INSERT";
+    case PSCH_CMD_DELETE:
+      return "DELETE";
+    case PSCH_CMD_MERGE:
+      return "MERGE";
+    case PSCH_CMD_UTILITY:
+      return "UTILITY";
+    case PSCH_CMD_NOTHING:
+      return "NOTHING";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 // Event structure stored in shared memory queue (~2KB fixed size)
 //
 // VERSION-SPECIFIC FIELDS: All fields are unconditionally present regardless of

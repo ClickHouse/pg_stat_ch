@@ -25,7 +25,7 @@ char* psch_otel_endpoint = nullptr;
 char* psch_hostname = nullptr;
 int psch_queue_capacity = 131072;
 int psch_string_area_size = 64;  // MB, for DSA string storage
-int psch_flush_interval_ms = 200;
+int psch_flush_interval_ms = 500;
 int psch_batch_max = 200000;
 int psch_log_min_elevel = WARNING;
 int psch_otel_log_queue_size = 65536;
@@ -38,7 +38,7 @@ int psch_min_duration_us = 0;
 int psch_normalize_cache_max = 32768;
 double psch_sample_rate = 1.0;
 bool psch_otel_arrow_passthrough = false;
-int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB
+int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB (max: 16 MiB)
 char* psch_extra_attributes = nullptr;
 char* psch_debug_arrow_dump_dir = nullptr;
 
@@ -226,7 +226,7 @@ void PschInitGuc(void) {
       "Interval in milliseconds between ClickHouse export batches.",
       nullptr,
       &psch_flush_interval_ms,
-      200,            // bootValue
+      500,            // bootValue
       100, 60000,     // min, max
       PGC_SIGHUP,
       GUC_UNIT_MS,
@@ -364,11 +364,12 @@ void PschInitGuc(void) {
   DefineCustomIntVariable(
       "pg_stat_ch.otel_max_block_bytes",
       "Maximum Arrow batch size in bytes per OTLP request.",
-      "Controls the soft byte budget for a single Arrow IPC batch before it is "
-      "flushed to the OTel exporter. Must stay under gRPC max message size.",
+      "Controls the soft byte budget (estimated, pre-compression) for a single "
+      "Arrow IPC batch before it is flushed. ZSTD compression typically shrinks "
+      "the payload 20-30x, so this budget can safely exceed the gRPC wire limit.",
       &psch_otel_max_block_bytes,
-      3 * 1024 * 1024,          // bootValue: 3 MiB
-      65536, 4 * 1024 * 1024,   // min: 64 KiB, max: 4 MiB
+      3 * 1024 * 1024,           // bootValue: 3 MiB
+      65536, 16 * 1024 * 1024,  // min: 64 KiB, max: 16 MiB
       PGC_SIGHUP,
       GUC_UNIT_BYTE,
       nullptr, nullptr, nullptr);

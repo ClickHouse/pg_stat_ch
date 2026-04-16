@@ -11,12 +11,20 @@ env:
 
 jobs:
   build-and-test:
-    name: Build & Test (PG ${{ matrix.pg_version }})
-    runs-on: depot-ubuntu-24.04-16
+    name: Build & Test (PG ${{ matrix.pg_version }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         pg_version: [16, 17, 18]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: depot-ubuntu-22.04-16
+            triplet: x64-linux-pic
+          - arch: arm64
+            runner: depot-ubuntu-22.04-arm-16
+            triplet: arm64-linux-pic
 
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl ca-certificates gnupg
           curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
-          echo "deb [arch=amd64] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
 
       - name: Install PostgreSQL ${{ matrix.pg_version }}
@@ -41,17 +49,20 @@ jobs:
         run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg
+        with:
+          triplet: ${{ matrix.triplet }}
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: pg${{ matrix.pg_version }}
+          key: pg${{ matrix.pg_version }}-${{ matrix.arch }}
           max-size: 500M
 
       - name: Configure
         run: |
           cmake --preset default \
             -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -87,7 +98,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-pg${{ matrix.pg_version }}
+          name: test-results-pg${{ matrix.pg_version }}-${{ matrix.arch }}
           path: |
             test/regression/results/
             test/regression/tmp_check/log/
@@ -96,7 +107,7 @@ jobs:
 
   unit-tests:
     name: C++ Unit Tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-22.04-16
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,14 +147,14 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build_unit --target hostname_test --parallel
+        run: cmake --build build_unit --parallel
 
       - name: Run unit tests
         run: ctest --test-dir build_unit --output-on-failure
 
   bench-otel:
     name: OTel Throughput Benchmark
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-22.04-16
     steps:
       - uses: actions/checkout@v4
         with:
@@ -241,7 +252,7 @@ jobs:
 
   lint:
     name: Code Style
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-22.04-16
     steps:
       - uses: actions/checkout@v4
 

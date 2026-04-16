@@ -2,9 +2,12 @@
 
 extern "C" {
 #include "postgres.h"
+
+#include "utils/timestamp.h"
 }
 
 #include <chrono>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -12,6 +15,7 @@ extern "C" {
 #include <clickhouse/client.h>
 
 #include "config/guc.h"
+#include "export/arrow_batch.h"
 #include "export/clickhouse_exporter.h"
 #include "export/exporter_interface.h"
 #include "export/otel_exporter.h"
@@ -38,28 +42,6 @@ struct ExporterState {
 // Bgworker-local exporter state (no locking needed)
 ExporterState g_exporter;
 
-// Convert PschCmdType to string
-const char* CmdTypeToString(PschCmdType cmd) {
-  switch (cmd) {
-    case PSCH_CMD_SELECT:
-      return "SELECT";
-    case PSCH_CMD_UPDATE:
-      return "UPDATE";
-    case PSCH_CMD_INSERT:
-      return "INSERT";
-    case PSCH_CMD_DELETE:
-      return "DELETE";
-    case PSCH_CMD_MERGE:
-      return "MERGE";
-    case PSCH_CMD_UTILITY:
-      return "UTILITY";
-    case PSCH_CMD_NOTHING:
-      return "NOTHING";
-    default:
-      return "UNKNOWN";
-  }
-}
-
 // Clamp a field length to its buffer maximum, warning on overflow.
 template <typename LenT>
 LenT ClampFieldLen(LenT len, LenT max, const char* field_name) {
@@ -79,6 +61,102 @@ std::vector<PschEvent> DequeueEvents(int max_events) {
     events.push_back(event);
   }
   return events;
+}
+
+void MaybeDumpArrowBatch(const uint8_t* data, size_t len) {
+  if (data == nullptr || len == 0 || psch_debug_arrow_dump_dir == nullptr ||
+      *psch_debug_arrow_dump_dir == '\0') {
+    return;
+  }
+
+  const auto unix_now_ns =
+      static_cast<unsigned long long>((GetCurrentTimestamp() + kPostgresEpochOffsetUs) * 1000LL);
+  char path[MAXPGPATH];
+  char tmp_path[MAXPGPATH];
+  snprintf(path, sizeof(path), "%s/arrow_%llu.ipc", psch_debug_arrow_dump_dir, unix_now_ns);
+  snprintf(tmp_path, sizeof(tmp_path), "%s/arrow_%llu.ipc.tmp", psch_debug_arrow_dump_dir,
+           unix_now_ns);
+
+  FILE* file = fopen(tmp_path, "wb");
+  if (file == nullptr) {
+    elog(WARNING, "pg_stat_ch: failed to open Arrow dump file '%s'", tmp_path);
+    return;
+  }
+
+  const size_t written = fwrite(data, 1, len, file);
+  fclose(file);
+  if (written != len) {
+    remove(tmp_path);
+    elog(WARNING, "pg_stat_ch: short Arrow dump write to '%s' (%zu/%zu bytes)", tmp_path, written,
+         len);
+    return;
+  }
+
+  if (rename(tmp_path, path) != 0) {
+    remove(tmp_path);
+    elog(WARNING, "pg_stat_ch: failed to finalize Arrow dump file '%s'", path);
+  }
+}
+
+int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+  ArrowBatchBuilder builder;
+  if (!builder.Init(psch_extra_attributes, PG_STAT_CH_VERSION)) {
+    LogExporterWarning("Arrow init", "failed to initialize Arrow batch builder");
+    RecordExporterFailure("Arrow batch builder init failed");
+    return 0;
+  }
+
+  const size_t max_block_bytes =
+      std::max<size_t>(65536, static_cast<size_t>(psch_otel_max_block_bytes));
+  int total_exported = 0;
+  bool export_failed = false;
+
+  auto flush_builder = [&]() -> bool {
+    ArrowBatchBuilder::FinishResult result = builder.Finish();
+    if (result.ipc_buffer == nullptr || result.num_rows <= 0) {
+      return false;
+    }
+
+    const auto ipc_len = static_cast<size_t>(result.ipc_buffer->size());
+    MaybeDumpArrowBatch(result.ipc_buffer->data(), ipc_len);
+    if (!exporter->SendArrowBatch(result.ipc_buffer->data(), ipc_len, result.num_rows)) {
+      return false;
+    }
+
+    total_exported += result.num_rows;
+    return true;
+  };
+
+  for (const auto& event : events) {
+    if (!builder.Append(event)) {
+      export_failed = true;
+      break;
+    }
+    if (builder.EstimatedBytes() >= max_block_bytes) {
+      if (!flush_builder()) {
+        export_failed = true;
+        break;
+      }
+      builder.Reset();
+    }
+  }
+
+  if (!export_failed && builder.NumRows() > 0 && !flush_builder()) {
+    export_failed = true;
+  }
+
+  if (export_failed) {
+    RecordExporterFailure("Arrow batch build/send failed");
+  }
+
+  if (!export_failed && total_exported > 0) {
+    if (psch_shared_state != nullptr) {
+      pg_atomic_fetch_add_u64(&psch_shared_state->exported, total_exported);
+    }
+    PschRecordExportSuccess();
+  }
+
+  return total_exported;
 }
 
 // Build and export stats (records, metrics, ClickHouse rows) from events
@@ -148,7 +226,7 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
     col_username->Append(std::string(ev.username, ev.username_len));
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
-    col_cmd_type->Append(CmdTypeToString(ev.cmd_type));
+    col_cmd_type->Append(PschCmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
 
     auto qlen = ClampFieldLen(ev.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
@@ -254,6 +332,11 @@ int PschExportBatch(void) {
   if (events.empty()) {
     elog(DEBUG1, "pg_stat_ch: no events to export");
     return 0;
+  }
+
+  if (psch_use_otel && psch_otel_arrow_passthrough) {
+    elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events as Arrow IPC", events.size());
+    return ExportEventsAsArrow(events, exporter);
   }
 
   elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events", events.size());
