@@ -153,6 +153,7 @@ struct ArrowBatchBuilder::Impl {
   DictBuilder db_user_builder;
   DictBuilder db_operation_builder;
   DictBuilder app_builder;
+  DictBuilder client_addr_builder;
   arrow::StringBuilder query_text_builder;
   arrow::StringBuilder pid_builder;
   arrow::StringBuilder err_message_builder;
@@ -170,6 +171,8 @@ struct ArrowBatchBuilder::Impl {
   arrow::UInt64Builder local_blks_read_builder;
   arrow::UInt64Builder local_blks_written_builder;
   arrow::UInt64Builder local_blks_dirtied_builder;
+  arrow::UInt64Builder local_blk_read_time_us_builder;
+  arrow::UInt64Builder local_blk_write_time_us_builder;
   arrow::UInt64Builder temp_blks_read_builder;
   arrow::UInt64Builder temp_blks_written_builder;
   arrow::UInt64Builder temp_blk_read_time_us_builder;
@@ -217,6 +220,7 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("db_user", DictionaryUtf8Type()),
         arrow::field("db_operation", DictionaryUtf8Type()),
         arrow::field("app", DictionaryUtf8Type()),
+        arrow::field("client_addr", DictionaryUtf8Type()),
         arrow::field("query_text", arrow::utf8()),
         arrow::field("pid", arrow::utf8()),
         arrow::field("err_message", arrow::utf8()),
@@ -234,6 +238,8 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("local_blks_read", arrow::uint64()),
         arrow::field("local_blks_written", arrow::uint64()),
         arrow::field("local_blks_dirtied", arrow::uint64()),
+        arrow::field("local_blk_read_time_us", arrow::uint64()),
+        arrow::field("local_blk_write_time_us", arrow::uint64()),
         arrow::field("temp_blks_read", arrow::uint64()),
         arrow::field("temp_blks_written", arrow::uint64()),
         arrow::field("temp_blk_read_time_us", arrow::uint64()),
@@ -284,6 +290,9 @@ struct ArrowBatchBuilder::Impl {
     const auto app_len =
         ClampFieldLen(event.application_name_len, static_cast<uint8>(PSCH_MAX_APP_NAME_LEN),
                       "application_name_len");
+    const auto client_addr_len =
+        ClampFieldLen(event.client_addr_len, static_cast<uint8>(PSCH_MAX_CLIENT_ADDR_LEN),
+                      "client_addr_len");
     const auto query_len =
         ClampFieldLen(event.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
     const auto err_message_len = ClampFieldLen(
@@ -294,6 +303,7 @@ struct ArrowBatchBuilder::Impl {
     const std::string_view db_name(event.datname, datname_len);
     const std::string_view db_user(event.username, username_len);
     const std::string_view app(event.application_name, app_len);
+    const std::string_view client_addr(event.client_addr, client_addr_len);
     const std::string_view query_text(event.query, query_len);
     const std::string_view err_message(event.err_message, err_message_len);
     const std::string_view err_sqlstate(event.err_sqlstate, err_sqlstate_len);
@@ -309,6 +319,7 @@ struct ArrowBatchBuilder::Impl {
         !AppendString(&db_operation_builder, PschCmdTypeToString(event.cmd_type),
                       "Arrow db_operation append") ||
         !AppendString(&app_builder, app, "Arrow app append") ||
+        !AppendString(&client_addr_builder, client_addr, "Arrow client_addr append") ||
         !AppendString(&query_text_builder, query_text, "Arrow query_text append") ||
         !AppendString(&pid_builder, pid_buf, "Arrow pid append") ||
         !AppendString(&err_message_builder, err_message, "Arrow err_message append") ||
@@ -351,6 +362,13 @@ struct ArrowBatchBuilder::Impl {
         !AppendScalar(&local_blks_dirtied_builder,
                       ClampSignedToUint64(event.local_blks_dirtied, "local_blks_dirtied"),
                       "Arrow local_blks_dirtied append") ||
+        !AppendScalar(&local_blk_read_time_us_builder,
+                      ClampSignedToUint64(event.local_blk_read_time_us, "local_blk_read_time_us"),
+                      "Arrow local_blk_read_time_us append") ||
+        !AppendScalar(
+            &local_blk_write_time_us_builder,
+            ClampSignedToUint64(event.local_blk_write_time_us, "local_blk_write_time_us"),
+            "Arrow local_blk_write_time_us append") ||
         !AppendScalar(&temp_blks_read_builder,
                       ClampSignedToUint64(event.temp_blks_read, "temp_blks_read"),
                       "Arrow temp_blks_read append") ||
@@ -417,11 +435,12 @@ struct ArrowBatchBuilder::Impl {
     }
 
     estimated_bytes += kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() +
-                       query_text.size() + err_message.size() + err_sqlstate.size() +
-                       service_version.size() + ExtraAttr("instance_ubid").size() +
-                       ExtraAttr("server_ubid").size() + ExtraAttr("server_role").size() +
-                       ExtraAttr("region").size() + ExtraAttr("cell").size() +
-                       ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
+                       client_addr.size() + query_text.size() + err_message.size() +
+                       err_sqlstate.size() + service_version.size() +
+                       ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
+                       ExtraAttr("server_role").size() + ExtraAttr("region").size() +
+                       ExtraAttr("cell").size() + ExtraAttr("host_id").size() +
+                       ExtraAttr("pod_name").size();
     ++num_rows;
     return true;
   }
@@ -463,6 +482,7 @@ struct ArrowBatchBuilder::Impl {
         !add_dict_array(&db_user_builder, "Arrow db_user finish") ||
         !add_dict_array(&db_operation_builder, "Arrow db_operation finish") ||
         !add_dict_array(&app_builder, "Arrow app finish") ||
+        !add_dict_array(&client_addr_builder, "Arrow client_addr finish") ||
         !add_array(&query_text_builder, "Arrow query_text finish") ||
         !add_array(&pid_builder, "Arrow pid finish") ||
         !add_array(&err_message_builder, "Arrow err_message finish") ||
@@ -480,6 +500,8 @@ struct ArrowBatchBuilder::Impl {
         !add_array(&local_blks_read_builder, "Arrow local_blks_read finish") ||
         !add_array(&local_blks_written_builder, "Arrow local_blks_written finish") ||
         !add_array(&local_blks_dirtied_builder, "Arrow local_blks_dirtied finish") ||
+        !add_array(&local_blk_read_time_us_builder, "Arrow local_blk_read_time_us finish") ||
+        !add_array(&local_blk_write_time_us_builder, "Arrow local_blk_write_time_us finish") ||
         !add_array(&temp_blks_read_builder, "Arrow temp_blks_read finish") ||
         !add_array(&temp_blks_written_builder, "Arrow temp_blks_written finish") ||
         !add_array(&temp_blk_read_time_us_builder, "Arrow temp_blk_read_time_us finish") ||
@@ -566,6 +588,7 @@ struct ArrowBatchBuilder::Impl {
     db_user_builder.ResetFull();
     db_operation_builder.ResetFull();
     app_builder.ResetFull();
+    client_addr_builder.ResetFull();
     query_text_builder.Reset();
     pid_builder.Reset();
     err_message_builder.Reset();
@@ -583,6 +606,8 @@ struct ArrowBatchBuilder::Impl {
     local_blks_read_builder.Reset();
     local_blks_written_builder.Reset();
     local_blks_dirtied_builder.Reset();
+    local_blk_read_time_us_builder.Reset();
+    local_blk_write_time_us_builder.Reset();
     temp_blks_read_builder.Reset();
     temp_blks_written_builder.Reset();
     temp_blk_read_time_us_builder.Reset();

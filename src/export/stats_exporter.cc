@@ -108,8 +108,9 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
   const size_t max_block_bytes =
       std::max<size_t>(65536, static_cast<size_t>(psch_otel_max_block_bytes));
   int total_exported = 0;
+  bool export_failed = false;
 
-  auto flush_builder = [&](bool reset_after_send) -> bool {
+  auto flush_builder = [&]() -> bool {
     ArrowBatchBuilder::FinishResult result = builder.Finish();
     if (result.ipc_buffer == nullptr || result.num_rows <= 0) {
       return false;
@@ -122,28 +123,28 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
     }
 
     total_exported += result.num_rows;
-    if (reset_after_send) {
-      builder.Reset();
-    }
     return true;
   };
 
   for (const auto& event : events) {
     if (!builder.Append(event)) {
+      export_failed = true;
       break;
     }
     if (builder.EstimatedBytes() >= max_block_bytes) {
-      if (!flush_builder(true)) {
+      if (!flush_builder()) {
+        export_failed = true;
         break;
       }
+      builder.Reset();
     }
   }
 
-  if (builder.NumRows() > 0) {
-    flush_builder(false);
+  if (!export_failed && builder.NumRows() > 0 && !flush_builder()) {
+    export_failed = true;
   }
 
-  if (total_exported > 0) {
+  if (!export_failed && total_exported > 0) {
     if (psch_shared_state != nullptr) {
       pg_atomic_fetch_add_u64(&psch_shared_state->exported, total_exported);
     }
