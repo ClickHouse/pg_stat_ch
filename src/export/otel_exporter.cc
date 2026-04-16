@@ -329,8 +329,8 @@ class OTelExporter : public StatsExporter {
 
   void ResetChunk() {
     google::protobuf::ArenaOptions arena_opts;
-    arena_opts.initial_block_size = 65536;    // 64 KiB — skip many small doublings
-    arena_opts.max_block_size = 1048576;      // 1 MiB — sized for 3 MiB chunk budget
+    arena_opts.initial_block_size = 65536;  // 64 KiB — skip many small doublings
+    arena_opts.max_block_size = 1048576;    // 1 MiB — sized for 3 MiB chunk budget
     arena_ = std::make_unique<google::protobuf::Arena>(arena_opts);
 
     request_ =
