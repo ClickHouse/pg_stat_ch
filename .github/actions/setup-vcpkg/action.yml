@@ -21,12 +21,14 @@ runs:
         echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
         echo "$HOME/vcpkg" >> "$GITHUB_PATH"
 
-        # Use a fixed directory for vcpkg binary cache
-        mkdir -p "${{ runner.temp }}/vcpkg-archives"
-        echo "VCPKG_DEFAULT_BINARY_CACHE=${{ runner.temp }}/vcpkg-archives" >> "$GITHUB_ENV"
+        # Use a stable directory for vcpkg binary cache (runner.temp can be wiped)
+        mkdir -p "$HOME/.cache/vcpkg-archives"
+        echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/.cache/vcpkg-archives" >> "$GITHUB_ENV"
 
     - name: Cache vcpkg binary archives
       uses: actions/cache@v4
       with:
-        path: ${{ runner.temp }}/vcpkg-archives
+        path: ~/.cache/vcpkg-archives
         key: vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/*.cmake') }}
+        restore-keys: |
+          vcpkg-${{ inputs.triplet }}-
