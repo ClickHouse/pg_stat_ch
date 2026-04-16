@@ -46,14 +46,7 @@ jobs:
             binutils libssl-dev \
             pkg-config curl zip unzip tar
 
-      - name: Setup vcpkg
-        id: vcpkg
-        uses: johnwason/vcpkg-action@v7
-        with:
-          manifest-dir: ${{ github.workspace }}
-          triplet: ${{ matrix.triplet }}
-          token: ${{ github.token }}
-          extra-args: --overlay-triplets=${{ github.workspace }}/triplets
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Get version from git
         id: version
@@ -65,11 +58,9 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -B build -G Ninja \
-            ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} \
+          cmake --preset release \
             -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
 
       - name: Build
         run: cmake --build build --parallel

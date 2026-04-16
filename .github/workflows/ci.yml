@@ -40,14 +40,7 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
 
-      - name: Setup vcpkg
-        id: vcpkg
-        uses: johnwason/vcpkg-action@v7
-        with:
-          manifest-dir: ${{ github.workspace }}
-          triplet: x64-linux-pic
-          token: ${{ github.token }}
-          extra-args: --overlay-triplets=${{ github.workspace }}/triplets
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -57,11 +50,8 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -B build -G Ninja \
-            ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} \
+          cmake --preset default \
             -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -126,14 +116,7 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
 
-      - name: Setup vcpkg
-        id: vcpkg
-        uses: johnwason/vcpkg-action@v7
-        with:
-          manifest-dir: ${{ github.workspace }}
-          triplet: x64-linux-pic
-          token: ${{ github.token }}
-          extra-args: --overlay-triplets=${{ github.workspace }}/triplets
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -144,10 +127,11 @@ jobs:
       - name: Configure
         run: |
           cmake -B build_unit -G Ninja \
-            ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} \
             -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
             -DPSCH_BUILD_UNIT_TESTS=ON \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
+            -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
