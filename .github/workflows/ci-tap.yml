@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PG_TAP_DIR }}
-          key: pg-tap-${{ env.PG_VERSION }}-v2
+          key: pg-tap-${{ env.PG_VERSION }}-ubuntu22.04-v3
 
       - name: Build PostgreSQL with TAP support
         if: steps.cache-pg.outputs.cache-hit != 'true'
