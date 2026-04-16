@@ -29,6 +29,7 @@ message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 # ---------------------------------------------------------------------------
 find_package(opentelemetry-cpp CONFIG REQUIRED)
 find_package(ClickHouseCpp REQUIRED)
+find_package(Arrow CONFIG REQUIRED)
 
 # Collect source files
 file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
@@ -38,6 +39,10 @@ add_library(pg_stat_ch SHARED ${SOURCES})
 
 target_compile_features(pg_stat_ch PRIVATE cxx_std_17)
 target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
+# Force-include libintl.h before any source file so its declarations are parsed
+# before PostgreSQL's postgres.h defines gettext/ngettext as macros.  The include
+# guard then prevents re-inclusion when C++ <locale> pulls it in later (via Arrow).
+target_compile_options(pg_stat_ch PRIVATE -include libintl.h)
 target_include_directories(pg_stat_ch PRIVATE
   include
   src
@@ -51,6 +56,7 @@ target_link_libraries(pg_stat_ch PRIVATE
   opentelemetry-cpp::otlp_grpc_log_record_exporter
   opentelemetry-cpp::metrics
   opentelemetry-cpp::logs
+  Arrow::arrow_static
 )
 target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 pg_stat_ch_set_warnings(pg_stat_ch)

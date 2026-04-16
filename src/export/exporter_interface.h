@@ -1,6 +1,7 @@
 #ifndef PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_
 #define PG_STAT_CH_SRC_EXPORT_EXPORTER_INTERFACE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -75,6 +76,12 @@ class StatsExporter {
   virtual int NumConsecutiveFailures() const = 0;
   virtual void ResetFailures() = 0;
   virtual int NumExported() const = 0;
+  virtual bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) {
+    (void)ipc_data;
+    (void)ipc_len;
+    (void)num_rows;
+    return false;
+  }
 
   virtual ~StatsExporter() = default;
 };
