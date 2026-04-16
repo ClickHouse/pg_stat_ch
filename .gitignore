@@ -42,5 +42,8 @@ benchmark/.env
 # Perf benchmark output files
 docker/perf-results/
 
+# vcpkg installed packages
+vcpkg_installed/
+
 # Release artifacts
 pg_stat_ch-*.zip

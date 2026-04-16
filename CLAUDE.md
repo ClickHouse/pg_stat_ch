@@ -9,6 +9,18 @@ pg_stat_ch is a PostgreSQL 16+ extension written in C++ that captures query exec
 
 All aggregation (p50/p95/p99, top queries, errors) happens in ClickHouse via materialized views, not in the extension.
 
+## Dependencies
+
+Third-party dependencies are managed via **vcpkg** (manifest mode). The vcpkg submodule lives at `third_party/vcpkg`; the manifest is `vcpkg.json`.
+
+**First-time setup:**
+```bash
+git submodule update --init  # clone vcpkg
+third_party/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+```
+
+mise.toml sets `VCPKG_ROOT` automatically when using `mise run` tasks.
+
 ## Build Commands
 
 ```bash
@@ -75,8 +87,10 @@ mise run test:isolation     # Isolation tests (race conditions)
 - `sql/pg_stat_ch--0.1.sql` - SQL function definitions
 
 **Build system:**
-- CMake with presets (default=debug, release)
+- CMake with presets (default=debug, release, release-arm64)
+- vcpkg manifest mode (`vcpkg.json`) with custom triplets in `triplets/`
 - `cmake/FindPostgreSQLServer.cmake` - Finds PostgreSQL via pg_config
+- `cmake/FindClickHouseCpp.cmake` - Finds clickhouse-cpp (vcpkg port has no cmake config)
 - `cmake/CompilerWarnings.cmake` - Strict warning flags
 - `cmake/GitVersion.cmake` - Version extraction from git
 

@@ -12,18 +12,36 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     git \
     postgresql-server-dev-18 \
     libssl-dev \
+    pkg-config \
+    zip \
+    unzip \
+    tar \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /build
-COPY CMakeLists.txt /build/pg_stat_ch/
-COPY cmake/ /build/pg_stat_ch/cmake/
-COPY include/ /build/pg_stat_ch/include/
-COPY src/ /build/pg_stat_ch/src/
-COPY sql/ /build/pg_stat_ch/sql/
-COPY third_party/ /build/pg_stat_ch/third_party/
-COPY pg_stat_ch.control /build/pg_stat_ch/
+# Install vcpkg
+RUN git clone --depth 1 https://github.com/microsoft/vcpkg.git /opt/vcpkg \
+    && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+ENV VCPKG_ROOT=/opt/vcpkg
+ENV PATH="/opt/vcpkg:${PATH}"
+
 WORKDIR /build/pg_stat_ch
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_OPENSSL=ON \
+
+# Copy dependency manifests first for layer caching
+COPY vcpkg.json vcpkg-configuration.json ./
+COPY triplets/ triplets/
+COPY CMakeLists.txt ./
+COPY cmake/ cmake/
+COPY include/ include/
+COPY src/ src/
+COPY sql/ sql/
+COPY pg_stat_ch.control ./
+
+RUN cmake -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DWITH_OPENSSL=ON \
+    -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+    -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
+    -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
     && cmake --build build --parallel $(nproc)
 
 FROM postgres:18-bookworm

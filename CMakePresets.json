@@ -7,23 +7,44 @@
   },
   "configurePresets": [
     {
-      "name": "default",
-      "displayName": "Default (Debug)",
+      "name": "vcpkg-base",
+      "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        },
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets"
+      }
+    },
+    {
+      "name": "default",
+      "inherits": "vcpkg-base",
+      "displayName": "Default (Debug)",
+      "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "VCPKG_TARGET_TRIPLET": "x64-linux-pic"
       }
     },
     {
       "name": "release",
+      "inherits": "vcpkg-base",
       "displayName": "Release with Debug Info",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "VCPKG_TARGET_TRIPLET": "x64-linux-pic"
+      }
+    },
+    {
+      "name": "release-arm64",
+      "inherits": "vcpkg-base",
+      "displayName": "Release ARM64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-pic"
       }
     }
   ],
@@ -35,6 +56,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "release-arm64",
+      "configurePreset": "release-arm64"
     }
   ]
 }
