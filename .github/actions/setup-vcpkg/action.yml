@@ -14,7 +14,8 @@ runs:
       shell: bash
       run: |
         if [ ! -d "$HOME/vcpkg" ]; then
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          # Full clone required — Arrow depends on Boost, which needs vcpkg git history
+          git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
         fi
         echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
