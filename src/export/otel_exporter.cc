@@ -58,6 +58,36 @@ namespace {
 using string = std::string;
 using string_view = std::string_view;
 
+// Create a gRPC channel with compression and keepalive settings optimized
+// for high-throughput telemetry export from a long-lived bgworker.
+std::shared_ptr<grpc::Channel> MakeOptimizedChannel(
+    const otlp::OtlpGrpcLogRecordExporterOptions& opts) {
+  grpc::ChannelArguments args;
+
+  // gzip — telemetry payloads with repeated attribute keys compress very well.
+  args.SetCompressionAlgorithm(GRPC_COMPRESS_GZIP);
+
+  // Keepalive: the bgworker holds a persistent channel.  Without keepalive
+  // pings, idle periods cause silent TCP drops and surprise RPC failures.
+  args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 30000);
+  args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 10000);
+  args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+  args.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
+
+  std::shared_ptr<grpc::ChannelCredentials> credentials;
+  if (opts.use_ssl_credentials) {
+    grpc::SslCredentialsOptions ssl_opts;
+    if (!opts.ssl_credentials_cacert_as_string.empty()) {
+      ssl_opts.pem_root_certs = opts.ssl_credentials_cacert_as_string;
+    }
+    credentials = grpc::SslCredentials(ssl_opts);
+  } else {
+    credentials = grpc::InsecureChannelCredentials();
+  }
+
+  return grpc::CreateCustomChannel(opts.endpoint, credentials, args);
+}
+
 common_pb::KeyValue* AddAttr(logs_pb::LogRecord* rec) {
   return rec->add_attributes();
 }
@@ -299,8 +329,8 @@ class OTelExporter : public StatsExporter {
 
   void ResetChunk() {
     google::protobuf::ArenaOptions arena_opts;
-    arena_opts.initial_block_size = 1024;
-    arena_opts.max_block_size = 65536;
+    arena_opts.initial_block_size = 65536;    // 64 KiB — skip many small doublings
+    arena_opts.max_block_size = 1048576;      // 1 MiB — sized for 3 MiB chunk budget
     arena_ = std::make_unique<google::protobuf::Arena>(arena_opts);
 
     request_ =
@@ -388,7 +418,7 @@ bool OTelExporter::EstablishNewConnection() {
         (psch_otel_endpoint != nullptr && *psch_otel_endpoint != '\0') ? psch_otel_endpoint : "";
 
     ConfigureLogExport(endpoint);
-    auto channel = otlp::OtlpGrpcClient::MakeChannel(grpc_opts_);
+    auto channel = MakeOptimizedChannel(grpc_opts_);
     if (channel == nullptr) {
       LogExporterWarning("OTel init failed", "invalid or empty OTLP endpoint");
       stub_.reset();
