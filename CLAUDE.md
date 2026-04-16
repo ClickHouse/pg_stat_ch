@@ -21,49 +21,38 @@ All aggregation (p50/p95/p99, top queries, errors) happens in ClickHouse via mat
 ## Build Commands
 
 ```bash
-mise run build              # Debug build (current pg_config)
+mise run build              # Debug build (PG 18)
 mise run build:release      # Release build
 mise run build:16           # Build for PostgreSQL 16
 mise run build:17           # Build for PostgreSQL 17
 mise run build:18           # Build for PostgreSQL 18
-mise run build:all          # Build for all PG versions
 mise run install            # Install the extension
 mise run clean              # Clean build artifacts
 ```
 
-## Development Commands
+Manual CMake (e.g. targeting a specific PG installation):
+```bash
+cmake --preset default -DPG_CONFIG=/path/to/pg_config
+cmake --build build
+```
 
 ```bash
 mise run format             # Format code with clang-format
 mise run lint               # Run clang-tidy linting
 mise run compdb             # Copy compile_commands.json to root (for IDE)
-mise run configure          # Configure with CMake (debug)
 ```
 
 ## Testing
 
 ```bash
-# Via mise (uses PG 18)
-mise run test:all           # Run all tests
 mise run test:regress       # SQL regression tests
-mise run test:tap           # TAP tests (stress, concurrent, overflow)
-mise run test:isolation     # Isolation tests (race conditions)
-
-# Via script (specify PG version)
-./scripts/run-tests.sh 18 all
-./scripts/run-tests.sh 17 regress
+mise run test:isolation     # Isolation tests
+mise run test:all           # Run all tests (PG 18)
+./scripts/run-tests.sh 17 regress  # Specific PG version
 ```
 
-**Test types:**
-- `regress` - SQL regression tests in `test/regression/`
-- `tap` - Perl TAP tests in `t/` (stress, concurrent sessions, overflow)
-- `isolation` - Race condition tests in `specs/`
-
-**Note:** TAP tests require PostgreSQL built with `--enable-tap-tests`. Mise-installed versions don't include the Perl test modules; the script skips TAP tests gracefully when unavailable.
-
+TAP tests require PostgreSQL built with `--enable-tap-tests`:
 ```bash
-# we have a local build of PostgreSQL with tap tests enabled
-# so we can run the tap tests against it
 ./scripts/run-tests.sh ../postgres/install_tap tap
 ```
 
