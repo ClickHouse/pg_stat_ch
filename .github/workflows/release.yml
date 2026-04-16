@@ -47,6 +47,8 @@ jobs:
             pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg
+        with:
+          triplet: ${{ matrix.triplet }}
 
       - name: Get version from git
         id: version
