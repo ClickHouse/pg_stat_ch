@@ -19,13 +19,14 @@ jobs:
         include:
           - arch: amd64
             runner: depot-ubuntu-22.04-16
+            triplet: x64-linux-pic
           - arch: arm64
             runner: depot-ubuntu-22.04-arm-16
+            triplet: arm64-linux-pic
 
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Add PostgreSQL APT repository
@@ -42,7 +43,10 @@ jobs:
             postgresql-${{ matrix.pg }} \
             postgresql-server-dev-${{ matrix.pg }} \
             cmake ninja-build g++ \
-            binutils libssl-dev
+            binutils libssl-dev \
+            pkg-config curl zip unzip tar
+
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Get version from git
         id: version
@@ -55,7 +59,8 @@ jobs:
       - name: Configure
         run: |
           cmake --preset release \
-            -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+            -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
 
       - name: Build
         run: cmake --build build --parallel

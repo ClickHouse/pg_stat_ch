@@ -19,7 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Install PostgreSQL build dependencies
@@ -38,7 +37,10 @@ jobs:
             pkg-config \
             libipc-run-perl \
             cmake \
-            ninja-build
+            ninja-build \
+            curl zip unzip tar
+
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Cache PostgreSQL build
         id: cache-pg
@@ -68,6 +70,9 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DPG_CONFIG=${{ env.PG_TAP_DIR }}/bin/pg_config \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
+            -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build --parallel

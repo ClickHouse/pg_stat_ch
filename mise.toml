@@ -1,6 +1,7 @@
 [env]
 # Force C17 standard to avoid C23 'bool' keyword conflict when building older PostgreSQL versions
 CFLAGS = "-std=gnu17"
+VCPKG_ROOT = "{{config_root}}/third_party/vcpkg"
 
 [tools]
 postgres = ["16", "17", "18"]
@@ -15,7 +16,7 @@ description = "Configure build with CMake (Release)"
 
 # Default build uses PG 18 (required for WaitEventExtensionNew API)
 [tasks.build]
-run = "cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
+run = "cmake --preset default -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
 description = "Build the extension for PostgreSQL 18"
 
 [tasks."build:release"]
@@ -86,7 +87,7 @@ run = "docker compose -f docker/docker-compose.test.yml logs -f"
 description = "View ClickHouse container logs"
 
 [tasks."test:unit"]
-run = "cmake -B build_unit -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config -DPSCH_BUILD_UNIT_TESTS=ON && cmake --build build_unit --target hostname_test && ctest --test-dir build_unit --output-on-failure"
+run = "cmake --preset default -B build_unit -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config -DPSCH_BUILD_UNIT_TESTS=ON && cmake --build build_unit --target hostname_test && ctest --test-dir build_unit --output-on-failure"
 description = "Build and run C++ unit tests"
 
 [tasks."test:otel"]
@@ -116,15 +117,15 @@ description = "Run all tests (PG 18)"
 
 # Per-version build tasks
 [tasks."build:16"]
-run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@16)/bin/pg_config && cmake --build build"
+run = "rm -rf build && cmake --preset default -DPG_CONFIG=$(mise where postgres@16)/bin/pg_config && cmake --build build"
 description = "Build for PostgreSQL 16"
 
 [tasks."build:17"]
-run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@17)/bin/pg_config && cmake --build build"
+run = "rm -rf build && cmake --preset default -DPG_CONFIG=$(mise where postgres@17)/bin/pg_config && cmake --build build"
 description = "Build for PostgreSQL 17"
 
 [tasks."build:18"]
-run = "rm -rf build && cmake -B build -G Ninja -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
+run = "rm -rf build && cmake --preset default -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
 description = "Build for PostgreSQL 18"
 
 [tasks."build:all"]

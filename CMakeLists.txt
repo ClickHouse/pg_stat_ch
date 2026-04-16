@@ -20,44 +20,15 @@ message(STATUS "PostgreSQL ${PostgreSQLServer_VERSION} found")
 # Compiler warnings
 include(CompilerWarnings)
 
-# OpenSSL support (enables TLS connections to ClickHouse)
-option(WITH_OPENSSL "Enable OpenSSL for TLS connections" ON)
-include(PgStatChOpenSSL)
-pg_stat_ch_setup_openssl()
-
-# Build all third-party libraries as static with PIC
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build third-party libs as static" FORCE)
+# OpenSSL (required — vcpkg manifest always builds clickhouse-cpp with openssl)
+find_package(OpenSSL REQUIRED)
+message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 
 # ---------------------------------------------------------------------------
-# Add opentelemetry-cpp FIRST (fetches gRPC + abseil via FetchContent).
-# This must come before clickhouse-cpp to avoid duplicate abseil targets.
+# Third-party dependencies (via vcpkg)
 # ---------------------------------------------------------------------------
-include(FetchContent)
-set(WITH_OTLP_GRPC ON CACHE BOOL "Enable OTel OTLP gRPC exporter" FORCE)
-set(WITH_OTLP_HTTP OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "Disable tests" FORCE)
-set(WITH_BENCHMARK OFF CACHE BOOL "Disable benchmarks" FORCE)
-set(WITH_EXAMPLES OFF CACHE BOOL "Disable OTel examples" FORCE)
-set(WITH_FUNC_TESTS OFF CACHE BOOL "Disable OTel functional tests" FORCE)
-set(OPENTELEMETRY_INSTALL OFF CACHE BOOL "" FORCE)
-set(WITH_ABSEIL ON CACHE BOOL "Use Abseil for OTel" FORCE)
-# Always use vendored gRPC + abseil (never pick up system packages).
-# This prevents find_package(gRPC) from short-circuiting FetchContent
-# and leaving absl:: targets undefined.
-set(CMAKE_DISABLE_FIND_PACKAGE_gRPC TRUE)
-add_subdirectory(third_party/opentelemetry-cpp EXCLUDE_FROM_ALL)
-
-# ---------------------------------------------------------------------------
-# Add clickhouse-cpp AFTER opentelemetry-cpp.
-# Use WITH_SYSTEM_ABSEIL so it finds the abseil already built by gRPC above
-# (via our cmake/Findabsl.cmake shim).
-# ---------------------------------------------------------------------------
-set(WITH_SYSTEM_ABSEIL ON CACHE BOOL "Use abseil from gRPC build" FORCE)
-set(WITH_OPENSSL ${WITH_OPENSSL} CACHE BOOL "Pass OpenSSL setting to clickhouse-cpp" FORCE)
-set(BUILD_TESTS OFF CACHE BOOL "Disable clickhouse-cpp tests" FORCE)
-set(BUILD_BENCHMARK OFF CACHE BOOL "Disable clickhouse-cpp benchmarks" FORCE)
-add_subdirectory(third_party/clickhouse-cpp EXCLUDE_FROM_ALL)
+find_package(opentelemetry-cpp CONFIG REQUIRED)
+find_package(ClickHouseCpp REQUIRED)
 
 # Collect source files
 file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
@@ -71,28 +42,17 @@ target_include_directories(pg_stat_ch PRIVATE
   include
   src
 )
-# Mark third-party includes as SYSTEM to suppress warnings from those headers
-target_include_directories(pg_stat_ch SYSTEM PRIVATE
-  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp
-  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp/contrib/absl
-  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp/contrib/zstd
-  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
-  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
-  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
-)
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
-  clickhouse-cpp-lib
-  opentelemetry_api
-  opentelemetry_sdk
-  opentelemetry_exporter_otlp_grpc_metrics
-  opentelemetry_exporter_otlp_grpc_log
-  opentelemetry_metrics
-  opentelemetry_logs
+  ClickHouseCpp::ClickHouseCpp
+  opentelemetry-cpp::api
+  opentelemetry-cpp::sdk
+  opentelemetry-cpp::otlp_grpc_metrics_exporter
+  opentelemetry-cpp::otlp_grpc_log_record_exporter
+  opentelemetry-cpp::metrics
+  opentelemetry-cpp::logs
 )
-if(WITH_OPENSSL)
-  target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-endif()
+target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES
@@ -115,13 +75,7 @@ install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 # ---------------------------------------------------------------------------
 option(PSCH_BUILD_UNIT_TESTS "Build pg_stat_ch C++ unit tests" OFF)
 if(PSCH_BUILD_UNIT_TESTS)
-  FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.15.2
-  )
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(googletest)
+  find_package(GTest CONFIG REQUIRED)
 
   enable_testing()
 
@@ -130,22 +84,17 @@ if(PSCH_BUILD_UNIT_TESTS)
     src/export/otel_exporter.cc
   )
   target_include_directories(hostname_test PRIVATE src include)
-  target_include_directories(hostname_test SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
-    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
-    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
-  )
   target_compile_features(hostname_test PRIVATE cxx_std_17)
   target_compile_definitions(hostname_test PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
   target_link_libraries(hostname_test PRIVATE
     GTest::gtest_main
     PostgreSQLServer::PostgreSQLServer
-    opentelemetry_api
-    opentelemetry_sdk
-    opentelemetry_exporter_otlp_grpc_metrics
-    opentelemetry_exporter_otlp_grpc_log
-    opentelemetry_metrics
-    opentelemetry_logs
+    opentelemetry-cpp::api
+    opentelemetry-cpp::sdk
+    opentelemetry-cpp::otlp_grpc_metrics_exporter
+    opentelemetry-cpp::otlp_grpc_log_record_exporter
+    opentelemetry-cpp::metrics
+    opentelemetry-cpp::logs
   )
   pg_stat_ch_set_warnings(hostname_test)
 
