@@ -20,4 +20,13 @@ runs:
         fi
         echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
         echo "$HOME/vcpkg" >> "$GITHUB_PATH"
-        echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> "$GITHUB_ENV"
+
+        # Use GHA binary caching if available, otherwise fall back to local files cache
+        if [ -n "$ACTIONS_CACHE_URL" ]; then
+          echo "vcpkg: using GHA binary cache"
+          echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> "$GITHUB_ENV"
+        else
+          echo "vcpkg: ACTIONS_CACHE_URL not set, using local files cache"
+          mkdir -p "$HOME/.cache/vcpkg/archives"
+          echo "VCPKG_BINARY_SOURCES=clear;files,$HOME/.cache/vcpkg/archives,readwrite" >> "$GITHUB_ENV"
+        fi
