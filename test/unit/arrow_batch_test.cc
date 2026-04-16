@@ -240,7 +240,7 @@ TEST(ArrowBatchBuilder, SchemaHasExpectedFields) {
   check_field("ts", arrow::Type::TIMESTAMP);
   check_field("severity", arrow::Type::DICTIONARY);
   check_field("body", arrow::Type::STRING);
-  check_field("query_id", arrow::Type::STRING);
+  check_field("query_id", arrow::Type::DICTIONARY);
   check_field("db_name", arrow::Type::DICTIONARY);
   check_field("db_user", arrow::Type::DICTIONARY);
   check_field("db_operation", arrow::Type::DICTIONARY);

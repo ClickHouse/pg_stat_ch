@@ -102,6 +102,7 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
   ArrowBatchBuilder builder;
   if (!builder.Init(psch_extra_attributes, PG_STAT_CH_VERSION)) {
     LogExporterWarning("Arrow init", "failed to initialize Arrow batch builder");
+    RecordExporterFailure("Arrow batch builder init failed");
     return 0;
   }
 
@@ -142,6 +143,10 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
 
   if (!export_failed && builder.NumRows() > 0 && !flush_builder()) {
     export_failed = true;
+  }
+
+  if (export_failed) {
+    RecordExporterFailure("Arrow batch build/send failed");
   }
 
   if (!export_failed && total_exported > 0) {

@@ -148,7 +148,7 @@ struct ArrowBatchBuilder::Impl {
   arrow::StringBuilder body_builder;
   arrow::StringBuilder trace_id_builder;
   arrow::StringBuilder span_id_builder;
-  arrow::StringBuilder query_id_builder;
+  DictBuilder query_id_builder;
   DictBuilder db_name_builder;
   DictBuilder db_user_builder;
   DictBuilder db_operation_builder;
@@ -215,7 +215,7 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("body", arrow::utf8()),
         arrow::field("trace_id", arrow::utf8()),
         arrow::field("span_id", arrow::utf8()),
-        arrow::field("query_id", arrow::utf8()),
+        arrow::field("query_id", DictionaryUtf8Type()),
         arrow::field("db_name", DictionaryUtf8Type()),
         arrow::field("db_user", DictionaryUtf8Type()),
         arrow::field("db_operation", DictionaryUtf8Type()),
@@ -283,10 +283,10 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    const auto datname_len =
-        ClampFieldLen(event.datname_len, static_cast<uint8>(sizeof(event.datname)), "datname_len");
+    const auto datname_len = ClampFieldLen(
+        event.datname_len, static_cast<uint8>(sizeof(event.datname) - 1), "datname_len");
     const auto username_len = ClampFieldLen(
-        event.username_len, static_cast<uint8>(sizeof(event.username)), "username_len");
+        event.username_len, static_cast<uint8>(sizeof(event.username) - 1), "username_len");
     const auto app_len =
         ClampFieldLen(event.application_name_len, static_cast<uint8>(PSCH_MAX_APP_NAME_LEN),
                       "application_name_len");
@@ -474,7 +474,7 @@ struct ArrowBatchBuilder::Impl {
         !add_array(&body_builder, "Arrow body finish") ||
         !add_array(&trace_id_builder, "Arrow trace_id finish") ||
         !add_array(&span_id_builder, "Arrow span_id finish") ||
-        !add_array(&query_id_builder, "Arrow query_id finish") ||
+        !add_dict_array(&query_id_builder, "Arrow query_id finish") ||
         !add_dict_array(&db_name_builder, "Arrow db_name finish") ||
         !add_dict_array(&db_user_builder, "Arrow db_user finish") ||
         !add_dict_array(&db_operation_builder, "Arrow db_operation finish") ||
@@ -580,7 +580,7 @@ struct ArrowBatchBuilder::Impl {
     body_builder.Reset();
     trace_id_builder.Reset();
     span_id_builder.Reset();
-    query_id_builder.Reset();
+    query_id_builder.ResetFull();
     db_name_builder.ResetFull();
     db_user_builder.ResetFull();
     db_operation_builder.ResetFull();

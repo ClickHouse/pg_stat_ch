@@ -22,6 +22,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -478,6 +479,12 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     scope_logs->mutable_scope()->set_version(PG_STAT_CH_VERSION);
 
     auto* record = scope_logs->add_log_records();
+    const auto now_ns =
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count());
+    record->set_time_unix_nano(now_ns);
+    record->set_observed_time_unix_nano(now_ns);
     record->mutable_body()->set_bytes_value(reinterpret_cast<const char*>(ipc_data), ipc_len);
     SetString(AddAttr(record), "pg_stat_ch.block_format", "arrow_ipc");
     SetInt(AddAttr(record), "pg_stat_ch.block_rows", num_rows);
