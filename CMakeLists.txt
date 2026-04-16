@@ -106,4 +106,19 @@ if(PSCH_BUILD_UNIT_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(hostname_test)
+
+  add_executable(arrow_batch_test
+    test/unit/arrow_batch_test.cc
+    src/export/arrow_batch.cc
+  )
+  target_include_directories(arrow_batch_test PRIVATE src include)
+  target_compile_features(arrow_batch_test PRIVATE cxx_std_17)
+  target_compile_options(arrow_batch_test PRIVATE -include libintl.h)
+  target_link_libraries(arrow_batch_test PRIVATE
+    GTest::gtest_main
+    PostgreSQLServer::PostgreSQLServer
+    Arrow::arrow_static
+  )
+  pg_stat_ch_set_warnings(arrow_batch_test)
+  gtest_discover_tests(arrow_batch_test)
 endif()

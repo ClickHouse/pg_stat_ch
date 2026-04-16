@@ -290,9 +290,8 @@ struct ArrowBatchBuilder::Impl {
     const auto app_len =
         ClampFieldLen(event.application_name_len, static_cast<uint8>(PSCH_MAX_APP_NAME_LEN),
                       "application_name_len");
-    const auto client_addr_len =
-        ClampFieldLen(event.client_addr_len, static_cast<uint8>(PSCH_MAX_CLIENT_ADDR_LEN),
-                      "client_addr_len");
+    const auto client_addr_len = ClampFieldLen(
+        event.client_addr_len, static_cast<uint8>(PSCH_MAX_CLIENT_ADDR_LEN), "client_addr_len");
     const auto query_len =
         ClampFieldLen(event.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
     const auto err_message_len = ClampFieldLen(
@@ -365,10 +364,9 @@ struct ArrowBatchBuilder::Impl {
         !AppendScalar(&local_blk_read_time_us_builder,
                       ClampSignedToUint64(event.local_blk_read_time_us, "local_blk_read_time_us"),
                       "Arrow local_blk_read_time_us append") ||
-        !AppendScalar(
-            &local_blk_write_time_us_builder,
-            ClampSignedToUint64(event.local_blk_write_time_us, "local_blk_write_time_us"),
-            "Arrow local_blk_write_time_us append") ||
+        !AppendScalar(&local_blk_write_time_us_builder,
+                      ClampSignedToUint64(event.local_blk_write_time_us, "local_blk_write_time_us"),
+                      "Arrow local_blk_write_time_us append") ||
         !AppendScalar(&temp_blks_read_builder,
                       ClampSignedToUint64(event.temp_blks_read, "temp_blks_read"),
                       "Arrow temp_blks_read append") ||
@@ -434,13 +432,12 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    estimated_bytes += kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() +
-                       client_addr.size() + query_text.size() + err_message.size() +
-                       err_sqlstate.size() + service_version.size() +
-                       ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
-                       ExtraAttr("server_role").size() + ExtraAttr("region").size() +
-                       ExtraAttr("cell").size() + ExtraAttr("host_id").size() +
-                       ExtraAttr("pod_name").size();
+    estimated_bytes +=
+        kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() + client_addr.size() +
+        query_text.size() + err_message.size() + err_sqlstate.size() + service_version.size() +
+        ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
+        ExtraAttr("server_role").size() + ExtraAttr("region").size() + ExtraAttr("cell").size() +
+        ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
     ++num_rows;
     return true;
   }
