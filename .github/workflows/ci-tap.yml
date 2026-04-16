@@ -14,7 +14,7 @@ env:
 jobs:
   tap-tests:
     name: TAP Tests (PG 18)
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-22.04-16
 
     steps:
       - uses: actions/checkout@v4

@@ -122,7 +122,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-22.04-16
 
     steps:
       - uses: actions/checkout@v4
