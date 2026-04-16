@@ -21,7 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Add PostgreSQL APT repository
@@ -39,7 +38,9 @@ jobs:
             postgresql-server-dev-${{ matrix.pg_version }}
 
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
+        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
+
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -99,7 +100,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Add PostgreSQL APT repository
@@ -114,7 +114,9 @@ jobs:
         run: sudo apt-get install -y postgresql-server-dev-18
 
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev
+        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
+
+      - uses: ./.github/actions/setup-vcpkg
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -127,6 +129,9 @@ jobs:
           cmake -B build_unit -G Ninja \
             -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
             -DPSCH_BUILD_UNIT_TESTS=ON \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
+            -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -142,7 +147,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       # BuildKit is needed for the type=gha cache backend used below.
@@ -154,7 +158,7 @@ jobs:
         run: sudo sysctl kernel.perf_event_paranoid=1
 
       # Build the benchmark image with GHA layer cache.
-      # The Dockerfile is structured so that the slow gRPC/OTel dep-compilation
+      # The Dockerfile is structured so that the slow vcpkg dep-compilation
       # layer is cached separately from the fast pg_stat_ch source layer, so
       # only changed .cc files are recompiled on subsequent runs.
       - name: Build benchmark image

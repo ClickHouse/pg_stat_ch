@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "pg-stat-ch",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "clickhouse-cpp",
+      "features": ["openssl"]
+    },
+    {
+      "name": "opentelemetry-cpp",
+      "default-features": false,
+      "features": ["otlp-grpc"]
+    },
+    {
+      "name": "arrow",
+      "default-features": false
+    },
+    "gtest"
+  ]
+}

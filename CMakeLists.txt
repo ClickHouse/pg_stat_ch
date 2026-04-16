@@ -25,21 +25,12 @@ option(WITH_OPENSSL "Enable OpenSSL for TLS connections" ON)
 include(PgStatChOpenSSL)
 pg_stat_ch_setup_openssl()
 
-# Build all third-party libraries as static with PIC
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build third-party libs as static" FORCE)
-
 # ---------------------------------------------------------------------------
-# Third-party dependencies (order matters: otel → arrow → clickhouse-cpp)
+# Third-party dependencies (via vcpkg)
 # ---------------------------------------------------------------------------
-include(ThirdPartyOTel)
-pg_stat_ch_setup_otel()
-
-include(ThirdPartyArrow)
-pg_stat_ch_setup_arrow()
-
-include(ThirdPartyClickHouse)
-pg_stat_ch_setup_clickhouse()
+find_package(opentelemetry-cpp CONFIG REQUIRED)
+find_package(Arrow CONFIG REQUIRED)
+find_package(ClickHouseCpp REQUIRED)
 
 # Collect source files
 file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
@@ -47,33 +38,26 @@ file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
 # Build shared library
 add_library(pg_stat_ch SHARED ${SOURCES})
 
-target_compile_features(pg_stat_ch PRIVATE cxx_std_17)
+target_compile_features(pg_stat_ch PRIVATE cxx_std_23)
 target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
+# Force-include libintl.h before any source file so its declarations are parsed
+# before PostgreSQL's postgres.h defines gettext/ngettext as macros.  The include
+# guard then prevents re-inclusion when C++ <locale> pulls it in later.
+target_compile_options(pg_stat_ch PRIVATE -include libintl.h)
 target_include_directories(pg_stat_ch PRIVATE
   include
   src
 )
-# Mark third-party includes as SYSTEM to suppress warnings from those headers
-target_include_directories(pg_stat_ch SYSTEM PRIVATE
-  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp
-  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp/contrib/absl
-  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-cpp/contrib/zstd
-  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
-  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
-  ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
-  ${CMAKE_SOURCE_DIR}/third_party/arrow/cpp/src
-  ${CMAKE_BINARY_DIR}/third_party/arrow/cpp/src
-)
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
-  clickhouse-cpp-lib
-  opentelemetry_api
-  opentelemetry_sdk
-  opentelemetry_exporter_otlp_grpc_metrics
-  opentelemetry_exporter_otlp_grpc_log
-  opentelemetry_metrics
-  opentelemetry_logs
-  arrow_static
+  ClickHouseCpp::ClickHouseCpp
+  opentelemetry-cpp::api
+  opentelemetry-cpp::sdk
+  opentelemetry-cpp::otlp_grpc_metrics_exporter
+  opentelemetry-cpp::otlp_grpc_log_record_exporter
+  opentelemetry-cpp::metrics
+  opentelemetry-cpp::logs
+  Arrow::arrow_static
 )
 if(WITH_OPENSSL)
   target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -100,14 +84,7 @@ install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 # ---------------------------------------------------------------------------
 option(PSCH_BUILD_UNIT_TESTS "Build pg_stat_ch C++ unit tests" OFF)
 if(PSCH_BUILD_UNIT_TESTS)
-  FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.15.2
-  )
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(googletest)
-
+  find_package(GTest CONFIG REQUIRED)
   enable_testing()
 
   add_executable(hostname_test
@@ -115,22 +92,17 @@ if(PSCH_BUILD_UNIT_TESTS)
     src/export/otel_exporter.cc
   )
   target_include_directories(hostname_test PRIVATE src include)
-  target_include_directories(hostname_test SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/api/include
-    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/sdk/include
-    ${CMAKE_SOURCE_DIR}/third_party/opentelemetry-cpp/exporters/otlp/include
-  )
-  target_compile_features(hostname_test PRIVATE cxx_std_17)
+  target_compile_features(hostname_test PRIVATE cxx_std_23)
   target_compile_definitions(hostname_test PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
   target_link_libraries(hostname_test PRIVATE
     GTest::gtest_main
     PostgreSQLServer::PostgreSQLServer
-    opentelemetry_api
-    opentelemetry_sdk
-    opentelemetry_exporter_otlp_grpc_metrics
-    opentelemetry_exporter_otlp_grpc_log
-    opentelemetry_metrics
-    opentelemetry_logs
+    opentelemetry-cpp::api
+    opentelemetry-cpp::sdk
+    opentelemetry-cpp::otlp_grpc_metrics_exporter
+    opentelemetry-cpp::otlp_grpc_log_record_exporter
+    opentelemetry-cpp::metrics
+    opentelemetry-cpp::logs
   )
   pg_stat_ch_set_warnings(hostname_test)
 

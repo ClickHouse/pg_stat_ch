@@ -1,4 +1,4 @@
-name: 🚀 Bundle & Release on PGXN
+name: "\U0001F680 Bundle & Release on PGXN"
 on:
   push:
 jobs:
@@ -9,9 +9,8 @@ jobs:
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
-        with: { submodules: recursive, fetch-depth: 0 }
+        with: { fetch-depth: 0 }
       - name: Bundle the Release
-        env: { GIT_ARCHIVE_CMD: archive-all }
         id: bundle
         run: pgxn-bundle
       - name: Release on PGXN

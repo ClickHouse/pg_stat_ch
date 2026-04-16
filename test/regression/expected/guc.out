@@ -1,7 +1,7 @@
 -- GUC configuration test
 CREATE EXTENSION pg_stat_ch;
 SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLATE "C";
-                  name
+                  name                  
 ----------------------------------------
  pg_stat_ch.batch_max
  pg_stat_ch.clickhouse_database
@@ -11,6 +11,7 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.clickhouse_skip_tls_verify
  pg_stat_ch.clickhouse_use_tls
  pg_stat_ch.clickhouse_user
+ pg_stat_ch.debug_arrow_dump_dir
  pg_stat_ch.debug_force_locked_overflow
  pg_stat_ch.enabled
  pg_stat_ch.extra_attributes
@@ -31,7 +32,7 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.sample_rate
  pg_stat_ch.string_area_size
  pg_stat_ch.use_otel
-(28 rows)
+(29 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 

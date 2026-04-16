@@ -9,6 +9,15 @@ pg_stat_ch is a PostgreSQL 16+ extension written in C++ that captures query exec
 
 All aggregation (p50/p95/p99, top queries, errors) happens in ClickHouse via materialized views, not in the extension.
 
+## Prerequisites
+
+- **vcpkg**: Set `VCPKG_ROOT` environment variable to point to a vcpkg installation.
+  ```bash
+  git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+  ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+  export VCPKG_ROOT=~/vcpkg
+  ```
+
 ## Build Commands
 
 ```bash
@@ -60,7 +69,7 @@ mise run test:isolation     # Isolation tests (race conditions)
 
 ## Code Style
 
-- C++17 with Google style guide (`.clang-format`)
+- C++23 with Google style guide (`.clang-format`)
 - Column limit: 100, 2-space indent
 - `postgres.h` must be included first in any source file
 - Use `extern "C"` blocks for PostgreSQL C ABI compatibility
@@ -75,8 +84,11 @@ mise run test:isolation     # Isolation tests (race conditions)
 - `sql/pg_stat_ch--0.1.sql` - SQL function definitions
 
 **Build system:**
-- CMake with presets (default=debug, release)
+- CMake with presets (default=debug, release) + vcpkg manifest mode
+- Third-party deps managed via `vcpkg.json` (clickhouse-cpp, opentelemetry-cpp, arrow, gtest)
+- Custom triplets in `triplets/` for static PIC libraries (x64-linux-pic, arm64-linux-pic)
 - `cmake/FindPostgreSQLServer.cmake` - Finds PostgreSQL via pg_config
+- `cmake/FindClickHouseCpp.cmake` - Locates clickhouse-cpp installed by vcpkg
 - `cmake/CompilerWarnings.cmake` - Strict warning flags
 - `cmake/GitVersion.cmake` - Version extraction from git
 
