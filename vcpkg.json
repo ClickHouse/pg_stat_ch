@@ -12,6 +12,10 @@
       "default-features": false,
       "features": ["otlp-grpc"]
     },
+    {
+      "name": "arrow",
+      "default-features": false
+    },
     "gtest"
   ]
 }

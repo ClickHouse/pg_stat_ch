@@ -27,6 +27,8 @@ RUN apt-get update \
         git \
         libssl-dev \
         zlib1g-dev \
+        flex \
+        bison \
         pkg-config \
         curl \
         zip \
