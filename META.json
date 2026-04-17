@@ -13,7 +13,7 @@
   },
   "name": "pg_stat_ch",
   "no_index": {
-    "directory": ["third_party", "test", "benchmark"]
+    "directory": ["third_party", "test"]
   },
   "prereqs": {
     "runtime": {

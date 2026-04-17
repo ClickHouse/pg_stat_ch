@@ -86,17 +86,9 @@ description = "Stop ClickHouse test container"
 run = "docker compose -f docker/docker-compose.test.yml logs -f"
 description = "View ClickHouse container logs"
 
-[tasks."test:unit"]
-run = "cmake --preset default -B build_unit -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config -DPSCH_BUILD_UNIT_TESTS=ON && cmake --build build_unit --target hostname_test && ctest --test-dir build_unit --output-on-failure"
-description = "Build and run C++ unit tests"
-
 [tasks."test:otel"]
 run = "./scripts/run-tests.sh ../postgres/install_tap otel"
 description = "Run OTel integration tests (requires Docker + TAP-enabled PG build)"
-
-[tasks.perf]
-run = "./scripts/run-perf.sh"
-description = "Run OTel throughput benchmark + perf profiling in Docker"
 
 [tasks."otel:start"]
 run = "docker compose -f docker/docker-compose.otel.yml up -d"

@@ -16,7 +16,6 @@
       "name": "arrow",
       "default-features": false
     },
-    "zstd",
-    "gtest"
+    "zstd"
   ]
 }

@@ -5,7 +5,6 @@
 *.a
 .deps/
 build/
-build_unit/
 CMakeCache.txt
 CMakeFiles/
 
@@ -35,12 +34,6 @@ Thumbs.db
 
 # clangd
 .cache/
-
-# Benchmark credentials
-benchmark/.env
-
-# Perf benchmark output files
-docker/perf-results/
 
 # vcpkg installed packages
 vcpkg_installed/

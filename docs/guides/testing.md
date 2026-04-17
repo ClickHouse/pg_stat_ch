@@ -78,7 +78,6 @@ cmake --build build && cmake --install build
 |------|-------------|
 | `001_stress_test.pl` | High-load stress test with pgbench |
 | `002_concurrent_sessions.pl` | Multiple concurrent sessions |
-| `003_buffer_overflow.pl` | Queue overflow handling |
 | `004_basic_lifecycle.pl` | Extension lifecycle |
 | `005_settings.pl` | GUC settings verification |
 | `006_query_capture.pl` | Query capture via executor hooks |
@@ -88,6 +87,4 @@ cmake --build build && cmake --install build
 | `010_clickhouse_export.pl` | ClickHouse export integration |
 | `011_clickhouse_reconnect.pl` | Reconnection after ClickHouse restart |
 | `012_timing_accuracy.pl` | Timing measurement accuracy |
-| `013_buffer_metrics.pl` | Buffer usage metrics |
-| `014_cpu_metrics.pl` | CPU time tracking |
 | `015_guc_validation.pl` | GUC validation tests |
