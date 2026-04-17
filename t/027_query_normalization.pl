@@ -272,6 +272,195 @@ subtest 'schema qualified names preserved' => sub {
 };
 
 # ---------------------------------------------------------------------------
+# Test 17: Failed constant-bearing query must not poison the next successful
+# constant-free query in the same backend (error-path leak).
+# ---------------------------------------------------------------------------
+subtest 'failed query does not leak normalized text into next query' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    my $session = $node->background_psql('postgres', on_error_stop => 0);
+    my ($stdout, $ret) = $session->query('SELECT 1/0');
+    is($ret, 1, 'Division by zero fails as expected');
+    $session->{stderr} = '';
+
+    ($stdout, $ret) = $session->query('SELECT current_database()');
+    is($ret, 0, 'Follow-up constant-free statement succeeds in same backend');
+
+    ($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+    is($ret, 0, 'Flush succeeds');
+    $session->quit();
+
+    my $error_query = psch_query_clickhouse(
+        "SELECT query FROM pg_stat_ch.events_raw " .
+        "WHERE err_message != '' " .
+        "ORDER BY ts_start DESC LIMIT 1"
+    );
+    is($error_query, '', 'Error events do not export query text');
+
+    my $q = psch_wait_for_clickhouse_query(
+        "SELECT query FROM pg_stat_ch.events_raw " .
+        "WHERE err_message = '' " .
+        "AND query NOT LIKE '%pg_stat_ch%' " .
+        "AND query NOT LIKE '%pg_extension%' " .
+        "AND query != '' " .
+        "ORDER BY ts_start DESC LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($q, qr/SELECT current_database\(\)/,
+        'Next successful statement captured as itself');
+    unlike($q, qr/\$\d/,
+        'Next successful statement does not reuse placeholders from failed query');
+};
+
+# ---------------------------------------------------------------------------
+# Test 18: Normalization must not emit a duplicate escape-string warning.
+# ---------------------------------------------------------------------------
+subtest 'no duplicate escape_string warnings' => sub {
+    my $session = $node->background_psql('postgres', on_error_stop => 1);
+
+    my ($stdout, $ret) = $session->query('SET client_min_messages = warning');
+    is($ret, 0, 'Can lower client message threshold');
+
+    ($stdout, $ret) = $session->query('SET standard_conforming_strings = off');
+    is($ret, 0, 'Can disable standard_conforming_strings');
+
+    ($stdout, $ret) = $session->query('SET escape_string_warning = on');
+    is($ret, 0, 'Can enable escape_string_warning');
+
+    $session->{stderr} = '';
+    ($stdout, $ret) = $session->query(q{SELECT 'a\\b'});
+    ok(length($stdout) > 0, 'Query with backslash string literal returns output');
+
+    my $warning_count = () =
+        ($session->{stderr} // '') =~ /nonstandard use of (?:escape|\\\\) in a string literal/g;
+    is($warning_count, 1,
+        'Normalization does not emit a duplicate escape_string_warning');
+
+    $session->quit();
+};
+
+# ---------------------------------------------------------------------------
+# Test 19: Nested SPI executions of the same statement stay normalized
+# across recursion, and repeated invocations reuse the normalized text.
+# ---------------------------------------------------------------------------
+subtest 'nested SPI executions keep distinct normalized state' => sub {
+    $node->safe_psql('postgres', q{
+        CREATE OR REPLACE FUNCTION nested_normalize_same_sql(depth int)
+        RETURNS int
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            result int;
+        BEGIN
+            IF depth <= 0 THEN
+                RETURN 0;
+            END IF;
+
+            SELECT nested_normalize_same_sql(depth - 1) + 42
+              INTO result
+             WHERE 7 = 7;
+
+            RETURN result;
+        END;
+        $$;
+    });
+
+    # Recursive invocation (depth 3) — three nested SPI executions of the
+    # same statement, each must retain placeholders independently.
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    my $session = $node->background_psql('postgres', on_error_stop => 1);
+    my ($stdout, $ret) = $session->query('SELECT pg_backend_pid()');
+    is($ret, 0, 'Can determine backend pid');
+    my ($pid) = $stdout =~ /(\d+)/;
+    ok(defined $pid, 'Captured backend pid');
+
+    ($stdout, $ret) = $session->query('SELECT nested_normalize_same_sql(3)');
+    is($ret, 0, 'Recursive function call succeeds');
+
+    ($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+    is($ret, 0, 'Flush succeeds');
+    $session->quit();
+
+    my $nested_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%WHERE%' " .
+        "AND query LIKE '%nested_normalize_same_sql%'",
+        sub { $_[0] >= 3 },
+        10
+    );
+    cmp_ok($nested_count, '>=', 3,
+        'Captured recursive nested executions of the same SPI statement');
+
+    my $queries = psch_wait_for_clickhouse_query(
+        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%WHERE%' " .
+        "AND query LIKE '%nested_normalize_same_sql%'",
+        sub { $_[0] ne '' },
+        10
+    );
+
+    like($queries, qr/\$\d/,
+        'Nested SPI queries retain normalized placeholders');
+    unlike($queries, qr/\b42\b/,
+        'Nested SPI queries do not fall back to raw constant 42');
+    unlike($queries, qr/\b7\s*=\s*7\b/,
+        'Nested SPI queries do not fall back to raw WHERE constant expression');
+
+    # Repeated invocations from the same backend should reuse normalized text.
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $session = $node->background_psql('postgres', on_error_stop => 1);
+    ($stdout, $ret) = $session->query('SELECT pg_backend_pid()');
+    is($ret, 0, 'Can determine backend pid (repeat)');
+    ($pid) = $stdout =~ /(\d+)/;
+
+    ($stdout, $ret) = $session->query('SELECT nested_normalize_same_sql(2)');
+    is($ret, 0, 'First recursive call succeeds');
+    ($stdout, $ret) = $session->query('SELECT nested_normalize_same_sql(2)');
+    is($ret, 0, 'Second recursive call succeeds in the same backend');
+
+    ($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+    is($ret, 0, 'Flush succeeds');
+    $session->quit();
+
+    my $repeat_count = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%WHERE%' " .
+        "AND query LIKE '%nested_normalize_same_sql%'",
+        sub { $_[0] >= 4 },
+        10
+    );
+    cmp_ok($repeat_count, '>=', 4,
+        'Captured repeated executions of the same SPI statement in one backend');
+
+    my $repeat_queries = psch_wait_for_clickhouse_query(
+        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "WHERE pid = $pid " .
+        "AND query LIKE '%WHERE%' " .
+        "AND query LIKE '%nested_normalize_same_sql%'",
+        sub { $_[0] ne '' },
+        10
+    );
+
+    like($repeat_queries, qr/\$\d/,
+        'Repeated SPI queries retain normalized placeholders');
+    unlike($repeat_queries, qr/\b42\b/,
+        'Repeated SPI queries do not fall back to raw constant 42');
+    unlike($repeat_queries, qr/\b7\s*=\s*7\b/,
+        'Repeated SPI queries do not fall back to raw WHERE constant expression');
+
+    $node->safe_psql('postgres', 'DROP FUNCTION IF EXISTS nested_normalize_same_sql(int)');
+};
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 $node->safe_psql('postgres', 'DROP TABLE IF EXISTS test_norm');
