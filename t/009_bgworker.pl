@@ -6,8 +6,10 @@ use warnings;
 use lib 't';
 
 use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::BackgroundPsql;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use Time::HiRes qw(sleep);
 
 use psch;
 
@@ -65,6 +67,47 @@ my $capacity = $node->safe_psql('postgres', q{
     SELECT queue_capacity FROM pg_stat_ch_stats()
 });
 is($capacity, '65536', 'Queue capacity matches default GUC value');
+
+# Test 7: Flush should not signal a stale PID after the worker exits
+my $bgworker_pid = $node->safe_psql('postgres', q{
+    SELECT pid
+    FROM pg_stat_activity
+    WHERE backend_type = 'pg_stat_ch exporter'
+});
+ok($bgworker_pid =~ /^\d+$/, 'Found background worker PID');
+
+my $terminated = $node->safe_psql('postgres', qq{
+    SELECT pg_terminate_backend($bgworker_pid)
+});
+is($terminated, 't', 'Background worker terminated');
+
+my $bgworker_count_after_terminate = 1;
+for my $i (1 .. 50) {
+    $bgworker_count_after_terminate = $node->safe_psql('postgres', q{
+        SELECT count(*)
+        FROM pg_stat_activity
+        WHERE backend_type = 'pg_stat_ch exporter'
+    });
+    last if $bgworker_count_after_terminate eq '0';
+    sleep(0.1);
+}
+is($bgworker_count_after_terminate, '0', 'Background worker exited before restart');
+
+my $session = $node->background_psql('postgres', on_error_stop => 1);
+my ($stdout, $ret) = $session->query('SET client_min_messages = warning');
+is($ret, 0, 'Can lower message threshold for flush warning');
+
+$session->{stderr} = '';
+($stdout, $ret) = $session->query('SELECT pg_stat_ch_flush()');
+ok(defined $ret, 'Flush returned control while worker is down');
+like($session->{stderr} // '', qr/background worker not running/,
+    'Flush reports that the background worker is not running');
+unlike($session->{stderr} // '', qr/failed to signal background worker/,
+    'Flush does not report a stale-PID signal failure');
+
+($stdout, $ret) = $session->query('SELECT 1');
+like($stdout, qr/^1$/m, 'Session remains usable after flush warning');
+$session->quit();
 
 diag("Background worker test results:");
 diag("  Enqueued: $stats_post_reload->{enqueued}");

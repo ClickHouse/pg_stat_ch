@@ -371,6 +371,8 @@ int PschGetRetryDelayMs(void) {
 }
 
 int PschGetConsecutiveFailures(void) {
+  if (!g_exporter.exporter)
+    return 0;
   return g_exporter.exporter->NumConsecutiveFailures();
 }
 
