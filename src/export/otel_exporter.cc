@@ -375,45 +375,57 @@ class OTelExporter : public StatsExporter {
     return false;
   }
 
-  static void PopulateResource(resource_pb::Resource* resource) {
+  void PopulateResource(resource_pb::Resource* resource) const {
     auto add = [&](string_view key, string_view val) {
       SetString(resource->add_attributes(), key, val);
     };
     add("service.name", "pg_stat_ch");
     add("service.version", PG_STAT_CH_VERSION);
     add("host.name", GetAHostname("postgres-primary"));
+    for (const auto& attr : cached_resource_attrs_) {
+      add(attr.first, attr.second);
+    }
+  }
 
-    // Expose identification fields from the extra_attributes GUC on the OTel
-    // Resource so downstream collectors can route/filter on ubi.* without
-    // adding their own enrichment processors. The Arrow IPC payload builder
-    // consumes the same GUC for its identification columns.
-    if (psch_extra_attributes != nullptr) {
-      string_view input = psch_extra_attributes;
-      while (!input.empty()) {
-        const size_t next_delim = input.find(';');
-        const string_view token =
-            next_delim == string_view::npos ? input : input.substr(0, next_delim);
-        const size_t sep = token.find(':');
-        if (sep != string_view::npos) {
-          const string_view key = token.substr(0, sep);
-          const string_view value = token.substr(sep + 1);
-          if (key == "instance_ubid") {
-            add("ubi.postgres_resource_ubid", value);
-          } else if (key == "server_ubid") {
-            add("ubi.postgres_server_ubid", value);
-          } else if (key == "server_role") {
-            add("ubi.postgres_server_role", value);
-          } else if (key == "region") {
-            add("cloud.region", value);
-          } else if (key == "cell") {
-            add("cell", value);
-          }
+  // Parse pg_stat_ch.extra_attributes once and cache the OTel Resource
+  // attributes the exporter will emit on every batch. Mirrors arrow_batch.cc:
+  // parse once at exporter init, reuse across batches. GUC changes require a
+  // connection restart (matches existing extra_attributes lifetime in
+  // ArrowBatchBuilder).
+  void RefreshCachedResourceAttrs() {
+    cached_resource_attrs_.clear();
+    if (psch_extra_attributes == nullptr) {
+      return;
+    }
+    string_view input = psch_extra_attributes;
+    while (!input.empty()) {
+      const size_t next_delim = input.find(';');
+      const string_view token =
+          next_delim == string_view::npos ? input : input.substr(0, next_delim);
+      const size_t sep = token.find(':');
+      if (sep != string_view::npos) {
+        const string_view key = token.substr(0, sep);
+        const string_view value = token.substr(sep + 1);
+        const char* resource_attr = nullptr;
+        if (key == "instance_ubid") {
+          resource_attr = "ubi.postgres_resource_ubid";
+        } else if (key == "server_ubid") {
+          resource_attr = "ubi.postgres_server_ubid";
+        } else if (key == "server_role") {
+          resource_attr = "ubi.postgres_server_role";
+        } else if (key == "region") {
+          resource_attr = "cloud.region";
+        } else if (key == "cell") {
+          resource_attr = "cell";
         }
-        if (next_delim == string_view::npos) {
-          break;
+        if (resource_attr != nullptr) {
+          cached_resource_attrs_.emplace_back(resource_attr, std::string(value));
         }
-        input.remove_prefix(next_delim + 1);
       }
+      if (next_delim == string_view::npos) {
+        break;
+      }
+      input.remove_prefix(next_delim + 1);
     }
   }
 
@@ -427,6 +439,8 @@ class OTelExporter : public StatsExporter {
     max_chunk_bytes_ = std::max<size_t>(kMinBytesPerRecord, psch_otel_log_max_bytes);
     max_chunk_records_ = std::max<size_t>(
         1, std::min<size_t>(psch_otel_log_batch_size, max_chunk_bytes_ / kMinBytesPerRecord));
+
+    RefreshCachedResourceAttrs();
   }
 
   // gRPC state
@@ -437,6 +451,10 @@ class OTelExporter : public StatsExporter {
   int consecutive_failures_ = 0;
   int exported_count_ = 0;
   bool batch_failed_ = false;
+
+  // Cached identification attributes parsed from pg_stat_ch.extra_attributes
+  // at exporter init. Each pair is (OTel resource attr name, value).
+  std::vector<std::pair<std::string, std::string>> cached_resource_attrs_;
 
   // Per-chunk state (arena-allocated)
   std::unique_ptr<google::protobuf::Arena> arena_;
