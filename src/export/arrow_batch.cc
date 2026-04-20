@@ -28,7 +28,6 @@ extern "C" {
 
 #include "export/arrow_batch.h"
 #include "export/exporter_interface.h"
-#include "export/extra_attr_keys.h"
 
 namespace {
 
@@ -258,14 +257,14 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("jit_deform_time_us", arrow::uint64()),
         arrow::field("parallel_workers_planned", arrow::uint32()),
         arrow::field("parallel_workers_launched", arrow::uint32()),
-        arrow::field(std::string(psch::extra_attr_keys::kInstanceUbid.guc_key), arrow::utf8()),
-        arrow::field(std::string(psch::extra_attr_keys::kServerUbid.guc_key), arrow::utf8()),
-        arrow::field(std::string(psch::extra_attr_keys::kServerRole.guc_key), DictionaryUtf8Type()),
-        arrow::field(std::string(psch::extra_attr_keys::kRegion.guc_key), DictionaryUtf8Type()),
-        arrow::field(std::string(psch::extra_attr_keys::kCell.guc_key), DictionaryUtf8Type()),
+        arrow::field("instance_ubid", arrow::utf8()),
+        arrow::field("server_ubid", arrow::utf8()),
+        arrow::field("server_role", DictionaryUtf8Type()),
+        arrow::field("region", DictionaryUtf8Type()),
+        arrow::field("cell", DictionaryUtf8Type()),
         arrow::field("service_version", DictionaryUtf8Type()),
-        arrow::field(std::string(psch::extra_attr_keys::kHostId.guc_key), arrow::utf8()),
-        arrow::field(std::string(psch::extra_attr_keys::kPodName.guc_key), arrow::utf8()),
+        arrow::field("host_id", arrow::utf8()),
+        arrow::field("pod_name", arrow::utf8()),
     });
     Reset();
     return true;
@@ -421,30 +420,24 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    namespace keys = psch::extra_attr_keys;
-    if (!AppendString(&instance_ubid_builder, ExtraAttr(keys::kInstanceUbid.guc_key),
+    if (!AppendString(&instance_ubid_builder, ExtraAttr("instance_ubid"),
                       "Arrow instance_ubid append") ||
-        !AppendString(&server_ubid_builder, ExtraAttr(keys::kServerUbid.guc_key),
-                      "Arrow server_ubid append") ||
-        !AppendString(&server_role_builder, ExtraAttr(keys::kServerRole.guc_key),
-                      "Arrow server_role append") ||
-        !AppendString(&region_builder, ExtraAttr(keys::kRegion.guc_key), "Arrow region append") ||
-        !AppendString(&cell_builder, ExtraAttr(keys::kCell.guc_key), "Arrow cell append") ||
+        !AppendString(&server_ubid_builder, ExtraAttr("server_ubid"), "Arrow server_ubid append") ||
+        !AppendString(&server_role_builder, ExtraAttr("server_role"), "Arrow server_role append") ||
+        !AppendString(&region_builder, ExtraAttr("region"), "Arrow region append") ||
+        !AppendString(&cell_builder, ExtraAttr("cell"), "Arrow cell append") ||
         !AppendString(&service_version_builder, service_version, "Arrow service_version append") ||
-        !AppendString(&host_id_builder, ExtraAttr(keys::kHostId.guc_key),
-                      "Arrow host_id append") ||
-        !AppendString(&pod_name_builder, ExtraAttr(keys::kPodName.guc_key),
-                      "Arrow pod_name append")) {
+        !AppendString(&host_id_builder, ExtraAttr("host_id"), "Arrow host_id append") ||
+        !AppendString(&pod_name_builder, ExtraAttr("pod_name"), "Arrow pod_name append")) {
       return false;
     }
 
     estimated_bytes +=
         kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() + client_addr.size() +
         query_text.size() + err_message.size() + err_sqlstate.size() + service_version.size() +
-        ExtraAttr(keys::kInstanceUbid.guc_key).size() + ExtraAttr(keys::kServerUbid.guc_key).size() +
-        ExtraAttr(keys::kServerRole.guc_key).size() + ExtraAttr(keys::kRegion.guc_key).size() +
-        ExtraAttr(keys::kCell.guc_key).size() + ExtraAttr(keys::kHostId.guc_key).size() +
-        ExtraAttr(keys::kPodName.guc_key).size();
+        ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
+        ExtraAttr("server_role").size() + ExtraAttr("region").size() + ExtraAttr("cell").size() +
+        ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
     ++num_rows;
     return true;
   }
@@ -641,8 +634,8 @@ struct ArrowBatchBuilder::Impl {
     estimated_bytes = kIpcEnvelopeBytes;
   }
 
-  std::string_view ExtraAttr(std::string_view key) const {
-    const auto it = extra_attrs.find(std::string(key));
+  std::string_view ExtraAttr(const char* key) const {
+    const auto it = extra_attrs.find(key);
     if (it == extra_attrs.end()) {
       return {};
     }
