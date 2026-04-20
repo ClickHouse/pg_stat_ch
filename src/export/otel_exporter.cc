@@ -382,6 +382,39 @@ class OTelExporter : public StatsExporter {
     add("service.name", "pg_stat_ch");
     add("service.version", PG_STAT_CH_VERSION);
     add("host.name", GetAHostname("postgres-primary"));
+
+    // Expose identification fields from the extra_attributes GUC on the OTel
+    // Resource so downstream collectors can route/filter on ubi.* without
+    // adding their own enrichment processors. The Arrow IPC payload builder
+    // consumes the same GUC for its identification columns.
+    if (psch_extra_attributes != nullptr) {
+      string_view input = psch_extra_attributes;
+      while (!input.empty()) {
+        const size_t next_delim = input.find(';');
+        const string_view token =
+            next_delim == string_view::npos ? input : input.substr(0, next_delim);
+        const size_t sep = token.find(':');
+        if (sep != string_view::npos) {
+          const string_view key = token.substr(0, sep);
+          const string_view value = token.substr(sep + 1);
+          if (key == "instance_ubid") {
+            add("ubi.postgres_resource_ubid", value);
+          } else if (key == "server_ubid") {
+            add("ubi.postgres_server_ubid", value);
+          } else if (key == "server_role") {
+            add("ubi.postgres_server_role", value);
+          } else if (key == "region") {
+            add("cloud.region", value);
+          } else if (key == "cell") {
+            add("cell", value);
+          }
+        }
+        if (next_delim == string_view::npos) {
+          break;
+        }
+        input.remove_prefix(next_delim + 1);
+      }
+    }
   }
 
   void ConfigureLogExport(const string& endpoint) {
