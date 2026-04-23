@@ -90,6 +90,18 @@ bool AppendString(DictBuilder* builder, std::string_view value, const char* cont
   return true;
 }
 
+// Append a null into any Arrow builder. Cheaper than appending an empty string
+// because it skips the offset-buffer bookkeeping and value-copy path.
+template <typename BuilderT>
+bool AppendNull(BuilderT* builder, const char* context) {
+  const arrow::Status status = builder->AppendNull();
+  if (!status.ok()) {
+    LogArrowFailure(context, status);
+    return false;
+  }
+  return true;
+}
+
 uint64_t ClampSignedToUint64(int64_t value, const char* column_name) {
   if (value < 0) {
     LogNegativeValue(column_name, value);
@@ -276,10 +288,15 @@ struct ArrowBatchBuilder::Impl {
                       "Arrow ts append")) {
       return false;
     }
-    if (!AppendString(&severity_builder, "", "Arrow severity append") ||
-        !AppendString(&body_builder, "", "Arrow body append") ||
-        !AppendString(&trace_id_builder, "", "Arrow trace_id append") ||
-        !AppendString(&span_id_builder, "", "Arrow span_id append")) {
+    // pg_stat_ch never populates severity / body / trace_id / span_id — they
+    // only exist in the schema for OTel log-record compatibility. Appending a
+    // null is strictly cheaper than an empty-string Append (skips the offset
+    // table / value-buffer writes). At 40K+ events/s this is the single
+    // hottest per-event opportunity I could find by inspection.
+    if (!AppendNull(&severity_builder, "Arrow severity append") ||
+        !AppendNull(&body_builder, "Arrow body append") ||
+        !AppendNull(&trace_id_builder, "Arrow trace_id append") ||
+        !AppendNull(&span_id_builder, "Arrow span_id append")) {
       return false;
     }
 
