@@ -36,6 +36,7 @@ extern bool psch_otel_arrow_passthrough;
 extern int psch_otel_max_block_bytes;
 extern char* psch_extra_attributes;
 extern char* psch_debug_arrow_dump_dir;
+extern int psch_bgworker_nice_level;
 
 // Initialize GUC variables
 void PschInitGuc(void);

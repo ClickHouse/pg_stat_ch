@@ -34,6 +34,8 @@ extern "C" {
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
 #include "utils/wait_event.h"
+
+#include <sys/resource.h>
 }
 
 #include "queue/psch_dsa.h"
@@ -193,6 +195,27 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
 
   // Attach to DSA area eagerly so the first dequeue doesn't hit lazy init
   PschDsaAttach();
+
+  // Boost scheduler priority above regular PG backends. Under load with many
+  // concurrent backends on the same VM (e.g. 500 direct-to-PG clients), the
+  // bgworker is a single SCHED_OTHER process competing fairly with backends
+  // and loses CPU share — measured at ~15% of wall time with 64% runqueue
+  // wait in a 256-client benchmark. Boosting nice to -10 gives the bgworker
+  // ~9x the CFS scheduler weight of a nice-0 backend and restores headroom
+  // for draining the shmem ring before overflow.
+  //
+  // setpriority() to a negative value requires CAP_SYS_NICE or RLIMIT_NICE
+  // for the postgres user. If the capability is missing (default in most PG
+  // deployments), the call fails with EACCES / EPERM and the bgworker
+  // continues at its inherited nice level — degradation is graceful, no
+  // behavior change vs prior versions.
+  if (setpriority(PRIO_PROCESS, 0, psch_bgworker_nice_level) != 0) {
+    elog(LOG,
+         "pg_stat_ch: setpriority(%d) failed: %m; bgworker running at "
+         "inherited nice level. Grant CAP_SYS_NICE or RLIMIT_NICE to the "
+         "postgres user to enable elevated priority.",
+         psch_bgworker_nice_level);
+  }
 
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
 

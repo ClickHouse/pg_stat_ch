@@ -39,6 +39,7 @@ int psch_normalize_cache_max = 32768;
 double psch_sample_rate = 1.0;
 bool psch_otel_arrow_passthrough = false;
 int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB (max: 16 MiB)
+int psch_bgworker_nice_level = -10;
 char* psch_extra_attributes = nullptr;
 char* psch_debug_arrow_dump_dir = nullptr;
 
@@ -382,6 +383,22 @@ void PschInitGuc(void) {
       &psch_extra_attributes,
       "",
       PGC_SIGHUP,
+      0,
+      nullptr, nullptr, nullptr);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.bgworker_nice_level",
+      "Nice level for the pg_stat_ch background worker process.",
+      "Negative values give the bgworker higher scheduling priority than normal "
+      "PG backends (range -20 to 19, default -10). Addresses CPU starvation when "
+      "many backend processes compete with the single bgworker on the same VM. "
+      "Requires CAP_SYS_NICE or RLIMIT_NICE for the postgres user to set a "
+      "negative value; if the process lacks the capability, the setpriority "
+      "call fails gracefully and the bgworker runs at its inherited nice level.",
+      &psch_bgworker_nice_level,
+      -10,             // bootValue
+      -20, 19,         // min, max (POSIX nice range)
+      PGC_POSTMASTER,  // applied once at bgworker startup
       0,
       nullptr, nullptr, nullptr);
 
