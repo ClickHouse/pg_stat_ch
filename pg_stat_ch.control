@@ -1,4 +1,4 @@
 comment = 'Query telemetry exporter to ClickHouse'
-default_version = '0.1'
+default_version = '0.3'
 module_pathname = '$libdir/pg_stat_ch'
 relocatable = false
