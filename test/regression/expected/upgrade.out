@@ -27,7 +27,7 @@ RETURNS record AS '$libdir/pg_stat_ch' LANGUAGE C STRICT;
 ALTER EXTENSION pg_stat_ch ADD FUNCTION pg_stat_ch_stats();
 UPDATE pg_extension SET extversion = '0.1' WHERE extname = 'pg_stat_ch';
 SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
- extversion
+ extversion 
 ------------
  0.1
 (1 row)
@@ -35,14 +35,14 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
 SELECT array_length(proallargtypes, 1) AS pre_upgrade_outargs
   FROM pg_proc
  WHERE proname = 'pg_stat_ch_stats' AND pronamespace = 'public'::regnamespace;
- pre_upgrade_outargs
+ pre_upgrade_outargs 
 ---------------------
                   10
 (1 row)
 
 ALTER EXTENSION pg_stat_ch UPDATE TO '0.3';
 SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
- extversion
+ extversion 
 ------------
  0.3
 (1 row)
@@ -50,13 +50,13 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
 SELECT array_length(proallargtypes, 1) AS post_upgrade_outargs
   FROM pg_proc
  WHERE proname = 'pg_stat_ch_stats' AND pronamespace = 'public'::regnamespace;
- post_upgrade_outargs
+ post_upgrade_outargs 
 ----------------------
                    11
 (1 row)
 
 SELECT dsa_oom_count = 0 AS dsa_oom_present FROM pg_stat_ch_stats();
- dsa_oom_present
+ dsa_oom_present 
 -----------------
  t
 (1 row)
@@ -70,7 +70,7 @@ CREATE EXTENSION pg_stat_ch;
 CREATE VIEW pg_stat_ch_dep AS SELECT dsa_oom_count FROM pg_stat_ch_stats();
 UPDATE pg_extension SET extversion = '0.1' WHERE extname = 'pg_stat_ch';
 SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
- extversion
+ extversion 
 ------------
  0.1
 (1 row)
@@ -78,14 +78,14 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
 SELECT array_length(proallargtypes, 1) AS pre_upgrade_outargs
   FROM pg_proc
  WHERE proname = 'pg_stat_ch_stats' AND pronamespace = 'public'::regnamespace;
- pre_upgrade_outargs
+ pre_upgrade_outargs 
 ---------------------
                   11
 (1 row)
 
 ALTER EXTENSION pg_stat_ch UPDATE TO '0.3';
 SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
- extversion
+ extversion 
 ------------
  0.3
 (1 row)
@@ -93,13 +93,13 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_ch';
 SELECT array_length(proallargtypes, 1) AS post_upgrade_outargs
   FROM pg_proc
  WHERE proname = 'pg_stat_ch_stats' AND pronamespace = 'public'::regnamespace;
- post_upgrade_outargs
+ post_upgrade_outargs 
 ----------------------
                    11
 (1 row)
 
 SELECT count(*) >= 0 AS dependent_view_intact FROM pg_stat_ch_dep;
- dependent_view_intact
+ dependent_view_intact 
 -----------------------
  t
 (1 row)

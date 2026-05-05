@@ -6,19 +6,27 @@
 --   - installed from v0.1.x..v0.3.4 → catalog has 10 OUT columns
 --   - installed from v0.3.5..v0.3.6 → catalog already has 11 OUT columns
 -- Only rewrite the function when the catalog is the legacy 10-column shape.
--- Avoids touching it (and breaking dependent views) when it is already
--- up-to-date.
+-- Resolves the function via extension membership (rather than a hard-coded
+-- schema) so installs done with `CREATE EXTENSION pg_stat_ch SCHEMA <other>`
+-- are handled correctly.
 DO $migrate$
 DECLARE
   current_outargs int;
 BEGIN
-  SELECT array_length(proallargtypes, 1)
+  SELECT array_length(p.proallargtypes, 1)
     INTO current_outargs
-    FROM pg_proc
-   WHERE proname = 'pg_stat_ch_stats'
-     AND pronamespace = 'public'::regnamespace;
+    FROM pg_proc p
+    JOIN pg_depend d
+      ON d.classid = 'pg_proc'::regclass
+     AND d.objid = p.oid
+     AND d.deptype = 'e'
+    JOIN pg_extension e
+      ON d.refclassid = 'pg_extension'::regclass
+     AND d.refobjid = e.oid
+   WHERE e.extname = 'pg_stat_ch'
+     AND p.proname = 'pg_stat_ch_stats';
 
-  IF current_outargs IS DISTINCT FROM 11 THEN
+  IF current_outargs = 10 THEN
     EXECUTE 'DROP FUNCTION pg_stat_ch_stats()';
     EXECUTE $ddl$
       CREATE FUNCTION pg_stat_ch_stats(
