@@ -1,6 +1,6 @@
 ---
 name: create-new-release
-description: Create and push a new semver release tag. Asks for release type (patch/minor/major), verifies META.json version, verifies pg_stat_ch.control's default_version is aligned with distribution major.minor (Theory's policy), confirms the canonical SQL file and any required migration script are in place, validates HEAD is on remote, then pushes the tag and reminds the operator of the downstream pgext-packaging / AMI-build / clickgres-platform handoffs.
+description: Create and push a new semver release tag. Asks for release type (patch/minor/major), verifies META.json version, verifies pg_stat_ch.control's default_version is aligned with the distribution major.minor (the versioning policy established in PR #33), confirms the canonical SQL file and any required migration script are in place, validates HEAD is on remote, then pushes the tag and reminds the operator of the downstream pgext-packaging / AMI-build / clickgres-platform handoffs.
 ---
 
 # Create New Release
@@ -29,7 +29,7 @@ Create and push a new semantic version release tag.
 5. **Verify META.json version matches the new tag**:
    Read `META.json` and check that both `version` and `provides.pg_stat_ch.version` match the new version (without the `v` prefix). If they don't match, abort and tell the user to update `META.json` first — PGXN uses this file for the release version.
 
-6. **Verify extension `default_version` is aligned with the distribution major.minor** (Theory's policy from PR #33):
+6. **Verify extension `default_version` is aligned with the distribution major.minor** (the versioning policy established in PR #33):
    The extension version in `pg_stat_ch.control` (`default_version`) must equal the new tag's `MAJOR.MINOR`. So a `v0.3.7` tag requires `default_version = '0.3'`; a `v0.4.0` tag requires `default_version = '0.4'`.
 
    ```bash
