@@ -355,52 +355,83 @@ void LogNegativeValue(const std::string& column_name, int64_t value) {
 
 extern "C" {
 
+// Exception barrier: factory and connection setup allocate via std::make_unique
+// and can throw std::bad_alloc.  An uncaught throw would unwind out of this
+// extern "C" entry point through PostgreSQL's bgworker startup (which has no
+// C++ handler), terminating the process via std::terminate -> SIGABRT.  The
+// postmaster would treat that as a backend crash and trigger DB-wide crash
+// recovery.  Instead, log FATAL so PostgreSQL records the cause and exits via
+// proc_exit; the postmaster respawns just our bgworker on its bgw_restart_time.
+// The exporter is the only reason this extension runs, so there is nothing
+// useful to do without one — graceful exit is strictly better than limping.
 bool PschExporterInit(void) {
-  if (psch_use_otel) {
-    g_exporter.exporter = MakeOpenTelemetryExporter();
-  } else {
-    g_exporter.exporter = MakeClickHouseExporter();
+  try {
+    if (psch_use_otel) {
+      g_exporter.exporter = MakeOpenTelemetryExporter();
+    } else {
+      g_exporter.exporter = MakeClickHouseExporter();
+    }
+    return g_exporter.exporter->EstablishNewConnection();
+  } catch (const std::bad_alloc&) {
+    ereport(FATAL, (errmsg("pg_stat_ch: out of memory constructing exporter; "
+                           "bgworker will be restarted")));
+    pg_unreachable();
+  } catch (const std::exception& e) {
+    ereport(FATAL, (errmsg("pg_stat_ch: exception constructing exporter: %s", e.what())));
+    pg_unreachable();
   }
-  return g_exporter.exporter->EstablishNewConnection();
 }
 
+// Exception barrier: DequeueEvents reserves a std::vector sized for
+// psch_batch_max events and can throw std::bad_alloc. Catching here prevents
+// the throw from crossing the bgworker's PG_TRY frame.
 int PschExportBatch(void) {
-  elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
-  StatsExporter* exporter = g_exporter.exporter.get();
+  try {
+    elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
+    StatsExporter* exporter = g_exporter.exporter.get();
 
-  if (!exporter->IsConnected()) {
-    elog(DEBUG1, "pg_stat_ch: client is null, initializing");
-    if (!exporter->EstablishNewConnection()) {
-      PschRecordExportFailure("Failed to connect to exporter backend");
+    if (!exporter->IsConnected()) {
+      elog(DEBUG1, "pg_stat_ch: client is null, initializing");
+      if (!exporter->EstablishNewConnection()) {
+        PschRecordExportFailure("Failed to connect to exporter backend");
+        return 0;
+      }
+    }
+
+    elog(DEBUG1, "pg_stat_ch: dequeuing events (max=%d)", psch_batch_max);
+    std::vector<PschEvent> events = DequeueEvents(psch_batch_max);
+    if (events.empty()) {
+      elog(DEBUG1, "pg_stat_ch: no events to export");
       return 0;
     }
-  }
 
-  elog(DEBUG1, "pg_stat_ch: dequeuing events (max=%d)", psch_batch_max);
-  std::vector<PschEvent> events = DequeueEvents(psch_batch_max);
-  if (events.empty()) {
-    elog(DEBUG1, "pg_stat_ch: no events to export");
-    return 0;
-  }
-
-  if (psch_use_otel && psch_otel_arrow_passthrough) {
-    elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events as Arrow IPC", events.size());
-    return ExportEventsAsArrow(events, exporter);
-  }
-
-  elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events", events.size());
-  if (!ExportEventStats(events, exporter)) {
-    return 0;
-  }
-
-  if (exporter->CommitBatch()) {
-    if (psch_shared_state != nullptr) {
-      pg_atomic_fetch_add_u64(&psch_shared_state->exported, exporter->NumExported());
+    if (psch_use_otel && psch_otel_arrow_passthrough) {
+      elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events as Arrow IPC", events.size());
+      return ExportEventsAsArrow(events, exporter);
     }
-    PschRecordExportSuccess();
-  }
 
-  return exporter->NumExported();
+    elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events", events.size());
+    if (!ExportEventStats(events, exporter)) {
+      return 0;
+    }
+
+    if (exporter->CommitBatch()) {
+      if (psch_shared_state != nullptr) {
+        pg_atomic_fetch_add_u64(&psch_shared_state->exported, exporter->NumExported());
+      }
+      PschRecordExportSuccess();
+    }
+
+    return exporter->NumExported();
+  } catch (const std::bad_alloc&) {
+    LogExporterWarning("export batch", "out of memory");
+    RecordExporterFailure("export batch OOM");
+    return 0;
+  } catch (const std::exception& e) {
+    LogExporterWarning("export batch exception", e.what());
+    RecordExporterFailure(e.what());
+    return 0;
+  }
 }
 
 void PschResetRetryState(void) {
@@ -425,8 +456,17 @@ int PschGetConsecutiveFailures(void) {
   return g_exporter.exporter->NumConsecutiveFailures();
 }
 
+// Exception barrier: exporter destructors (clickhouse-cpp socket close, gRPC
+// stub teardown, protobuf arena release) can throw. Catching here prevents the
+// throw from crossing the on_proc_exit chain.
 void PschExporterShutdown(void) {
-  g_exporter.exporter.reset();
+  try {
+    g_exporter.exporter.reset();
+  } catch (const std::bad_alloc&) {
+    LogExporterWarning("exporter shutdown", "out of memory");
+  } catch (const std::exception& e) {
+    LogExporterWarning("exporter shutdown exception", e.what());
+  }
   elog(LOG, "pg_stat_ch: statistics exporter shutdown");
 }
 
