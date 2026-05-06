@@ -178,7 +178,7 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
 
 // Build and export stats (records, metrics, ClickHouse rows) from events
 void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporter* exporter) {
-  elog(DEBUG1, "pg_stat_ch: ExportEventStats() called with %zu events", events.size());
+  elog(DEBUG1, "pg_stat_ch: ExportEventStatsInternal() called with %zu events", events.size());
 
   exporter->BeginBatch();
 
@@ -302,16 +302,20 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
 // Exception barrier: protobuf arena, column factories, and per-row appends can
 // throw std::bad_alloc. Catching here prevents the throw from crossing the
-// bgworker's PG_TRY frame.
-void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+// bgworker's PG_TRY frame. Returns false on failure so the caller skips
+// CommitBatch and avoids flushing partial / stale exporter state.
+bool ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
   try {
     ExportEventStatsInternal(events, exporter);
+    return true;
   } catch (const std::bad_alloc&) {
     LogExporterWarning("event stats export", "out of memory");
     RecordExporterFailure("event stats OOM");
+    return false;
   } catch (const std::exception& e) {
     LogExporterWarning("event stats exception", e.what());
     RecordExporterFailure(e.what());
+    return false;
   }
 }
 
@@ -372,7 +376,9 @@ int PschExportBatch(void) {
   }
 
   elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events", events.size());
-  ExportEventStats(events, exporter);
+  if (!ExportEventStats(events, exporter)) {
+    return 0;
+  }
 
   if (exporter->CommitBatch()) {
     if (psch_shared_state != nullptr) {
