@@ -20,10 +20,10 @@ jobs:
         arch: [amd64, arm64]
         include:
           - arch: amd64
-            runner: depot-ubuntu-22.04-16
+            runner: depot-ubuntu-22.04-64
             triplet: x64-linux-pic
           - arch: arm64
-            runner: depot-ubuntu-22.04-arm-16
+            runner: depot-ubuntu-22.04-arm-64
             triplet: arm64-linux-pic
 
     steps:
