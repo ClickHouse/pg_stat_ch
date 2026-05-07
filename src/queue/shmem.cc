@@ -44,6 +44,7 @@ extern "C" {
 #include "hooks/hooks.h"
 #include "queue/local_batch.h"
 #include "queue/psch_dsa.h"
+#include "queue/query_intern.h"
 #include "queue/ring_entry.h"
 #include "queue/shmem.h"
 
@@ -123,9 +124,24 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
     slot->err_message_len = 0;  // Lost string on OOM — numeric data preserved
   }
 
-  slot->query_dsa = PschDsaAllocString(event->query, event->query_len, PSCH_MAX_QUERY_LEN);
-  if (event->query_len > 0 && !DsaPointerIsValid(slot->query_dsa)) {
-    slot->query_len = 0;  // Lost string on OOM — numeric data preserved
+  // Query text goes through the shared interner so repeated identical
+  // normalized queries share a single DSA-allocated body.  See query_intern.h
+  // for the design rationale.  On miss + DSA OOM, miss + hash-full, or hash
+  // collision we drop the query bytes (numeric data is preserved).
+  if (event->query_len > 0) {
+    // Clamp the input length to what we'd have stored anyway, so the intern
+    // key doesn't include trailing bytes the consumer would have truncated.
+    uint16 clamped_len =
+        Min(event->query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN - 1));
+    slot->query_dsa = PschQueryInternAcquire(event->dbid, event->queryid,
+                                             event->query, clamped_len);
+    if (!DsaPointerIsValid(slot->query_dsa)) {
+      slot->query_len = 0;
+    } else {
+      slot->query_len = clamped_len;
+    }
+  } else {
+    slot->query_dsa = InvalidDsaPointer;
   }
 
   // CRITICAL: Memory barrier ensures the event data is written to shared memory
@@ -149,9 +165,9 @@ static void PschShmemShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum 
 
 extern "C" {
 
-Size PschShmemSize(void) {
-  // Layout: [PschSharedState] [PschRingEntry × capacity] [DSA area]
-  // See psch_dsa.h for diagram.  DSA start is MAXALIGN'd for internal alignment.
+// Size of the contiguous shmem block that ShmemInitStruct("pg_stat_ch", ...)
+// allocates.  Layout: [PschSharedState] [PschRingEntry × capacity] [DSA area].
+static Size PschSharedBlockSize(void) {
   Size ring_end =
       add_size(sizeof(PschSharedState), mul_size(psch_queue_capacity, sizeof(PschRingEntry)));
   Size dsa_offset = MAXALIGN(ring_end);
@@ -159,9 +175,18 @@ Size PschShmemSize(void) {
   return MAXALIGN(total);
 }
 
+Size PschShmemSize(void) {
+  // Total shmem requested from the postmaster: the shared block plus the
+  // interner HTAB (which ShmemInitHash carves out of the same pool).
+  return add_size(PschSharedBlockSize(), PschQueryInternShmemSize());
+}
+
 static void RequestSharedResources(void) {
   RequestAddinShmemSpace(PschShmemSize());
-  RequestNamedLWLockTranche("pg_stat_ch", 1);
+  // 1 main queue lock + N partition locks for the query-text interner, all
+  // in the single "pg_stat_ch" named tranche so we read them as a contiguous
+  // LWLockPadded[] from GetNamedLWLockTranche().
+  RequestNamedLWLockTranche("pg_stat_ch", 1 + PschQueryInternLockCount());
 }
 
 #if PG_VERSION_NUM >= 150000
@@ -176,7 +201,11 @@ static void PschShmemRequestHook(void) {
 // Initialize shared state fields on first-time setup.
 // Called with AddinShmemInitLock held.
 static void InitializeSharedState(void) {
-  psch_shared_state->lock = &(GetNamedLWLockTranche("pg_stat_ch"))->lock;
+  // The pg_stat_ch named tranche owns 1 main queue lock at index 0 and
+  // PSCH_QUERY_INTERN_PARTITIONS partition locks at indices 1..N for the
+  // query-text interner (see PschQueryInternShmemInit).
+  LWLockPadded* lwlocks = GetNamedLWLockTranche("pg_stat_ch");
+  psch_shared_state->lock = &lwlocks[0].lock;
   psch_shared_state->capacity = psch_queue_capacity;
   pg_atomic_init_u64(&psch_shared_state->head, 0);
   pg_atomic_init_u64(&psch_shared_state->enqueued, 0);
@@ -215,8 +244,12 @@ static void PschShmemStartupHook(void) {
 
   LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
-  psch_shared_state =
-      static_cast<PschSharedState*>(ShmemInitStruct("pg_stat_ch", PschShmemSize(), &found));
+  // ShmemInitStruct gets just the contiguous shared block (state + ring + DSA);
+  // the interner HTAB lives in a separately-named shmem segment allocated by
+  // PschQueryInternShmemInit -> ShmemInitHash, drawing from the same pool that
+  // RequestAddinShmemSpace(PschShmemSize()) reserved.
+  psch_shared_state = static_cast<PschSharedState*>(
+      ShmemInitStruct("pg_stat_ch", PschSharedBlockSize(), &found));
 
   if (psch_shared_state == nullptr) {
     LWLockRelease(AddinShmemInitLock);
@@ -227,6 +260,11 @@ static void PschShmemStartupHook(void) {
   if (!found) {
     InitializeSharedState();
   }
+
+  // Initialize (or attach to) the query intern HTAB.  ShmemInitHash internally
+  // checks `found` so all backends end up with the same handle.
+  LWLockPadded* lwlocks = GetNamedLWLockTranche("pg_stat_ch");
+  PschQueryInternShmemInit(&lwlocks[1]);
 
   LWLockRelease(AddinShmemInitLock);
 
@@ -399,11 +437,11 @@ bool PschDequeueEvent(PschEvent* event) {
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(event, slot, kFixedPrefixSize);
 
-  // 2. Resolve err_message and query from DSA into PschEvent's inline buffers
+  // 2. Resolve err_message (per-event DSA) and query text (shared interner).
   PschDsaResolveString(slot->err_message_dsa, slot->err_message_len, event->err_message,
                        PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
-  PschDsaResolveString(slot->query_dsa, slot->query_len, event->query, PSCH_MAX_QUERY_LEN,
-                       &event->query_len);
+  PschQueryInternResolveAndRelease(slot->query_dsa, event->query, PSCH_MAX_QUERY_LEN,
+                                   &event->query_len);
 
   // CRITICAL: Write barrier ensures all reads and DSA frees complete before we
   // update tail.  Producers cannot reuse this slot until tail advances past it.
