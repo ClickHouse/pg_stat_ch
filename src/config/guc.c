@@ -1,28 +1,25 @@
 // pg_stat_ch GUC (Grand Unified Configuration) implementation
 
-extern "C" {
 #include "postgres.h"
 
 #include "utils/guc.h"
-}
 
-#include <array>
-#include <climits>
+#include <limits.h>
 
 #include "config/guc.h"
 
 // GUC variable storage
 bool psch_enabled = true;
 bool psch_use_otel = false;
-char* psch_clickhouse_host = nullptr;
+char* psch_clickhouse_host = NULL;
 int psch_clickhouse_port = 9000;
-char* psch_clickhouse_user = nullptr;
-char* psch_clickhouse_password = nullptr;
-char* psch_clickhouse_database = nullptr;
+char* psch_clickhouse_user = NULL;
+char* psch_clickhouse_password = NULL;
+char* psch_clickhouse_database = NULL;
 bool psch_clickhouse_use_tls = false;
 bool psch_clickhouse_skip_tls_verify = false;
-char* psch_otel_endpoint = nullptr;
-char* psch_hostname = nullptr;
+char* psch_otel_endpoint = NULL;
+char* psch_hostname = NULL;
 int psch_queue_capacity = 131072;
 int psch_string_area_size = 64;  // MB, for DSA string storage
 int psch_flush_interval_ms = 500;
@@ -39,12 +36,12 @@ int psch_normalize_cache_max = 32768;
 double psch_sample_rate = 1.0;
 bool psch_otel_arrow_passthrough = false;
 int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB (max: 16 MiB)
-char* psch_extra_attributes = nullptr;
-char* psch_debug_arrow_dump_dir = nullptr;
+char* psch_extra_attributes = NULL;
+char* psch_debug_arrow_dump_dir = NULL;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
-static const std::array<config_enum_entry, 13> log_elevel_options = {{
+static const struct config_enum_entry log_elevel_options[] = {
     {"debug5",  DEBUG5,  false},
     {"debug4",  DEBUG4,  false},
     {"debug3",  DEBUG3,  false},
@@ -57,16 +54,14 @@ static const std::array<config_enum_entry, 13> log_elevel_options = {{
     {"error",   ERROR,   false},
     {"fatal",   FATAL,   false},
     {"panic",   PANIC,   false},
-    {nullptr,   0,       false},
-}};
+    {NULL,      0,       false},
+};
 // clang-format on
-
-extern "C" {
 
 // Check hook to ensure queue_capacity is a power of 2.
 // Parameters follow PostgreSQL GUC check hook signature.
-static bool check_psch_queue_capacity(int* newval, void** extra [[maybe_unused]],
-                                      GucSource source [[maybe_unused]]) {
+static bool check_psch_queue_capacity(int* newval, void** extra pg_attribute_unused(),
+                                      GucSource source pg_attribute_unused()) {
   // Check if value is positive and a power of 2
   if (*newval <= 0) {
     GUC_check_errdetail("pg_stat_ch.queue_capacity must be positive.");
@@ -90,12 +85,12 @@ void PschInitGuc(void) {
   DefineCustomBoolVariable(
       "pg_stat_ch.enabled",                                   // name
       "Enable or disable pg_stat_ch query telemetry collection.",  // short_desc
-      nullptr,                                                // long_desc
+      NULL,                                                   // long_desc
       &psch_enabled,                                          // valueAddr
       true,                                                   // bootValue
       PGC_SIGHUP,                                             // context
       0,                                                      // flags
-      nullptr, nullptr, nullptr);                             // hooks
+      NULL, NULL, NULL);                                      // hooks
 
   DefineCustomBoolVariable(
       "pg_stat_ch.use_otel",
@@ -105,109 +100,109 @@ void PschInitGuc(void) {
       false,
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.clickhouse_host",
       "ClickHouse server hostname.",
-      nullptr,
+      NULL,
       &psch_clickhouse_host,
       "localhost",
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.clickhouse_port",
       "ClickHouse server native protocol port.",
-      nullptr,
+      NULL,
       &psch_clickhouse_port,
       9000,           // bootValue
       1, 65535,       // min, max
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.clickhouse_user",
       "ClickHouse user name.",
-      nullptr,
+      NULL,
       &psch_clickhouse_user,
       "default",
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.clickhouse_password",
       "ClickHouse user password.",
-      nullptr,
+      NULL,
       &psch_clickhouse_password,
       "",
       PGC_POSTMASTER,
       GUC_SUPERUSER_ONLY,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.clickhouse_database",
       "ClickHouse database name for telemetry storage.",
-      nullptr,
+      NULL,
       &psch_clickhouse_database,
       "pg_stat_ch",
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomBoolVariable(
       "pg_stat_ch.clickhouse_use_tls",
       "Enable TLS for ClickHouse connections.",
-      nullptr,
+      NULL,
       &psch_clickhouse_use_tls,
       false,
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomBoolVariable(
       "pg_stat_ch.clickhouse_skip_tls_verify",
       "Skip TLS certificate verification (insecure, for testing only).",
-      nullptr,
+      NULL,
       &psch_clickhouse_skip_tls_verify,
       false,
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.otel_endpoint",
       "OpenTelemetry gRPC endpoint (host:port).",
-      nullptr,
+      NULL,
       &psch_otel_endpoint,
       "localhost:4317",
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.hostname",
       "Override the hostname of the current machine.",
-      nullptr,
+      NULL,
       &psch_hostname,
       "",
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.queue_capacity",
       "Maximum number of events in the shared memory queue (must be a power of 2).",
-      nullptr,
+      NULL,
       &psch_queue_capacity,
       131072,             // bootValue
       1024, 4194304,      // min, max
       PGC_POSTMASTER,
       0,
-      check_psch_queue_capacity, nullptr, nullptr);
+      check_psch_queue_capacity, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.string_area_size",
@@ -219,29 +214,29 @@ void PschInitGuc(void) {
       8, 1024,         // min: 8 MB, max: 1024 MB
       PGC_POSTMASTER,
       GUC_UNIT_MB,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.flush_interval_ms",
       "Interval in milliseconds between ClickHouse export batches.",
-      nullptr,
+      NULL,
       &psch_flush_interval_ms,
       500,            // bootValue
       100, 60000,     // min, max
       PGC_SIGHUP,
       GUC_UNIT_MS,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.batch_max",
       "Maximum number of events per ClickHouse insert batch.",
-      nullptr,
+      NULL,
       &psch_batch_max,
       200000,           // bootValue
       1, 1000000,       // min, max
       PGC_SIGHUP,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_queue_size",
@@ -253,7 +248,7 @@ void PschInitGuc(void) {
       512, 1048576,       // min, max
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_batch_size",
@@ -265,7 +260,7 @@ void PschInitGuc(void) {
       1, 131072,          // min, max
       PGC_POSTMASTER,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_max_bytes",
@@ -277,7 +272,7 @@ void PschInitGuc(void) {
       65536, 64 * 1024 * 1024,  // min: 64 KiB, max: 64 MiB
       PGC_POSTMASTER,
       GUC_UNIT_BYTE,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_delay_ms",
@@ -289,7 +284,7 @@ void PschInitGuc(void) {
       10, 60000,          // min, max
       PGC_POSTMASTER,
       GUC_UNIT_MS,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_metric_interval_ms",
@@ -301,7 +296,7 @@ void PschInitGuc(void) {
       100, 300000,         // min, max (100ms to 5min)
       PGC_POSTMASTER,
       GUC_UNIT_MS,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomEnumVariable(
       "pg_stat_ch.log_min_elevel",
@@ -310,10 +305,10 @@ void PschInitGuc(void) {
       "'error' for errors only, or 'debug5' for all messages.",
       &psch_log_min_elevel,
       WARNING,
-      log_elevel_options.data(),
+      log_elevel_options,
       PGC_SUSET,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
   DefineCustomIntVariable(
       "pg_stat_ch.min_duration_us",
       "Minimum query duration in microseconds to always capture.",
@@ -324,7 +319,7 @@ void PschInitGuc(void) {
       0, INT_MAX,     // min, max
       PGC_SUSET,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.normalize_cache_max",
@@ -336,7 +331,7 @@ void PschInitGuc(void) {
       64, 65536,      // min, max
       PGC_SUSET,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomRealVariable(
       "pg_stat_ch.sample_rate",
@@ -348,7 +343,7 @@ void PschInitGuc(void) {
       0.0, 1.0,       // min, max
       PGC_SUSET,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomBoolVariable(
       "pg_stat_ch.otel_arrow_passthrough",
@@ -359,7 +354,7 @@ void PschInitGuc(void) {
       false,
       PGC_SIGHUP,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.otel_max_block_bytes",
@@ -372,7 +367,7 @@ void PschInitGuc(void) {
       65536, 16 * 1024 * 1024,  // min: 64 KiB, max: 16 MiB
       PGC_SIGHUP,
       GUC_UNIT_BYTE,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.extra_attributes",
@@ -383,7 +378,7 @@ void PschInitGuc(void) {
       "",
       PGC_SIGHUP,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomStringVariable(
       "pg_stat_ch.debug_arrow_dump_dir",
@@ -394,7 +389,7 @@ void PschInitGuc(void) {
       "",
       PGC_SIGHUP,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
 
   DefineCustomBoolVariable(
       "pg_stat_ch.debug_force_locked_overflow",
@@ -405,10 +400,8 @@ void PschInitGuc(void) {
       false,
       PGC_SUSET,
       0,
-      nullptr, nullptr, nullptr);
+      NULL, NULL, NULL);
   // clang-format on
 
   EmitWarningsOnPlaceholders("pg_stat_ch");
 }
-
-}  // extern "C"

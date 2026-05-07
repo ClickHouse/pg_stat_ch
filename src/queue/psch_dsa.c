@@ -2,14 +2,12 @@
 //
 // See psch_dsa.h for the shared memory layout diagram and lifecycle overview.
 
-extern "C" {
 #include "postgres.h"
 
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 #include "utils/memutils.h"
-}
 
 #include "config/guc.h"
 #include "queue/psch_dsa.h"
@@ -18,27 +16,26 @@ extern "C" {
 // Process-local DSA handle.  Each backend/bgworker gets its own via
 // dsa_attach_in_place().  This is NOT shared state — it contains
 // process-local page tables, free-list caches, etc.
-static dsa_area* psch_dsa = nullptr;
+static dsa_area* psch_dsa = NULL;
 static bool psch_dsa_exit_hook_registered = false;
 
 // dsa_attach_in_place() increments the shared refcount for this in-place area,
 // but because there is no containing DSM segment, PostgreSQL won't release it
 // automatically.  We must detach the backend-local handle and drop the shared
 // reference explicitly on backend/bgworker exit (see pgstat_detach_shmem()).
-static void PschDsaDetachOnExit([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
-  if (psch_dsa != nullptr) {
+static void PschDsaDetachOnExit(int code pg_attribute_unused(),
+                                Datum arg pg_attribute_unused()) {
+  if (psch_dsa != NULL) {
     dsa_detach(psch_dsa);
-    psch_dsa = nullptr;
+    psch_dsa = NULL;
   }
 
-  if (psch_shared_state != nullptr && psch_shared_state->raw_dsa_area != nullptr) {
+  if (psch_shared_state != NULL && psch_shared_state->raw_dsa_area != NULL) {
     dsa_release_in_place(psch_shared_state->raw_dsa_area);
   }
 
   psch_dsa_exit_hook_registered = false;
 }
-
-extern "C" {
 
 Size PschDsaShmemSize(void) {
   return (Size)psch_string_area_size * 1024 * 1024;
@@ -58,10 +55,10 @@ void PschDsaInit(PschSharedState* state, void* dsa_place) {
 }
 
 void PschDsaAttach(void) {
-  if (psch_dsa != nullptr) {
+  if (psch_dsa != NULL) {
     return;
   }
-  if (psch_shared_state == nullptr || psch_shared_state->raw_dsa_area == nullptr) {
+  if (psch_shared_state == NULL || psch_shared_state->raw_dsa_area == NULL) {
     return;
   }
   // Attach in TopMemoryContext so the dsa_area handle survives transaction
@@ -80,7 +77,7 @@ void PschDsaAttach(void) {
 }
 
 dsa_area* PschDsaGetArea(void) {
-  if (psch_dsa == nullptr) {
+  if (psch_dsa == NULL) {
     PschDsaAttach();
   }
   return psch_dsa;
@@ -91,13 +88,13 @@ dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len) {
     return InvalidDsaPointer;
   }
   dsa_area* dsa = PschDsaGetArea();
-  if (dsa == nullptr) {
+  if (dsa == NULL) {
     return InvalidDsaPointer;
   }
-  uint16 clamped = Min(len, static_cast<uint16>(max_len - 1));
+  uint16 clamped = Min(len, (uint16)(max_len - 1));
   dsa_pointer dp = dsa_allocate_extended(dsa, clamped + 1, DSA_ALLOC_NO_OOM);
   if (DsaPointerIsValid(dp)) {
-    char* dst = static_cast<char*>(dsa_get_address(dsa, dp));
+    char* dst = (char*)dsa_get_address(dsa, dp);
     memcpy(dst, src, clamped);
     dst[clamped] = '\0';
   } else {
@@ -110,13 +107,13 @@ void PschDsaResolveString(dsa_pointer dp, uint16 src_len, char* dst_buf, uint16 
                           uint16* out_len) {
   if (DsaPointerIsValid(dp)) {
     dsa_area* dsa = PschDsaGetArea();
-    if (dsa == nullptr) {
+    if (dsa == NULL) {
       dst_buf[0] = '\0';
       *out_len = 0;
       return;
     }
-    char* src = static_cast<char*>(dsa_get_address(dsa, dp));
-    uint16 len = Min(src_len, static_cast<uint16>(max_len - 1));
+    char* src = (char*)dsa_get_address(dsa, dp);
+    uint16 len = Min(src_len, (uint16)(max_len - 1));
     memcpy(dst_buf, src, len);
     dst_buf[len] = '\0';
     *out_len = len;
@@ -126,5 +123,3 @@ void PschDsaResolveString(dsa_pointer dp, uint16 src_len, char* dst_buf, uint16 
     *out_len = 0;
   }
 }
-
-}  // extern "C"

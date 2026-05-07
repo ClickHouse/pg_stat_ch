@@ -52,7 +52,7 @@ extern "C" {
 #define PSCH_MAX_CLIENT_ADDR_LEN (INET6_ADDRSTRLEN - 1)
 
 // Command type values (matching PostgreSQL's CmdType enum)
-enum PschCmdType {
+typedef enum PschCmdType {
   PSCH_CMD_UNKNOWN = 0,
   PSCH_CMD_SELECT = 1,
   PSCH_CMD_UPDATE = 2,
@@ -61,9 +61,9 @@ enum PschCmdType {
   PSCH_CMD_MERGE = 5,
   PSCH_CMD_UTILITY = 6,
   PSCH_CMD_NOTHING = 7
-};
+} PschCmdType;
 
-static inline const char* PschCmdTypeToString(enum PschCmdType cmd) {
+static inline const char* PschCmdTypeToString(PschCmdType cmd) {
   switch (cmd) {
     case PSCH_CMD_SELECT:
       return "SELECT";
@@ -90,7 +90,7 @@ static inline const char* PschCmdTypeToString(enum PschCmdType cmd) {
 // PostgreSQL version. This keeps the struct size fixed for ring buffer simplicity.
 // Fields marked with "PGxx+" are zero when running on older versions. The exporter
 // sends all fields; ClickHouse handles NULL/zero appropriately in aggregations.
-struct PschEvent {
+typedef struct PschEvent {
   // Timing information
   TimestampTz ts_start;  // Query start timestamp (microseconds since epoch)
   uint64 duration_us;    // Execution duration in microseconds
@@ -168,7 +168,7 @@ struct PschEvent {
   // block-copied between PschEvent and PschRingEntry with a single memcpy.
   char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
   char query[PSCH_MAX_QUERY_LEN];          // Query text (null-terminated)
-};
+} PschEvent;
 
 // Ensure the struct has expected size characteristics
 #define PSCH_EVENT_SIZE sizeof(PschEvent)

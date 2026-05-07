@@ -59,7 +59,7 @@ extern "C" {
 //
 // Ring buffer slots (PschRingEntry[capacity]) follow immediately after this
 // struct in the shared memory segment.
-struct PschSharedState {
+typedef struct PschSharedState {
   // --- Init-time fields (written once by postmaster) -----------------------
   LWLock* lock;
   void* raw_dsa_area;
@@ -89,7 +89,7 @@ struct PschSharedState {
   TimestampTz last_error_ts;
   char last_error_text[256];
   pg_atomic_uint32 bgworker_pid;
-};
+} PschSharedState;
 
 // Global pointer to shared state (set in shmem startup)
 extern PschSharedState* psch_shared_state;
@@ -101,7 +101,7 @@ Size PschDsaShmemSize(void);
 // Called once by the postmaster during InitializeSharedState().
 // `dsa_place` must point to a MAXALIGN'd address with at least
 // PschDsaShmemSize() bytes available.
-void PschDsaInit(struct PschSharedState* state, void* dsa_place);
+void PschDsaInit(PschSharedState* state, void* dsa_place);
 
 // Attach to the DSA area (lazy, idempotent).
 // Must be called before PschDsaAllocString / PschDsaResolveString.
