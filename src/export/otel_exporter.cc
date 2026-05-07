@@ -375,13 +375,16 @@ class OTelExporter : public StatsExporter {
     return false;
   }
 
-  static void PopulateResource(resource_pb::Resource* resource) {
+  static void PopulateResource(resource_pb::Resource* resource, bool arrow_ipc = false) {
     auto add = [&](string_view key, string_view val) {
       SetString(resource->add_attributes(), key, val);
     };
     add("service.name", "pg_stat_ch");
     add("service.version", PG_STAT_CH_VERSION);
     add("host.name", GetAHostname("postgres-primary"));
+    if (arrow_ipc) {
+      add("pg_stat_ch.block_format", "arrow_ipc");
+    }
   }
 
   void ConfigureLogExport(const string& endpoint) {
@@ -473,7 +476,7 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     auto* request =
         google::protobuf::Arena::Create<collector_logs::ExportLogsServiceRequest>(arena.get());
     auto* resource_logs = request->add_resource_logs();
-    PopulateResource(resource_logs->mutable_resource());
+    PopulateResource(resource_logs->mutable_resource(), /*arrow_ipc=*/true);
     auto* scope_logs = resource_logs->add_scope_logs();
     scope_logs->mutable_scope()->set_name("pg_stat_ch");
     scope_logs->mutable_scope()->set_version(PG_STAT_CH_VERSION);
