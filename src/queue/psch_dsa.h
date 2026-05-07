@@ -52,6 +52,10 @@ extern "C" {
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 
+// Forward typedef so the bare name `PschSharedState` is usable from pure C
+// translation units (where `struct` would otherwise be required).
+typedef struct PschSharedState PschSharedState;
+
 // Shared state in shared memory.
 //
 // Fields are grouped by writer and separated with cache-line padding to avoid
@@ -101,7 +105,7 @@ Size PschDsaShmemSize(void);
 // Called once by the postmaster during InitializeSharedState().
 // `dsa_place` must point to a MAXALIGN'd address with at least
 // PschDsaShmemSize() bytes available.
-void PschDsaInit(struct PschSharedState* state, void* dsa_place);
+void PschDsaInit(PschSharedState* state, void* dsa_place);
 
 // Attach to the DSA area (lazy, idempotent).
 // Must be called before PschDsaAllocString / PschDsaResolveString.
