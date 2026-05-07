@@ -98,7 +98,7 @@ void MaybeDumpArrowBatch(const uint8_t* data, size_t len) {
   }
 }
 
-int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExporter* exporter) {
   ArrowBatchBuilder builder;
   if (!builder.Init(psch_extra_attributes, PG_STAT_CH_VERSION)) {
     LogExporterWarning("Arrow init", "failed to initialize Arrow batch builder");
@@ -159,9 +159,26 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
   return total_exported;
 }
 
+// Exception barrier: Arrow + protobuf + ZSTD allocate via ::operator new and
+// throw std::bad_alloc on OOM. Catching here keeps the bgworker from unwinding
+// across PostgreSQL's PG_TRY/longjmp frames.
+int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+  try {
+    return ExportEventsAsArrowInternal(events, exporter);
+  } catch (const std::bad_alloc&) {
+    LogExporterWarning("Arrow export", "out of memory");
+    RecordExporterFailure("Arrow export OOM");
+    return 0;
+  } catch (const std::exception& e) {
+    LogExporterWarning("Arrow export exception", e.what());
+    RecordExporterFailure(e.what());
+    return 0;
+  }
+}
+
 // Build and export stats (records, metrics, ClickHouse rows) from events
-void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
-  elog(DEBUG1, "pg_stat_ch: ExportEventStats() called with %zu events", events.size());
+void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+  elog(DEBUG1, "pg_stat_ch: ExportEventStatsInternal() called with %zu events", events.size());
 
   exporter->BeginBatch();
 
@@ -283,6 +300,25 @@ void ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* expor
   elog(DEBUG1, "pg_stat_ch: finished processing %zu events", events.size());
 }
 
+// Exception barrier: protobuf arena, column factories, and per-row appends can
+// throw std::bad_alloc. Catching here prevents the throw from crossing the
+// bgworker's PG_TRY frame. Returns false on failure so the caller skips
+// CommitBatch and avoids flushing partial / stale exporter state.
+bool ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+  try {
+    ExportEventStatsInternal(events, exporter);
+    return true;
+  } catch (const std::bad_alloc&) {
+    LogExporterWarning("event stats export", "out of memory");
+    RecordExporterFailure("event stats OOM");
+    return false;
+  } catch (const std::exception& e) {
+    LogExporterWarning("event stats exception", e.what());
+    RecordExporterFailure(e.what());
+    return false;
+  }
+}
+
 }  // namespace
 
 void LogExporterWarning(const char* context, const char* message) {
@@ -340,7 +376,9 @@ int PschExportBatch(void) {
   }
 
   elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events", events.size());
-  ExportEventStats(events, exporter);
+  if (!ExportEventStats(events, exporter)) {
+    return 0;
+  }
 
   if (exporter->CommitBatch()) {
     if (psch_shared_state != nullptr) {
