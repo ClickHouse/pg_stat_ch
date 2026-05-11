@@ -342,13 +342,31 @@ void LogNegativeValue(const std::string& column_name, int64_t value) {
 
 extern "C" {
 
+// Exception barrier: factory and connection setup allocate via std::make_unique
+// and can throw std::bad_alloc.  An uncaught throw would unwind out of this
+// extern "C" entry point through PostgreSQL's bgworker startup (which has no
+// C++ handler), terminating the process via std::terminate -> SIGABRT.  The
+// postmaster would treat that as a backend crash and trigger DB-wide crash
+// recovery.  Instead, log FATAL so PostgreSQL records the cause and exits via
+// proc_exit; the postmaster respawns just our bgworker on its bgw_restart_time.
+// The exporter is the only reason this extension runs, so there is nothing
+// useful to do without one — graceful exit is strictly better than limping.
 bool PschExporterInit(void) {
-  if (psch_use_otel) {
-    g_exporter.exporter = MakeOpenTelemetryExporter();
-  } else {
-    g_exporter.exporter = MakeClickHouseExporter();
+  try {
+    if (psch_use_otel) {
+      g_exporter.exporter = MakeOpenTelemetryExporter();
+    } else {
+      g_exporter.exporter = MakeClickHouseExporter();
+    }
+    return g_exporter.exporter->EstablishNewConnection();
+  } catch (const std::bad_alloc&) {
+    ereport(FATAL, (errmsg("pg_stat_ch: out of memory constructing exporter; "
+                           "bgworker will be restarted")));
+    pg_unreachable();
+  } catch (const std::exception& e) {
+    ereport(FATAL, (errmsg("pg_stat_ch: exception constructing exporter: %s", e.what())));
+    pg_unreachable();
   }
-  return g_exporter.exporter->EstablishNewConnection();
 }
 
 int PschExportBatch(void) {
