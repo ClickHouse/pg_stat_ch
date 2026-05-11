@@ -122,14 +122,13 @@ Two independent versions exist:
 - Only bump `default_version` when SQL interface changes (new functions, types, etc.)
 - Schema changes require a migration script: `pg_stat_ch--OLD--NEW.sql`
 
+## ClickHouse Schema
+
+Committed schema files in `docker/init/` are **immutable once released**. Never modify `00-schema.sql` or previously released migration files. All schema changes must be done via new numbered migration files (e.g., `02-*.sql`). Migrations must work both for upgrades (applied on top of existing schema) and fresh installs (all files run sequentially).
+
 ## Reference Projects
 
-These projects are available in the workspace as references:
-
-- **`../pg_stat_monitor`** - Primary reference for PostgreSQL hook patterns, shared memory management, and query statistics collection. Our hook implementations are based on patterns from this project.
-- **`../clickhouse-cpp`** - C++ client library for ClickHouse; reference for HTTP transport to ClickHouse
-- **`../pg_duckdb`** - Another PG extension in C++; reference for C++/PostgreSQL integration patterns
-- **`../postgres`** - PostgreSQL source code for understanding internal APIs
+When you need to check PostgreSQL internals, pg_stat_monitor patterns, or other reference source code, ask the user to clone the relevant project locally (e.g., `git clone --depth 1 https://github.com/postgres/postgres.git`). Never attempt to access files outside this repository directory.
 
 ## Useful Skills
 
