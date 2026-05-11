@@ -39,6 +39,7 @@ extern "C" {
 #include "queue/psch_dsa.h"
 #include "queue/shmem.h"
 
+#include <cerrno>
 #include <csignal>
 
 #include "config/guc.h"
@@ -88,6 +89,7 @@ static void HandleConfigReload() {
 
 // Callback for bgworker process exit (registered via on_proc_exit)
 static void PschBgworkerShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
+  PschSetBgworkerPid(0);
   PschExporterShutdown();
 }
 
@@ -228,7 +230,12 @@ void PschSignalFlush(void) {
   }
 
   if (kill(bgworker_pid, SIGUSR2) != 0) {
-    ereport(WARNING, (errmsg("pg_stat_ch: failed to signal background worker")));
+    if (errno == ESRCH) {
+      PschSetBgworkerPid(0);
+      ereport(WARNING, (errmsg("pg_stat_ch: background worker not running")));
+    } else {
+      ereport(WARNING, (errmsg("pg_stat_ch: failed to signal background worker: %m")));
+    }
   }
 }
 
