@@ -21,7 +21,6 @@
 //   SIGUSR2 -> HandleFlushSignal (extension-specific - immediate flush)
 //   SIGPIPE -> SIG_IGN (ignore broken pipe from network)
 
-extern "C" {
 #include "postgres.h"
 
 #include "miscadmin.h"
@@ -34,12 +33,11 @@ extern "C" {
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
 #include "utils/wait_event.h"
-}
 
 #include "queue/psch_dsa.h"
 #include "queue/shmem.h"
 
-#include <csignal>
+#include <signal.h>
 
 #include "config/guc.h"
 #include "export/stats_exporter.h"
@@ -69,7 +67,7 @@ static void HandleFlushSignal(SIGNAL_ARGS) {
 //
 // If we don't use this handler, operations that require barrier acknowledgment
 // (like DROP DATABASE) will hang indefinitely waiting for this worker.
-static void SetupSignalHandlers() {
+static void SetupSignalHandlers(void) {
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   pqsignal(SIGTERM, die);
   pqsignal(SIGUSR1, procsignal_sigusr1_handler);  // REQUIRED for barriers
@@ -78,7 +76,7 @@ static void SetupSignalHandlers() {
 }
 
 // Handle SIGHUP config reload
-static void HandleConfigReload() {
+static void HandleConfigReload(void) {
   if (ConfigReloadPending != 0) {
     ConfigReloadPending = 0;
     ProcessConfigFile(PGC_SIGHUP);
@@ -87,13 +85,14 @@ static void HandleConfigReload() {
 }
 
 // Callback for bgworker process exit (registered via on_proc_exit)
-static void PschBgworkerShutdown([[maybe_unused]] int code, [[maybe_unused]] Datum arg) {
+static void PschBgworkerShutdown(int code pg_attribute_unused(),
+                                 Datum arg pg_attribute_unused()) {
   PschExporterShutdown();
 }
 
 // Process pending signals: barriers, interrupts (SIGTERM/SIGINT), config reload.
 // Called after WaitLatch wakes and between batches in the drain loop.
-static void ProcessPendingSignals() {
+static void ProcessPendingSignals(void) {
   // Barriers first: ProcSignalBarrierPending is set when operations like
   // DROP DATABASE need all backends to acknowledge. Failing to process
   // causes those operations to hang.
@@ -108,7 +107,7 @@ static void ProcessPendingSignals() {
 // indicates the queue is nearly empty. Each batch gets its own PG_TRY/PG_CATCH
 // so an error on batch N+1 doesn't lose batches 1..N. Signals are processed
 // between batches to stay responsive to SIGTERM, barriers, and config reload.
-static void ExportBatchWithRecovery() {
+static void ExportBatchWithRecovery(void) {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
   for (;;) {
@@ -137,11 +136,11 @@ static void ExportBatchWithRecovery() {
     }
   }
 
-  pgstat_report_activity(STATE_IDLE, nullptr);
+  pgstat_report_activity(STATE_IDLE, NULL);
 }
 
 // Initialize wait event for pg_stat_activity visibility
-static uint32 InitializeWaitEvent() {
+static uint32 InitializeWaitEvent(void) {
 #if PG_VERSION_NUM >= 170000
   return WaitEventExtensionNew("PgStatChExporter");
 #else
@@ -150,7 +149,7 @@ static uint32 InitializeWaitEvent() {
 }
 
 // Calculate sleep time with exponential backoff on failures
-static int CalculateSleepMs() {
+static int CalculateSleepMs(void) {
   int sleep_ms = psch_flush_interval_ms;
   int failures = PschGetConsecutiveFailures();
   if (failures > 0) {
@@ -178,12 +177,10 @@ static void RunExportCycle(uint32 wait_event) {
   }
 }
 
-extern "C" {
-
-void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
+void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
   SetupSignalHandlers();
   BackgroundWorkerUnblockSignals();
-  BackgroundWorkerInitializeConnection("postgres", nullptr, 0);
+  BackgroundWorkerInitializeConnection("postgres", NULL, 0);
 
   // Register cleanup callback for graceful shutdown
   on_proc_exit(PschBgworkerShutdown, 0);
@@ -209,7 +206,7 @@ void PschBgworkerMain([[maybe_unused]] Datum main_arg) {
     elog(WARNING,
          "pg_stat_ch: failed to connect to ClickHouse on startup, will retry on first export");
   }
-  pgstat_report_activity(STATE_IDLE, nullptr);
+  pgstat_report_activity(STATE_IDLE, NULL);
 
   // Main loop (pattern from worker_spi.c:206-290)
   for (;;) {
@@ -243,10 +240,8 @@ void PschRegisterBgworker(void) {
   worker.bgw_restart_time = 10;  // Restart after 10 seconds on crash
   strlcpy(worker.bgw_library_name, "pg_stat_ch", BGW_MAXLEN);
   strlcpy(worker.bgw_function_name, "PschBgworkerMain", BGW_MAXLEN);
-  worker.bgw_main_arg = static_cast<Datum>(0);
+  worker.bgw_main_arg = (Datum)0;
   worker.bgw_notify_pid = 0;
 
   RegisterBackgroundWorker(&worker);
 }
-
-}  // extern "C"
