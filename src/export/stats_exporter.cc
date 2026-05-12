@@ -39,8 +39,21 @@ struct ExporterState {
   std::unique_ptr<StatsExporter> exporter;
 };
 
-// Bgworker-local exporter state (no locking needed)
-ExporterState g_exporter;
+// [[clang::no_destroy]] (Clang only — GCC has no equivalent).  Suppresses
+// the implicit exit-time destructor on namespace-scope variables that need
+// one.  PschExporterShutdown (registered with on_proc_exit) resets
+// g_exporter.exporter before the C++ atexit chain ever runs, so the
+// implicit ~ExporterState would be a no-op anyway.  Making the suppression
+// explicit satisfies -Werror=global-constructors (Clang's
+// "namespace-scope variable with non-trivial dtor" diagnostic).
+#if __has_cpp_attribute(clang::no_destroy)
+#define PSCH_NO_DESTROY [[clang::no_destroy]]
+#else
+#define PSCH_NO_DESTROY
+#endif
+
+// Bgworker-local exporter state (no locking needed).
+PSCH_NO_DESTROY ExporterState g_exporter;
 
 // Clamp a field length to its buffer maximum, warning on overflow.
 template <typename LenT>
