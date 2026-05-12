@@ -162,6 +162,14 @@ int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExpor
     RecordExporterFailure("Arrow batch build/send failed");
   }
 
+  // INVARIANT: `builder` (and any other C++ RAII object) is still live below.
+  // The PG calls that follow — pg_atomic_fetch_add_u64, PschRecordExportSuccess,
+  // RecordExporterFailure — must not longjmp, or builder's Arrow/protobuf/ZSTD
+  // allocations leak (heap, not palloc) when destructors are skipped.  None
+  // longjmp today (LWLock acquire is not interruptible; atomics are pure),
+  // but if you add a PG call here that can longjmp (elog(ERROR), table_open,
+  // SPI, etc.), wrap the builder ops above in a nested {} block first so it
+  // destructs before this point.
   if (!export_failed && total_exported > 0) {
     if (psch_shared_state != nullptr) {
       pg_atomic_fetch_add_u64(&psch_shared_state->exported, total_exported);
@@ -384,7 +392,8 @@ bool PschExporterInit(void) {
 
 // Exception barrier: DequeueEvents reserves a std::vector sized for
 // psch_batch_max events and can throw std::bad_alloc. Catching here prevents
-// the throw from crossing the bgworker's PG_TRY frame.
+// C++ exceptions from escaping this extern "C" entry point or crossing
+// PostgreSQL C frames.
 int PschExportBatch(void) {
   try {
     elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
@@ -415,6 +424,13 @@ int PschExportBatch(void) {
       return 0;
     }
 
+    // INVARIANT: `events` (std::vector<PschEvent>) and any other C++ RAII
+    // object in this scope must not be live across a PG call that can longjmp.
+    // CommitBatch, pg_atomic_fetch_add_u64, and PschRecordExportSuccess do not
+    // longjmp today, but if you add a PG call (e.g. elog(ERROR), table_open)
+    // here, narrow the scope of `events` to a nested {} block first or move
+    // the call below this point.  A longjmp through these frames skips
+    // destructors and leaks the events buffer (heap, not palloc).
     if (exporter->CommitBatch()) {
       if (psch_shared_state != nullptr) {
         pg_atomic_fetch_add_u64(&psch_shared_state->exported, exporter->NumExported());
@@ -434,26 +450,46 @@ int PschExportBatch(void) {
   }
 }
 
+// Exception barrier: NumConsecutiveFailures / ResetFailures are trivial
+// `return int_;` / `member = 0` today, but they are virtual and could grow.
+// Match the rest of the C-ABI surface so a future override that allocates
+// cannot escape this entry point.
 void PschResetRetryState(void) {
-  if (g_exporter.exporter)
-    g_exporter.exporter->ResetFailures();
+  try {
+    if (g_exporter.exporter)
+      g_exporter.exporter->ResetFailures();
+  } catch (const std::exception& e) {
+    LogExporterWarning("reset retry state exception", e.what());
+  }
 }
 
 int PschGetRetryDelayMs(void) {
-  StatsExporter* exporter = g_exporter.exporter.get();
-  if (!exporter || exporter->NumConsecutiveFailures() <= 0) {
+  try {
+    StatsExporter* exporter = g_exporter.exporter.get();
+    if (!exporter) {
+      return 0;
+    }
+    int failures = exporter->NumConsecutiveFailures();
+    if (failures <= 0) {
+      return 0;
+    }
+    // Exponential backoff: base * 2^(failures-1), capped at max
+    int capped_failures = (failures > kMaxConsecutiveFailures) ? kMaxConsecutiveFailures : failures;
+    int delay = kBaseDelayMs * (1 << (capped_failures - 1));
+    return (delay > kMaxDelayMs) ? kMaxDelayMs : delay;
+  } catch (const std::exception& e) {
+    LogExporterWarning("retry delay exception", e.what());
     return 0;
   }
-  // Exponential backoff: base * 2^(failures-1), capped at max
-  int capped_failures = (exporter->NumConsecutiveFailures() > kMaxConsecutiveFailures)
-                            ? kMaxConsecutiveFailures
-                            : exporter->NumConsecutiveFailures();
-  int delay = kBaseDelayMs * (1 << (capped_failures - 1));
-  return (delay > kMaxDelayMs) ? kMaxDelayMs : delay;
 }
 
 int PschGetConsecutiveFailures(void) {
-  return g_exporter.exporter->NumConsecutiveFailures();
+  try {
+    return g_exporter.exporter ? g_exporter.exporter->NumConsecutiveFailures() : 0;
+  } catch (const std::exception& e) {
+    LogExporterWarning("get failures exception", e.what());
+    return 0;
+  }
 }
 
 // Exception barrier: exporter destructors (clickhouse-cpp socket close, gRPC
