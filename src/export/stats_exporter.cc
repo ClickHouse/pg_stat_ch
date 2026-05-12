@@ -8,6 +8,7 @@ extern "C" {
 
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,37 @@ struct ExporterState {
 
 // Bgworker-local exporter state (no locking needed).
 PSCH_NO_DESTROY ExporterState g_exporter;
+
+// Catch-all for C++ exceptions that escape every explicit barrier in the
+// extension.  The default std::terminate calls abort() -> SIGABRT, which the
+// postmaster treats as a backend crash and uses to trigger DB-wide crash
+// recovery (every connection severed, WAL replayed).  Routing through
+// ereport(FATAL) instead gives us a clean proc_exit(1): postmaster respawns
+// just our bgworker on its bgw_restart_time.  The explicit catches elsewhere
+// in this file still run first when they apply — this handler is only the
+// backstop for whatever they miss.
+//
+// The handler is installed inside PschExporterInit (below) rather than from
+// _PG_init: after the C99 port of the plugin layer, _PG_init lives in C and
+// cannot call std::set_terminate, and PschExporterInit is the first C++ code
+// that runs in the bgworker — the only process that ever executes our C++
+// exception-throwing code paths.
+[[noreturn]] void PschTerminateHandler() noexcept {
+  if (auto eptr = std::current_exception()) {
+    try {
+      std::rethrow_exception(eptr);
+    } catch (const std::bad_alloc&) {
+      ereport(FATAL, (errmsg("pg_stat_ch: uncaught std::bad_alloc")));
+    } catch (const std::exception& e) {
+      ereport(FATAL, (errmsg("pg_stat_ch: uncaught C++ exception: %s", e.what())));
+    } catch (...) {
+      ereport(FATAL, (errmsg("pg_stat_ch: uncaught non-standard C++ exception")));
+    }
+  } else {
+    ereport(FATAL, (errmsg("pg_stat_ch: std::terminate called without an active exception")));
+  }
+  pg_unreachable();
+}
 
 // Clamp a field length to its buffer maximum, warning on overflow.
 template <typename LenT>
@@ -373,6 +405,11 @@ extern "C" {
 // The exporter is the only reason this extension runs, so there is nothing
 // useful to do without one — graceful exit is strictly better than limping.
 bool PschExporterInit(void) {
+  // Install the C++ terminate handler before any other C++ work runs in this
+  // process.  See PschTerminateHandler above for the rationale.  Idempotent —
+  // a second call in the same process would just reinstall the same handler.
+  std::set_terminate(PschTerminateHandler);
+
   try {
     if (psch_use_otel) {
       g_exporter.exporter = MakeOpenTelemetryExporter();
