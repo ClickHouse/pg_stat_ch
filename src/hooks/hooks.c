@@ -51,17 +51,29 @@ static emit_log_hook_type prev_emit_log_hook = NULL;
 // Track nesting level to identify top-level queries
 static int nesting_level = 0;
 
-// CPU time tracking via getrusage
-static struct rusage rusage_start;
+// Per-query frame indexed by nesting_level: each query gets its own rusage
+// baseline and start timestamp, and its queryid is stashed so a nested SPI
+// call can read its parent.  Replaces three single statics whose lifetimes
+// collapsed under SPI: the outer's rusage baseline was overwritten by the
+// inner's getrusage(), so the outer's CPU delta ended up measuring just the
+// nested portion.
+//
+// PSCH_MAX_NESTING_DEPTH is a small fixed cap.  Frames at greater depth are
+// not written; the corresponding emit at that depth falls back to zero CPU
+// and parent_query_id 0.  PL/pgSQL recursion is capped well below 16 by
+// PostgreSQL itself (max_stack_depth typically yields a much shallower
+// effective limit), so the cap is defensive against runaway recursive
+// functions rather than a normal-case constraint.
+#define PSCH_MAX_NESTING_DEPTH 16
+typedef struct PschQueryFrame {
+  uint64 queryid;
+  struct rusage rusage_start;
+  TimestampTz query_start_ts;
+} PschQueryFrame;
+static PschQueryFrame query_stack[PSCH_MAX_NESTING_DEPTH];
 
 // Deadlock prevention for emit_log_hook
 static bool disable_error_capture = false;
-
-// Track whether the current query started at top level
-static bool current_query_is_top_level = false;
-
-// Track query start time for duration calculation
-static TimestampTz query_start_ts = 0;
 
 // System initialization flag - set after hooks are installed and shmem is ready
 static bool system_init = false;
@@ -311,16 +323,26 @@ static void InitEventPartial(PschEvent* event) {
   event->query[0] = '\0';
 }
 
-static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level,
+static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, uint64 parent_query_id,
                           PschCmdType cmd_type) {
   InitEventPartial(event);
   event->ts_start = ts_start;
   event->dbid = MyDatabaseId;
   event->userid = GetUserId();
   event->pid = MyProcPid;
-  event->top_level = top_level;
+  event->parent_query_id = parent_query_id;
   event->cmd_type = cmd_type;
   ResolveNames(event);
+}
+
+// Return the queryid of the query at depth `nesting_level - 1` — i.e., the
+// caller of whatever is currently emitting.  0 at top level or when depth
+// exceeded PSCH_MAX_NESTING_DEPTH (no frame was written for that slot).
+static uint64 GetParentQueryId(void) {
+  if (nesting_level <= 0 || nesting_level > PSCH_MAX_NESTING_DEPTH) {
+    return 0;
+  }
+  return query_stack[nesting_level - 1].queryid;
 }
 
 static void CopyClientContext(PschEvent* event) {
@@ -412,10 +434,9 @@ static void CopyParallelWorkerInfo(PschEvent* event pg_attribute_unused(),
 #endif
 }
 
-static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
-                                    int64 cpu_sys_us) {
-  InitBaseEvent(event, query_start_ts, current_query_is_top_level,
-                ConvertCmdType(query_desc->operation));
+static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, TimestampTz start_ts,
+                                    uint64 parent_query_id, int64 cpu_user_us, int64 cpu_sys_us) {
+  InitBaseEvent(event, start_ts, parent_query_id, ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
   event->rows = query_desc->estate->es_processed;
   event->cpu_user_time_us = cpu_user_us;
@@ -432,7 +453,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
     CopyIoTiming(event, &query_desc->totaltime->bufusage);
     CopyWalUsage(event, &query_desc->totaltime->walusage);
   } else {
-    event->duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
+    event->duration_us = (uint64)(GetCurrentTimestamp() - start_ts);
   }
 
   CopyJitInstrumentation(event, query_desc);
@@ -498,16 +519,17 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     return;
   }
 
-  // Record if this is a top-level query (before nesting_level changes in Run)
-  if (nesting_level == 0) {
-    current_query_is_top_level = true;
-    query_start_ts = GetCurrentTimestamp();
-    // Capture CPU time baseline for top-level queries
+  // Push our frame at the current depth, before ExecutorRun bumps nesting_level.
+  // Each frame holds its own rusage baseline so nested CPU deltas don't ride on
+  // the outer query's baseline.  The queryid is what nested queries will read
+  // back as their parent_query_id.
+  if (nesting_level < PSCH_MAX_NESTING_DEPTH) {
+    PschQueryFrame* frame = &query_stack[nesting_level];
+    frame->queryid = query_desc->plannedstmt->queryId;
+    frame->query_start_ts = GetCurrentTimestamp();
     if (psch_enabled) {
-      getrusage(RUSAGE_SELF, &rusage_start);
+      getrusage(RUSAGE_SELF, &frame->rusage_start);
     }
-  } else {
-    current_query_is_top_level = false;
   }
 
   if (prev_executor_start != NULL) {
@@ -612,6 +634,12 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     InstrEndLoop(query_desc->totaltime);
   }
 
+  // Pull our frame back out — same slot ExecutorStart wrote.  Null only if
+  // depth exceeded the cap; in that case start_ts and CPU delta are zero.
+  const PschQueryFrame* frame =
+      (nesting_level < PSCH_MAX_NESTING_DEPTH) ? &query_stack[nesting_level] : NULL;
+  TimestampTz start_ts = frame ? frame->query_start_ts : 0;
+
   // Compute duration early for sampling filter
   uint64 duration_us;
   if (query_desc->totaltime != NULL) {
@@ -621,7 +649,7 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     duration_us = (uint64)(query_desc->totaltime->total * 1000000.0);
 #endif
   } else {
-    duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
+    duration_us = (uint64)(GetCurrentTimestamp() - start_ts);
   }
 
   if (!ShouldSampleEvent(duration_us)) {
@@ -637,13 +665,14 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
   struct rusage rusage_end;
-  if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
-    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, rusage_start.ru_utime);
-    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, rusage_start.ru_stime);
+  if (frame != NULL && getrusage(RUSAGE_SELF, &rusage_end) == 0) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, frame->rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, frame->rusage_start.ru_stime);
   }
 
   PschEvent event;
-  BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us);
+  BuildEventFromQueryDesc(query_desc, &event, start_ts, GetParentQueryId(), cpu_user_us,
+                          cpu_sys_us);
   PschEnqueueEvent(&event);
 
   if (prev_executor_end != NULL) {
@@ -655,10 +684,10 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
 
 // Build a PschEvent for utility statements (no QueryDesc available)
 static void BuildEventForUtility(PschEvent* event, uint64 query_id, TimestampTz start_ts,
-                                 uint64 duration_us, bool is_top_level, uint64 rows,
+                                 uint64 duration_us, uint64 parent_query_id, uint64 rows,
                                  BufferUsage* bufusage, WalUsage* walusage, int64 cpu_user_us,
                                  int64 cpu_sys_us) {
-  InitBaseEvent(event, start_ts, is_top_level, PSCH_CMD_UTILITY);
+  InitBaseEvent(event, start_ts, parent_query_id, PSCH_CMD_UTILITY);
   event->queryid = query_id;
   event->duration_us = duration_us;
   event->rows = rows;
@@ -760,8 +789,16 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
     return;
   }
 
+  // Capture parent before pushing our own frame.
+  uint64 parent_query_id = GetParentQueryId();
+
+  // Push our frame so any executor hooks fired from within this utility (e.g.
+  // the SELECT inside CREATE TABLE AS) read us as their parent_query_id.
+  if (nesting_level < PSCH_MAX_NESTING_DEPTH) {
+    query_stack[nesting_level].queryid = pstmt->queryId;
+  }
+
   // Capture state before execution
-  bool is_top_level = (nesting_level == 0);
   TimestampTz start_ts = GetCurrentTimestamp();
   uint64 query_id = pstmt->queryId;
   BufferUsage bufusage_start = pgBufferUsage;
@@ -802,7 +839,7 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   }
 
   PschEvent event;
-  BuildEventForUtility(&event, query_id, start_ts, duration_us, is_top_level,
+  BuildEventForUtility(&event, query_id, start_ts, duration_us, parent_query_id,
                        GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta, cpu_user_us,
                        cpu_sys_us);
   PschEnqueueEvent(&event);
@@ -850,7 +887,7 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // message, SQLSTATE, and client/session metadata.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
-  InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
+  InitBaseEvent(&event, GetCurrentTimestamp(), GetParentQueryId(), PSCH_CMD_UNKNOWN);
 
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
   event.err_elevel = (uint8)(edata->elevel);
