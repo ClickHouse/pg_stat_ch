@@ -635,10 +635,14 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 
   // Pull our frame back out — same slot ExecutorStart wrote.  Null only if
-  // depth exceeded the cap; in that case start_ts and CPU delta are zero.
+  // depth exceeded the cap; in that case CPU delta stays zero and start_ts
+  // falls back to "now" so any `GetCurrentTimestamp() - start_ts` path yields
+  // ~0us rather than ~25 years of µs from subtracting 0 (the PG epoch).  In
+  // practice query_desc->totaltime supplies a real duration from instrumentation,
+  // so the fallback subtraction is only used when totaltime wasn't allocated.
   const PschQueryFrame* frame =
       (nesting_level < PSCH_MAX_NESTING_DEPTH) ? &query_stack[nesting_level] : NULL;
-  TimestampTz start_ts = frame ? frame->query_start_ts : 0;
+  TimestampTz start_ts = frame ? frame->query_start_ts : GetCurrentTimestamp();
 
   // Compute duration early for sampling filter
   uint64 duration_us;
