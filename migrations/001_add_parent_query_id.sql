@@ -9,4 +9,4 @@
 --   clickhouse-client < migrations/001_add_parent_query_id.sql
 
 ALTER TABLE pg_stat_ch.events_raw
-    ADD COLUMN IF NOT EXISTS parent_query_id UInt64 DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS parent_query_id Int64 DEFAULT 0;
