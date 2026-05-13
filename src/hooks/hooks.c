@@ -555,11 +555,10 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     return;
   }
 
-  // Push our frame.  The matching pop is in PschExecutorEnd.  If the body
-  // longjmps before End fires, the PG_CATCH below — and the same shape in
-  // Run/Finish — pops nesting_level on the unwind path so depth stays
-  // balanced.  See the comment at the top of the file for why push and
-  // increment are tied together.
+  // Push our frame.  The matching pop is in PschExecutorEnd.  The PG_TRY
+  // wraps everything between push and function-return so any longjmp
+  // before End fires — including from InstrAlloc OOM — pops the frame on
+  // the unwind.  Run/Finish use the same shape for the body.
   PushQueryFrame(query_desc->plannedstmt->queryId);
 
   PG_TRY();
@@ -569,6 +568,18 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     } else {
       standard_ExecutorStart(query_desc, eflags);
     }
+
+    if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
+      if (query_desc->totaltime == NULL) {
+        MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
+#if PG_VERSION_NUM < 140000
+        query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+#else
+        query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
+#endif
+        MemoryContextSwitchTo(oldcxt);
+      }
+    }
   }
   PG_CATCH();
   {
@@ -576,18 +587,6 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     PG_RE_THROW();
   }
   PG_END_TRY();
-
-  if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
-    if (query_desc->totaltime == NULL) {
-      MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
-#if PG_VERSION_NUM < 140000
-      query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
-#else
-      query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
-#endif
-      MemoryContextSwitchTo(oldcxt);
-    }
-  }
 }
 
 // Run does no nesting_level bookkeeping of its own — the frame was pushed
