@@ -47,6 +47,7 @@ void _PG_init(void) {
 // Returns the extension version string
 PG_FUNCTION_INFO_V1(pg_stat_ch_version);
 Datum pg_stat_ch_version(PG_FUNCTION_ARGS) {
+  (void)fcinfo;
   PG_RETURN_TEXT_P(cstring_to_text(PG_STAT_CH_VERSION));
 }
 
@@ -147,6 +148,7 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
 // Resets all queue counters to zero
 PG_FUNCTION_INFO_V1(pg_stat_ch_reset);
 Datum pg_stat_ch_reset(PG_FUNCTION_ARGS) {
+  (void)fcinfo;
   PschResetStats();
   PG_RETURN_VOID();
 }
@@ -155,6 +157,7 @@ Datum pg_stat_ch_reset(PG_FUNCTION_ARGS) {
 // Signals the background worker to immediately flush pending events
 PG_FUNCTION_INFO_V1(pg_stat_ch_flush);
 Datum pg_stat_ch_flush(PG_FUNCTION_ARGS) {
+  (void)fcinfo;
   PschSignalFlush();
   PG_RETURN_VOID();
 }

@@ -31,11 +31,59 @@ find_package(opentelemetry-cpp CONFIG REQUIRED)
 find_package(ClickHouseCpp REQUIRED)
 find_package(Arrow CONFIG REQUIRED)
 
-# Collect source files
-file(GLOB_RECURSE SOURCES src/*.cc src/*.c)
+# Source layout: src/*.c is the C plugin layer; src/export/*.cc is the C++
+# exporter.  Keeping the PG ↔ extension boundary in pure C is what prevents
+# an uncaught C++ throw from unwinding across PG's longjmp frames.  Reject
+# anything that fell outside the two legitimate globs — C++ in the wrong
+# location, or any C++ extension we don't compile (.cxx/.cpp/.c++) that
+# would otherwise be silently dropped from the build.
+file(GLOB_RECURSE PG_STAT_CH_PLUGIN_SOURCES CONFIGURE_DEPENDS src/*.c)
+file(GLOB_RECURSE PG_STAT_CH_EXPORTER_SOURCES CONFIGURE_DEPENDS src/export/*.cc)
+
+# CONFIGURE_DEPENDS: re-run the glob on every build, not just at first
+# configure.  Without it, a newly-added src/foo.cc would silently slip past
+# the stray check until someone manually reconfigured.
+file(GLOB_RECURSE PG_STAT_CH_OFFENDING_SOURCES CONFIGURE_DEPENDS
+  src/*.cc src/*.cxx src/*.cpp src/*.c++
+)
+list(FILTER PG_STAT_CH_OFFENDING_SOURCES
+  EXCLUDE REGEX "^${CMAKE_SOURCE_DIR}/src/export/.*\\.cc$")
+if(PG_STAT_CH_OFFENDING_SOURCES)
+  message(FATAL_ERROR
+    "pg_stat_ch: C++ sources are allowed only as *.cc under src/export/.  "
+    "Port to C, move under src/export/, or rename to .cc.  Offending:\n"
+    "  ${PG_STAT_CH_OFFENDING_SOURCES}")
+endif()
+
+# Defense in depth on top of the C-only plugin lock above: when building the
+# exporter with Clang, forbid namespace-scope C++ variables that need a
+# non-trivial constructor or destructor.  -Wglobal-constructors catches both
+# halves at namespace scope: the load-time "std::thread above main" / "static
+# std::map<...> g_cache" hazard, and the exit-time "destructor runs after PG
+# has already torn down" hazard.
+#
+# Clang-only: GCC has no equivalent flag (the warning has been requested
+# upstream for years but never landed).  GCC builds rely on code review +
+# clang-tidy.  Our CI runs an additional Clang build job so regressions are
+# caught before they merge.
+#
+# -Wexit-time-destructors (the sibling warning) is intentionally NOT enabled
+# here.  At namespace scope, -Wglobal-constructors already covers what we
+# care about.  -Wexit-time-destructors additionally fires on function-local
+# statics — the two cached Arrow DataType shared_ptrs in arrow_batch.cc
+# would trip it today.  Not enabling it avoids those annotations for now;
+# easy to layer on later if a regression motivates it.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set_source_files_properties(${PG_STAT_CH_EXPORTER_SOURCES}
+    PROPERTIES COMPILE_OPTIONS
+      "-Wglobal-constructors;-Werror=global-constructors")
+endif()
 
 # Build shared library
-add_library(pg_stat_ch SHARED ${SOURCES})
+add_library(pg_stat_ch SHARED
+  ${PG_STAT_CH_PLUGIN_SOURCES}
+  ${PG_STAT_CH_EXPORTER_SOURCES}
+)
 
 target_compile_features(pg_stat_ch PRIVATE cxx_std_17)
 target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")

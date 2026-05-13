@@ -115,3 +115,45 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y clang-format
           find src include -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror
+
+  # Clang build: exercises -Werror=global-constructors on the C++ exporter
+  # (Clang-only flag).  GCC has no equivalent, so we run a separate Clang job
+  # to ensure the warning catches regressions before they merge.  One PG
+  # version / one arch is enough — this job exists to surface compile errors,
+  # not to duplicate test coverage.
+  build-clang:
+    name: Build (Clang, PG 18)
+    runs-on: depot-ubuntu-22.04-16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
+          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install PostgreSQL 18 + Clang
+        run: |
+          sudo apt-get install -y \
+            postgresql-18 postgresql-server-dev-18 \
+            cmake ninja-build clang libssl-dev pkg-config curl zip unzip tar
+
+      - uses: ./.github/actions/setup-vcpkg
+        with:
+          triplet: x64-linux-pic
+
+      - name: Configure (Clang)
+        run: |
+          cmake --preset default \
+            -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build
+        run: cmake --build build --parallel

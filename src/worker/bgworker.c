@@ -49,6 +49,7 @@ static uint32 psch_wait_event_main = 0;
 // SIGUSR2 handler: wake the worker for immediate flush.
 // Note: SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
 static void HandleFlushSignal(SIGNAL_ARGS) {
+  (void)postgres_signal_arg;
   int save_errno = errno;
   SetLatch(MyLatch);
   errno = save_errno;
