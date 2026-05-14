@@ -1,0 +1,44 @@
+services:
+  # Postgres + pg_stat_ch configured to use the OTel/Arrow export path with
+  # debug_arrow_dump_dir set, so each Arrow IPC batch is written to a
+  # host-mounted directory.  No real OTel collector is needed for validation:
+  # the gRPC send fails (otel_endpoint points at a non-existent collector),
+  # but MaybeDumpArrowBatch() runs *before* the send, so IPC files still land.
+  # See t/026_arrow_dump.pl for the same trick at the TAP layer.
+  postgres:
+    image: quickstart-postgres:latest
+    pull_policy: never
+    container_name: psch-quickstart-pg-otel
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_ch"
+      - "-c"
+      - "pg_stat_ch.enabled=on"
+      - "-c"
+      - "pg_stat_ch.use_otel=on"
+      - "-c"
+      - "pg_stat_ch.otel_arrow_passthrough=on"
+      - "-c"
+      - "pg_stat_ch.otel_endpoint=localhost:14317"
+      - "-c"
+      - "pg_stat_ch.debug_arrow_dump_dir=/var/lib/postgresql/arrow-dump"
+      - "-c"
+      - "pg_stat_ch.flush_interval_ms=250"
+      - "-c"
+      - "pg_stat_ch.batch_max=1000"
+      - "-c"
+      - "track_io_timing=on"
+    volumes:
+      - ./arrow-dump:/var/lib/postgresql/arrow-dump
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
