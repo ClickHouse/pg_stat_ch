@@ -351,6 +351,14 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, uint64 parent_
 static PschQueryFrame* PushQueryFrame(uint64 queryid) {
   nesting_level++;
   if (nesting_level >= PSCH_MAX_NESTING_DEPTH) {
+    // Runaway nesting — log once per overflowing push so it's visible if it
+    // happens in practice, but stay non-fatal so the query itself still
+    // runs.  The pop on this push is still balanced (nesting_level keeps
+    // incrementing past the cap).
+    elog(WARNING,
+         "pg_stat_ch: query nesting depth %d exceeds cap %d; CPU and "
+         "parent_query_id telemetry will be missing for this frame",
+         nesting_level, PSCH_MAX_NESTING_DEPTH);
     return NULL;
   }
   PschQueryFrame* frame = &query_stack[nesting_level];
@@ -885,7 +893,10 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
     cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, frame->rusage_start.ru_stime);
   }
 
-  TimestampTz start_ts = frame ? frame->query_start_ts : 0;
+  // start_ts falls back to "now" so ts_start in the emitted event is at
+  // least approximately correct rather than the PG epoch.  Matches the
+  // same fallback in PschExecutorEnd.
+  TimestampTz start_ts = frame ? frame->query_start_ts : GetCurrentTimestamp();
   uint64 parent_query_id = frame ? frame->parent_query_id : 0;
 
   PschEvent event;
