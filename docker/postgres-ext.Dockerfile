@@ -34,6 +34,7 @@ WORKDIR /build/pg_stat_ch
 # Copy dependency manifests first for layer caching
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY triplets/ triplets/
+COPY overlay-ports/ overlay-ports/
 COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
@@ -41,11 +42,15 @@ COPY src/ src/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
 
-RUN cmake -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-    -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
-    -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
+# Pick the vcpkg triplet that matches the host architecture so the same
+# Dockerfile builds on x64 CI runners and on arm64 dev boxes (Apple Silicon
+# under colima/orbstack/etc.).
+RUN TRIPLET="$([ "$(uname -m)" = "aarch64" ] && echo arm64-linux-pic || echo x64-linux-pic)" \
+    && cmake -B build -G Ninja \
+       -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+       -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+       -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
+       -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
     && cmake --build build --parallel $(nproc)
 
 FROM postgres:18-bookworm
