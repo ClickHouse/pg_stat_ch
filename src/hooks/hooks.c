@@ -48,16 +48,22 @@ static ExecutorEnd_hook_type prev_executor_end = NULL;
 static ProcessUtility_hook_type prev_process_utility = NULL;
 static emit_log_hook_type prev_emit_log_hook = NULL;
 
-// nesting_level is the current depth of pushed frames: it moves only where
-// frames move (PschExecutorStart++ / PschExecutorEnd--, and the same pair
-// inside PschProcessUtility around its body).  Run/Finish do not touch it.
-// Tying push to the same point as the increment means every reader knows
-// exactly what each slot represents — no offset reinterpretation by phase.
+// nesting_level is the slot index of the currently-active frame: it moves
+// only where frames move (PschExecutorStart++ / PschExecutorEnd--, and the
+// same pair inside PschProcessUtility around its body).  Run/Finish do not
+// touch it.  Tying push to the same point as the increment means every
+// reader knows exactly what each slot represents — no offset
+// reinterpretation by phase.
+//
+// nesting_level == -1 is the resting state (no query active).  Push
+// increments before writing; pop reads before decrementing.  A negative
+// nesting_level doubles as the "no active query" check used by
+// TopQueryFrame/PopQueryFrame.
 //
 // parent_query_id is captured into the frame at push time, so any reader
 // fetches frame->parent_query_id directly regardless of whether it's at an
 // emit hook or inside the body via CaptureLogEvent.  The top of the stack
-// is uniformly slot[nesting_level - 1].
+// is uniformly slot[nesting_level].
 //
 // PSCH_MAX_NESTING_DEPTH is a small fixed cap.  Frames at greater depth are
 // not written; the corresponding emit at that depth falls back to zero CPU
@@ -72,7 +78,7 @@ typedef struct PschQueryFrame {
   TimestampTz query_start_ts;
 } PschQueryFrame;
 static PschQueryFrame query_stack[PSCH_MAX_NESTING_DEPTH];
-static int nesting_level = 0;
+static int nesting_level = -1;
 
 // Deadlock prevention for emit_log_hook
 static bool disable_error_capture = false;
@@ -343,42 +349,40 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, uint64 parent_
 // previous top, so every later reader fetches it directly from the frame
 // without reinterpreting slot offsets.
 static PschQueryFrame* PushQueryFrame(uint64 queryid) {
-  uint64 parent = (nesting_level > 0 && nesting_level <= PSCH_MAX_NESTING_DEPTH)
-                      ? query_stack[nesting_level - 1].queryid
-                      : 0;
-  PschQueryFrame* frame = NULL;
-  if (nesting_level < PSCH_MAX_NESTING_DEPTH) {
-    frame = &query_stack[nesting_level];
-    frame->queryid = queryid;
-    frame->parent_query_id = parent;
-    frame->query_start_ts = GetCurrentTimestamp();
-    getrusage(RUSAGE_SELF, &frame->rusage_start);
-  }
   nesting_level++;
+  if (nesting_level >= PSCH_MAX_NESTING_DEPTH) {
+    return NULL;
+  }
+  PschQueryFrame* frame = &query_stack[nesting_level];
+  frame->queryid = queryid;
+  frame->parent_query_id = (nesting_level > 0) ? query_stack[nesting_level - 1].queryid : 0;
+  frame->query_start_ts = GetCurrentTimestamp();
+  getrusage(RUSAGE_SELF, &frame->rusage_start);
   return frame;
 }
 
 // Return a pointer to the top frame (the currently-active query) without
 // changing depth.  NULL if the stack is empty or depth is past the cap.
 static const PschQueryFrame* TopQueryFrame(void) {
-  if (nesting_level <= 0 || nesting_level > PSCH_MAX_NESTING_DEPTH) {
+  if (nesting_level < 0 || nesting_level >= PSCH_MAX_NESTING_DEPTH) {
     return NULL;
   }
-  return &query_stack[nesting_level - 1];
+  return &query_stack[nesting_level];
 }
 
 // Pop the top frame and return its still-valid data (slots are never zeroed
 // — next push at the same depth overwrites).  NULL if the stack was empty
 // or its matching push had been past the cap.
 static const PschQueryFrame* PopQueryFrame(void) {
-  if (nesting_level <= 0) {
+  if (nesting_level < 0) {
     return NULL;
   }
+  int top = nesting_level;
   nesting_level--;
-  if (nesting_level >= PSCH_MAX_NESTING_DEPTH) {
+  if (top >= PSCH_MAX_NESTING_DEPTH) {
     return NULL;
   }
-  return &query_stack[nesting_level];
+  return &query_stack[top];
 }
 
 static void CopyClientContext(PschEvent* event) {
