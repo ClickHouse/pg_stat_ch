@@ -149,6 +149,7 @@ struct ArrowBatchBuilder::Impl {
   arrow::StringBuilder trace_id_builder;
   arrow::StringBuilder span_id_builder;
   DictBuilder query_id_builder;
+  DictBuilder parent_query_id_builder;
   DictBuilder db_name_builder;
   DictBuilder db_user_builder;
   DictBuilder db_operation_builder;
@@ -216,6 +217,7 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("trace_id", arrow::utf8()),
         arrow::field("span_id", arrow::utf8()),
         arrow::field("query_id", DictionaryUtf8Type()),
+        arrow::field("parent_query_id", DictionaryUtf8Type()),
         arrow::field("db_name", DictionaryUtf8Type()),
         arrow::field("db_user", DictionaryUtf8Type()),
         arrow::field("db_operation", DictionaryUtf8Type()),
@@ -309,10 +311,15 @@ struct ArrowBatchBuilder::Impl {
 
     char queryid_buf[24];
     snprintf(queryid_buf, sizeof(queryid_buf), "%" PRIu64, static_cast<uint64_t>(event.queryid));
+    char parent_query_id_buf[24];
+    snprintf(parent_query_id_buf, sizeof(parent_query_id_buf), "%" PRIu64,
+             static_cast<uint64_t>(event.parent_query_id));
     char pid_buf[12];
     snprintf(pid_buf, sizeof(pid_buf), "%d", event.pid);
 
     if (!AppendString(&query_id_builder, queryid_buf, "Arrow query_id append") ||
+        !AppendString(&parent_query_id_builder, parent_query_id_buf,
+                      "Arrow parent_query_id append") ||
         !AppendString(&db_name_builder, db_name, "Arrow db_name append") ||
         !AppendString(&db_user_builder, db_user, "Arrow db_user append") ||
         !AppendString(&db_operation_builder, PschCmdTypeToString(event.cmd_type),
@@ -475,6 +482,7 @@ struct ArrowBatchBuilder::Impl {
         !add_array(&trace_id_builder, "Arrow trace_id finish") ||
         !add_array(&span_id_builder, "Arrow span_id finish") ||
         !add_dict_array(&query_id_builder, "Arrow query_id finish") ||
+        !add_dict_array(&parent_query_id_builder, "Arrow parent_query_id finish") ||
         !add_dict_array(&db_name_builder, "Arrow db_name finish") ||
         !add_dict_array(&db_user_builder, "Arrow db_user finish") ||
         !add_dict_array(&db_operation_builder, "Arrow db_operation finish") ||
@@ -581,6 +589,7 @@ struct ArrowBatchBuilder::Impl {
     trace_id_builder.Reset();
     span_id_builder.Reset();
     query_id_builder.ResetFull();
+    parent_query_id_builder.ResetFull();
     db_name_builder.ResetFull();
     db_user_builder.ResetFull();
     db_operation_builder.ResetFull();
