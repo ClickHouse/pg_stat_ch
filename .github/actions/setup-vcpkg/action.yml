@@ -12,11 +12,21 @@ runs:
   steps:
     - name: Install vcpkg
       shell: bash
+      env:
+        # Pin to the same commit as the vcpkg submodule and the Dockerfile
+        # (vcpkg tag 2026.04.27).  Without this checkout the action lands on
+        # master HEAD, which drifts port-version ABI hashes and silently
+        # invalidates the binary archive cache between CI runs.
+        VCPKG_COMMIT: 56bb2411609227288b70117ead2c47585ba07713
       run: |
         if [ ! -d "$HOME/vcpkg" ]; then
           # Full clone required — Arrow depends on Boost, which needs vcpkg git history
           git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          git -C "$HOME/vcpkg" checkout "$VCPKG_COMMIT"
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+        else
+          git -C "$HOME/vcpkg" fetch --quiet origin "$VCPKG_COMMIT" || true
+          git -C "$HOME/vcpkg" checkout "$VCPKG_COMMIT"
         fi
         echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
         echo "$HOME/vcpkg" >> "$GITHUB_PATH"
