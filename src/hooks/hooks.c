@@ -48,20 +48,40 @@ static ExecutorEnd_hook_type prev_executor_end = NULL;
 static ProcessUtility_hook_type prev_process_utility = NULL;
 static emit_log_hook_type prev_emit_log_hook = NULL;
 
-// Track nesting level to identify top-level queries
-static int nesting_level = 0;
-
-// CPU time tracking via getrusage
-static struct rusage rusage_start;
+// nesting_level is the slot index of the currently-active frame: it moves
+// only where frames move (PschExecutorStart++ / PschExecutorEnd--, and the
+// same pair inside PschProcessUtility around its body).  Run/Finish do not
+// touch it.  Tying push to the same point as the increment means every
+// reader knows exactly what each slot represents — no offset
+// reinterpretation by phase.
+//
+// nesting_level == -1 is the resting state (no query active).  Push
+// increments before writing; pop reads before decrementing.  A negative
+// nesting_level doubles as the "no active query" check used by
+// TopQueryFrame/PopQueryFrame.
+//
+// parent_query_id is captured into the frame at push time, so any reader
+// fetches frame->parent_query_id directly regardless of whether it's at an
+// emit hook or inside the body via CaptureLogEvent.  The top of the stack
+// is uniformly slot[nesting_level].
+//
+// PSCH_MAX_NESTING_DEPTH is a small fixed cap.  Frames at greater depth are
+// not written; the corresponding emit at that depth falls back to zero CPU
+// and parent_query_id 0.  PL/pgSQL recursion is capped well below 16 by
+// PostgreSQL's max_stack_depth, so the cap is defensive against runaway
+// recursion rather than a normal-case constraint.
+#define PSCH_MAX_NESTING_DEPTH 16
+typedef struct PschQueryFrame {
+  uint64 queryid;
+  uint64 parent_query_id;  // captured from the previous top at push time
+  struct rusage rusage_start;
+  TimestampTz query_start_ts;
+} PschQueryFrame;
+static PschQueryFrame query_stack[PSCH_MAX_NESTING_DEPTH];
+static int nesting_level = -1;
 
 // Deadlock prevention for emit_log_hook
 static bool disable_error_capture = false;
-
-// Track whether the current query started at top level
-static bool current_query_is_top_level = false;
-
-// Track query start time for duration calculation
-static TimestampTz query_start_ts = 0;
 
 // System initialization flag - set after hooks are installed and shmem is ready
 static bool system_init = false;
@@ -311,16 +331,66 @@ static void InitEventPartial(PschEvent* event) {
   event->query[0] = '\0';
 }
 
-static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level,
+static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, uint64 parent_query_id,
                           PschCmdType cmd_type) {
   InitEventPartial(event);
   event->ts_start = ts_start;
   event->dbid = MyDatabaseId;
   event->userid = GetUserId();
   event->pid = MyProcPid;
-  event->top_level = top_level;
+  event->parent_query_id = parent_query_id;
   event->cmd_type = cmd_type;
   ResolveNames(event);
+}
+
+// Push a frame for the about-to-execute query, returning the frame pointer
+// (NULL if depth has exceeded the cap — we still bump nesting_level so the
+// matching pop balances).  parent_query_id is captured here from the
+// previous top, so every later reader fetches it directly from the frame
+// without reinterpreting slot offsets.
+static PschQueryFrame* PushQueryFrame(uint64 queryid) {
+  nesting_level++;
+  if (nesting_level >= PSCH_MAX_NESTING_DEPTH) {
+    // Runaway nesting — log once per overflowing push so it's visible if it
+    // happens in practice, but stay non-fatal so the query itself still
+    // runs.  The pop on this push is still balanced (nesting_level keeps
+    // incrementing past the cap).
+    elog(WARNING,
+         "pg_stat_ch: query nesting depth %d exceeds cap %d; CPU and "
+         "parent_query_id telemetry will be missing for this frame",
+         nesting_level, PSCH_MAX_NESTING_DEPTH);
+    return NULL;
+  }
+  PschQueryFrame* frame = &query_stack[nesting_level];
+  frame->queryid = queryid;
+  frame->parent_query_id = (nesting_level > 0) ? query_stack[nesting_level - 1].queryid : 0;
+  frame->query_start_ts = GetCurrentTimestamp();
+  getrusage(RUSAGE_SELF, &frame->rusage_start);
+  return frame;
+}
+
+// Return a pointer to the top frame (the currently-active query) without
+// changing depth.  NULL if the stack is empty or depth is past the cap.
+static const PschQueryFrame* TopQueryFrame(void) {
+  if (nesting_level < 0 || nesting_level >= PSCH_MAX_NESTING_DEPTH) {
+    return NULL;
+  }
+  return &query_stack[nesting_level];
+}
+
+// Pop the top frame and return its still-valid data (slots are never zeroed
+// — next push at the same depth overwrites).  NULL if the stack was empty
+// or its matching push had been past the cap.
+static const PschQueryFrame* PopQueryFrame(void) {
+  if (nesting_level < 0) {
+    return NULL;
+  }
+  int top = nesting_level;
+  nesting_level--;
+  if (top >= PSCH_MAX_NESTING_DEPTH) {
+    return NULL;
+  }
+  return &query_stack[top];
 }
 
 static void CopyClientContext(PschEvent* event) {
@@ -412,10 +482,9 @@ static void CopyParallelWorkerInfo(PschEvent* event pg_attribute_unused(),
 #endif
 }
 
-static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
-                                    int64 cpu_sys_us) {
-  InitBaseEvent(event, query_start_ts, current_query_is_top_level,
-                ConvertCmdType(query_desc->operation));
+static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, TimestampTz start_ts,
+                                    uint64 parent_query_id, int64 cpu_user_us, int64 cpu_sys_us) {
+  InitBaseEvent(event, start_ts, parent_query_id, ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
   event->rows = query_desc->estate->es_processed;
   event->cpu_user_time_us = cpu_user_us;
@@ -432,7 +501,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
     CopyIoTiming(event, &query_desc->totaltime->bufusage);
     CopyWalUsage(event, &query_desc->totaltime->walusage);
   } else {
-    event->duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
+    event->duration_us = (uint64)(GetCurrentTimestamp() - start_ts);
   }
 
   CopyJitInstrumentation(event, query_desc);
@@ -498,37 +567,44 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     return;
   }
 
-  // Record if this is a top-level query (before nesting_level changes in Run)
-  if (nesting_level == 0) {
-    current_query_is_top_level = true;
-    query_start_ts = GetCurrentTimestamp();
-    // Capture CPU time baseline for top-level queries
-    if (psch_enabled) {
-      getrusage(RUSAGE_SELF, &rusage_start);
+  // Push our frame.  The matching pop is in PschExecutorEnd.  The PG_TRY
+  // wraps everything between push and function-return so any longjmp
+  // before End fires — including from InstrAlloc OOM — pops the frame on
+  // the unwind.  Run/Finish use the same shape for the body.
+  PushQueryFrame(query_desc->plannedstmt->queryId);
+
+  PG_TRY();
+  {
+    if (prev_executor_start != NULL) {
+      prev_executor_start(query_desc, eflags);
+    } else {
+      standard_ExecutorStart(query_desc, eflags);
     }
-  } else {
-    current_query_is_top_level = false;
-  }
 
-  if (prev_executor_start != NULL) {
-    prev_executor_start(query_desc, eflags);
-  } else {
-    standard_ExecutorStart(query_desc, eflags);
-  }
-
-  if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
-    if (query_desc->totaltime == NULL) {
-      MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
+    if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
+      if (query_desc->totaltime == NULL) {
+        MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
 #if PG_VERSION_NUM < 140000
-      query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+        query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
 #else
-      query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
+        query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
 #endif
-      MemoryContextSwitchTo(oldcxt);
+        MemoryContextSwitchTo(oldcxt);
+      }
     }
   }
+  PG_CATCH();
+  {
+    PopQueryFrame();
+    PG_RE_THROW();
+  }
+  PG_END_TRY();
 }
 
+// Run does no nesting_level bookkeeping of its own — the frame was pushed
+// in Start and will be popped in End on success.  We only wrap the chain
+// in PG_TRY/PG_CATCH so that if the body longjmps (the common error path),
+// we pop nesting_level on the unwind and stay balanced.
 #if PG_VERSION_NUM >= 180000
 static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint64 count) {
 #else
@@ -536,6 +612,7 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
                             bool execute_once) {
 #endif
   if (IsParallelWorker()) {
+    // Parallel workers never pushed, so they don't pop and don't need PG_CATCH.
 #if PG_VERSION_NUM >= 180000
     if (prev_executor_run != NULL) {
       prev_executor_run(query_desc, direction, count);
@@ -552,7 +629,6 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
     return;
   }
 
-  nesting_level++;
   PG_TRY();
   {
 #if PG_VERSION_NUM >= 180000
@@ -569,8 +645,11 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
     }
 #endif
   }
-  PG_FINALLY();
-  { nesting_level--; }
+  PG_CATCH();
+  {
+    PopQueryFrame();
+    PG_RE_THROW();
+  }
   PG_END_TRY();
 }
 
@@ -584,7 +663,8 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
     return;
   }
 
-  nesting_level++;
+  // Finish does no nesting_level bookkeeping of its own; only PG_CATCH-pop
+  // on error so the unwind stays balanced.
   PG_TRY();
   {
     if (prev_executor_finish != NULL) {
@@ -593,13 +673,32 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
       standard_ExecutorFinish(query_desc);
     }
   }
-  PG_FINALLY();
-  { nesting_level--; }
+  PG_CATCH();
+  {
+    PopQueryFrame();
+    PG_RE_THROW();
+  }
   PG_END_TRY();
 }
 
 static void PschExecutorEnd(QueryDesc* query_desc) {
-  if (!psch_enabled || IsParallelWorker() || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
+  if (IsParallelWorker()) {
+    // Parallel workers never pushed in Start, so don't pop here.
+    if (prev_executor_end != NULL) {
+      prev_executor_end(query_desc);
+    } else {
+      standard_ExecutorEnd(query_desc);
+    }
+    return;
+  }
+
+  // Pop the frame Start pushed.  Slot data remains valid through the
+  // returned pointer (slots are never zeroed), so we keep reading from it
+  // through the rest of this function.  Null only if the matching push
+  // had been past the cap.
+  const PschQueryFrame* frame = PopQueryFrame();
+
+  if (!psch_enabled || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
     if (prev_executor_end != NULL) {
       prev_executor_end(query_desc);
     } else {
@@ -612,7 +711,14 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     InstrEndLoop(query_desc->totaltime);
   }
 
-  // Compute duration early for sampling filter
+  // start_ts falls back to "now" so the duration computation below yields
+  // ~0us if the frame is null, rather than ~25 years from subtracting the
+  // PG epoch.  query_desc->totaltime almost always supplies a real
+  // duration from instrumentation; the fallback subtraction is only used
+  // when totaltime wasn't allocated.
+  TimestampTz start_ts = frame ? frame->query_start_ts : GetCurrentTimestamp();
+  uint64 parent_query_id = frame ? frame->parent_query_id : 0;
+
   uint64 duration_us;
   if (query_desc->totaltime != NULL) {
 #if PG_VERSION_NUM >= 190000
@@ -621,7 +727,7 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     duration_us = (uint64)(query_desc->totaltime->total * 1000000.0);
 #endif
   } else {
-    duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
+    duration_us = (uint64)(GetCurrentTimestamp() - start_ts);
   }
 
   if (!ShouldSampleEvent(duration_us)) {
@@ -633,17 +739,16 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     return;
   }
 
-  // Compute CPU time delta from getrusage
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
   struct rusage rusage_end;
-  if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
-    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, rusage_start.ru_utime);
-    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, rusage_start.ru_stime);
+  if (frame != NULL && getrusage(RUSAGE_SELF, &rusage_end) == 0) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, frame->rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, frame->rusage_start.ru_stime);
   }
 
   PschEvent event;
-  BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us);
+  BuildEventFromQueryDesc(query_desc, &event, start_ts, parent_query_id, cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
 
   if (prev_executor_end != NULL) {
@@ -655,10 +760,10 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
 
 // Build a PschEvent for utility statements (no QueryDesc available)
 static void BuildEventForUtility(PschEvent* event, uint64 query_id, TimestampTz start_ts,
-                                 uint64 duration_us, bool is_top_level, uint64 rows,
+                                 uint64 duration_us, uint64 parent_query_id, uint64 rows,
                                  BufferUsage* bufusage, WalUsage* walusage, int64 cpu_user_us,
                                  int64 cpu_sys_us) {
-  InitBaseEvent(event, start_ts, is_top_level, PSCH_CMD_UTILITY);
+  InitBaseEvent(event, start_ts, parent_query_id, PSCH_CMD_UTILITY);
   event->queryid = query_id;
   event->duration_us = duration_us;
   event->rows = rows;
@@ -728,21 +833,6 @@ static uint64 GetUtilityRowCount(QueryCompletion* qc) {
   }
 }
 
-static void ExecuteUtilityWithNesting(PlannedStmt* pstmt, const char* queryString,
-#if PG_VERSION_NUM >= 140000
-                                      bool readOnlyTree,
-#endif
-                                      ProcessUtilityContext context, ParamListInfo params,
-                                      QueryEnvironment* queryEnv, DestReceiver* dest,
-                                      QueryCompletion* qc) {
-  nesting_level++;
-  PG_TRY();
-  { CALL_PROCESS_UTILITY(); }
-  PG_FINALLY();
-  { nesting_level--; }
-  PG_END_TRY();
-}
-
 // ProcessUtility hook - captures DDL and utility statements
 #if PG_VERSION_NUM >= 140000
 static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString, bool readOnlyTree,
@@ -760,22 +850,24 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
     return;
   }
 
-  // Capture state before execution
-  bool is_top_level = (nesting_level == 0);
-  TimestampTz start_ts = GetCurrentTimestamp();
+  // Push our frame so any executor hooks fired from within this utility
+  // (e.g. the SELECT inside CREATE TABLE AS) read us as their parent.
+  // PushQueryFrame captures the rusage baseline and start timestamp into
+  // the frame; we use those for the emit below.  The PG_TRY/PG_FINALLY
+  // around the body guarantees the pop on both success and longjmp.
+  const PschQueryFrame* frame = PushQueryFrame(pstmt->queryId);
+
   uint64 query_id = pstmt->queryId;
   BufferUsage bufusage_start = pgBufferUsage;
   WalUsage walusage_start = pgWalUsage;
-  struct rusage rusage_util_start;
-  getrusage(RUSAGE_SELF, &rusage_util_start);
   instr_time start_time;
   INSTR_TIME_SET_CURRENT(start_time);
 
-#if PG_VERSION_NUM >= 140000
-  ExecuteUtilityWithNesting(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
-#else
-  ExecuteUtilityWithNesting(pstmt, queryString, context, params, queryEnv, dest, qc);
-#endif
+  PG_TRY();
+  { CALL_PROCESS_UTILITY(); }
+  PG_FINALLY();
+  { PopQueryFrame(); }
+  PG_END_TRY();
 
   instr_time duration;
   INSTR_TIME_SET_CURRENT(duration);
@@ -795,14 +887,20 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
 
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
-  struct rusage rusage_util_end;
-  if (getrusage(RUSAGE_SELF, &rusage_util_end) == 0) {
-    cpu_user_us = TimeDiffMicrosec(rusage_util_end.ru_utime, rusage_util_start.ru_utime);
-    cpu_sys_us = TimeDiffMicrosec(rusage_util_end.ru_stime, rusage_util_start.ru_stime);
+  struct rusage rusage_end;
+  if (frame != NULL && getrusage(RUSAGE_SELF, &rusage_end) == 0) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, frame->rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, frame->rusage_start.ru_stime);
   }
 
+  // start_ts falls back to "now" so ts_start in the emitted event is at
+  // least approximately correct rather than the PG epoch.  Matches the
+  // same fallback in PschExecutorEnd.
+  TimestampTz start_ts = frame ? frame->query_start_ts : GetCurrentTimestamp();
+  uint64 parent_query_id = frame ? frame->parent_query_id : 0;
+
   PschEvent event;
-  BuildEventForUtility(&event, query_id, start_ts, duration_us, is_top_level,
+  BuildEventForUtility(&event, query_id, start_ts, duration_us, parent_query_id,
                        GetUtilityRowCount(qc), &bufusage_delta, &walusage_delta, cpu_user_us,
                        cpu_sys_us);
   PschEnqueueEvent(&event);
@@ -850,7 +948,18 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // message, SQLSTATE, and client/session metadata.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
-  InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
+
+  // Top of the stack is whatever query is currently executing — Start
+  // pushed it, End/ProcessUtility haven't popped yet because we're still
+  // inside the body that fired this elog.  Attribute this log event to the
+  // running query (queryid) and inherit its parent_query_id, captured at
+  // push time.
+  const PschQueryFrame* top = TopQueryFrame();
+  uint64 running_query_id = top ? top->queryid : 0;
+  uint64 parent_query_id = top ? top->parent_query_id : 0;
+
+  InitBaseEvent(&event, GetCurrentTimestamp(), parent_query_id, PSCH_CMD_UNKNOWN);
+  event.queryid = running_query_id;
 
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
   event.err_elevel = (uint8)(edata->elevel);

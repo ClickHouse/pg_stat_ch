@@ -42,6 +42,13 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
 
+      - name: Install uv
+        # uv is used by Arrow-IPC TAP tests (t/026, t/028) to run inline
+        # pyarrow scripts that decode the debug_arrow_dump_dir output.
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
       - name: Cache PostgreSQL build
         id: cache-pg
         uses: actions/cache@v4
