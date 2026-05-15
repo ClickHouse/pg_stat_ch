@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
 
 # Install vcpkg
 # Pin to the same commit as the vcpkg submodule for reproducible builds
-ARG VCPKG_COMMIT=12159785447291b4069c82a3fe9c2770a393ac7f
+# (vcpkg tag 2026.04.27).
+ARG VCPKG_COMMIT=56bb2411609227288b70117ead2c47585ba07713
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
     && git -C /opt/vcpkg checkout "$VCPKG_COMMIT" \
     && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
@@ -34,6 +35,7 @@ WORKDIR /build/pg_stat_ch
 # Copy dependency manifests first for layer caching
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY triplets/ triplets/
+COPY overlay-ports/ overlay-ports/
 COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
@@ -41,11 +43,15 @@ COPY src/ src/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
 
-RUN cmake -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-    -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
-    -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
+# Pick the vcpkg triplet that matches the host architecture so the same
+# Dockerfile builds on x64 CI runners and on arm64 dev boxes (Apple Silicon
+# under colima/orbstack/etc.).
+RUN TRIPLET="$([ "$(uname -m)" = "aarch64" ] && echo arm64-linux-pic || echo x64-linux-pic)" \
+    && cmake -B build -G Ninja \
+       -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+       -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+       -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
+       -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
     && cmake --build build --parallel $(nproc)
 
 FROM postgres:18-bookworm
@@ -56,7 +62,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/pg_stat_ch/build/pg_stat_ch.so /usr/lib/postgresql/18/lib/
-COPY --from=builder /build/pg_stat_ch/sql/pg_stat_ch--0.1.sql /usr/share/postgresql/18/extension/
+COPY --from=builder /build/pg_stat_ch/sql/ /usr/share/postgresql/18/extension/
 COPY --from=builder /build/pg_stat_ch/pg_stat_ch.control /usr/share/postgresql/18/extension/
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
