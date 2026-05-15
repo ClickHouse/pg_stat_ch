@@ -167,9 +167,11 @@ top_with_nonzero_parent = [r for r in top_rows if not is_zero(r.get("parent_quer
 print(f"top_rows={len(top_rows)}")
 print(f"top_nonzero_parent={len(top_with_nonzero_parent)}")
 
-# Test 2: nested SPI inner.parent_query_id matches outer.query_id
-outer_rows = has("pqid_outer_caller")
-inner_rows = has("pqid_inner_marker")
+# Test 2: nested SPI inner.parent_query_id matches outer.query_id.  Filter
+# to SELECT so the setup CREATE TABLE / INSERT / DROP utility statements
+# (which mention the table) don't pollute the "no orphans" check.
+outer_rows = [r for r in has("pqid_outer_caller") if r.get("db_operation") == "SELECT"]
+inner_rows = [r for r in has("pqid_inner_marker") if r.get("db_operation") == "SELECT"]
 linked = 0
 for inner in inner_rows:
     p = inner.get("parent_query_id")
