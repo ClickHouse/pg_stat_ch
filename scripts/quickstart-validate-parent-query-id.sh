@@ -8,9 +8,17 @@
 #
 #   1. Top-level queries report parent_query_id = 0.
 #   2. Nested SPI queries report parent_query_id = outer's query_id.
-#   3. Error events captured inside a plpgsql EXCEPTION block carry both
-#      a non-zero query_id (the running statement) and parent_query_id
-#      equal to the outer caller's query_id, distinct from each other.
+#   3. Log events captured by emit_log_hook while a nested SPI query is
+#      on the stack carry query_id of the running (inner) statement and
+#      parent_query_id of the outer caller (catches CaptureLogEvent's
+#      off-by-one).  We use RAISE WARNING for this rather than a caught
+#      ERROR: emit_log_hook does not fire from errfinish for ERROR-level
+#      events (errfinish PG_RE_THROWs before EmitErrorReport runs;
+#      emit_log_hook only fires later from PostgresMain's top-level
+#      catch, after all frames have been popped — or never, for errors
+#      caught inside a plpgsql EXCEPTION block).  WARNING goes through
+#      EmitErrorReport directly so the frame stack is intact when our
+#      hook runs.
 #
 # Why not the native ClickHouse path?  clickhouse-cpp's LZ4-compressed
 # block format currently triggers a checksum-mismatch on ClickHouse 26.1
@@ -77,15 +85,16 @@ SELECT pg_stat_ch_reset();
 
 DROP TABLE IF EXISTS pqid_top_marker CASCADE;
 DROP TABLE IF EXISTS pqid_inner_marker CASCADE;
-DROP TABLE IF EXISTS pqid_err_inner CASCADE;
+DROP TABLE IF EXISTS pqid_warn_tbl CASCADE;
 DROP FUNCTION IF EXISTS pqid_outer_caller();
-DROP FUNCTION IF EXISTS pqid_err_outer();
+DROP FUNCTION IF EXISTS pqid_warn_outer();
+DROP FUNCTION IF EXISTS pqid_emit_warn(int);
 
 CREATE TABLE pqid_top_marker(x int);
 CREATE TABLE pqid_inner_marker(x int);
 INSERT INTO pqid_inner_marker VALUES (1);
-CREATE TABLE pqid_err_inner(x int);
-INSERT INTO pqid_err_inner VALUES (0);
+CREATE TABLE pqid_warn_tbl(x int);
+INSERT INTO pqid_warn_tbl VALUES (1);
 
 CREATE FUNCTION pqid_outer_caller() RETURNS int
 LANGUAGE plpgsql AS $$
@@ -95,16 +104,19 @@ BEGIN
   RETURN v;
 END$$;
 
-CREATE FUNCTION pqid_err_outer() RETURNS int
+CREATE FUNCTION pqid_emit_warn(x int) RETURNS int
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE WARNING 'pqid_warn_marker' USING ERRCODE = '01001';
+  RETURN x;
+END$$;
+
+CREATE FUNCTION pqid_warn_outer() RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE v int;
 BEGIN
-  BEGIN
-    SELECT 1 / x INTO v FROM pqid_err_inner;
-  EXCEPTION WHEN division_by_zero THEN
-    NULL;
-  END;
-  RETURN 1;
+  SELECT pqid_emit_warn(x) INTO v FROM pqid_warn_tbl;
+  RETURN v;
 END$$;
 SQL
 
@@ -117,7 +129,7 @@ pg_exec <<'SQL' >/dev/null
 SELECT * FROM pqid_top_marker;
 SELECT count(*) FROM pqid_top_marker;
 SELECT pqid_outer_caller();
-SELECT pqid_err_outer();
+SELECT pqid_warn_outer();
 SELECT pg_stat_ch_flush();
 SQL
 
@@ -185,25 +197,26 @@ print(f"inner_linked_to_outer={linked}")
 print(f"inner_with_zero_parent={len(inner_orphans)}")
 print(f"outer_with_nonzero_parent={len(outer_self_parent)}")
 
-# Test 3: error event(s) for div-by-zero
-err_rows = [r for r in rows if r.get("err_sqlstate") == "22012"]
-err_outer = has("pqid_err_outer")
-err_linked = 0
-err_qid_nonzero = 0
-err_self_parent = 0
-for er in err_rows:
-    qid = er.get("query_id")
-    pqid = er.get("parent_query_id")
-    if not is_zero(qid):
-        err_qid_nonzero += 1
-    if not is_zero(pqid) and any(o.get("query_id") == pqid for o in err_outer):
-        err_linked += 1
-    if not is_zero(qid) and qid == pqid:
-        err_self_parent += 1
-print(f"err_rows={len(err_rows)}")
-print(f"err_linked_to_outer={err_linked}")
-print(f"err_qid_nonzero={err_qid_nonzero}")
-print(f"err_self_parent={err_self_parent}")
+# Test 3: log event captured inside nested SPI (via RAISE WARNING).
+# The event has no query_text (CaptureLogEvent leaves it empty), so we
+# identify it by err_sqlstate '01001' (our RAISE WARNING's custom code).
+warn_outer = [r for r in has("pqid_warn_outer") if r.get("db_operation") == "SELECT"]
+warn_inner = [r for r in has("pqid_emit_warn") if r.get("db_operation") == "SELECT"]
+warn_outer_qids = {r.get("query_id") for r in warn_outer if not is_zero(r.get("query_id"))}
+warn_inner_qids = {r.get("query_id") for r in warn_inner if not is_zero(r.get("query_id"))}
+warn_rows = [r for r in rows if r.get("err_sqlstate") == "01001"]
+warn_linked_to_outer = sum(1 for r in warn_rows
+                           if r.get("parent_query_id") in warn_outer_qids)
+warn_qid_is_inner = sum(1 for r in warn_rows if r.get("query_id") in warn_inner_qids)
+warn_qid_is_outer = sum(1 for r in warn_rows if r.get("query_id") in warn_outer_qids)
+warn_self_parent = sum(1 for r in warn_rows
+                       if not is_zero(r.get("query_id"))
+                       and r.get("query_id") == r.get("parent_query_id"))
+print(f"warn_rows={len(warn_rows)}")
+print(f"warn_linked_to_outer={warn_linked_to_outer}")
+print(f"warn_qid_is_inner={warn_qid_is_inner}")
+print(f"warn_qid_is_outer={warn_qid_is_outer}")
+print(f"warn_self_parent={warn_self_parent}")
 PY
 )
 
@@ -226,20 +239,22 @@ expect "nested SPI is not reported as top-level"    0 "$(get inner_with_zero_par
 expect "outer call still reports parent_query_id = 0" 0 "$(get outer_with_nonzero_parent)"
 
 echo
-echo "Test 3: error inside nested SPI"
-expect "div-by-zero log event landed"                   1 "$(get err_rows)"           '>='
-expect "log event parent_query_id = outer's query_id"   1 "$(get err_linked_to_outer)" '>='
-expect "log event query_id is the running statement"    1 "$(get err_qid_nonzero)"    '>='
-expect "log event query_id != parent_query_id"          0 "$(get err_self_parent)"
+echo "Test 3: log event inside nested SPI"
+expect "RAISE WARNING log event landed"                 1 "$(get warn_rows)"           '>='
+expect "log event parent_query_id = outer's query_id"   1 "$(get warn_linked_to_outer)" '>='
+expect "log event query_id = inner SPI (the running)"   1 "$(get warn_qid_is_inner)"   '>='
+expect "log event query_id is NOT outer (no off-by-one)" 0 "$(get warn_qid_is_outer)"
+expect "log event query_id != parent_query_id"          0 "$(get warn_self_parent)"
 
 echo
 echo "Cleaning up fixtures..."
 pg_exec <<'SQL' >/dev/null
 DROP FUNCTION IF EXISTS pqid_outer_caller();
-DROP FUNCTION IF EXISTS pqid_err_outer();
+DROP FUNCTION IF EXISTS pqid_warn_outer();
+DROP FUNCTION IF EXISTS pqid_emit_warn(int);
 DROP TABLE IF EXISTS pqid_top_marker;
 DROP TABLE IF EXISTS pqid_inner_marker;
-DROP TABLE IF EXISTS pqid_err_inner;
+DROP TABLE IF EXISTS pqid_warn_tbl;
 SQL
 
 echo
