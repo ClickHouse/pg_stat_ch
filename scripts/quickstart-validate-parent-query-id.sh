@@ -156,9 +156,14 @@ def has(text, predicate=None):
 def by_query_id(qid):
     return [r for r in rows if r.get("query_id") == qid]
 
+# Arrow dict-encodes query_id and parent_query_id as decimal *strings*; "0"
+# means top-level / no parent.  Compare against strings, not ints.
+def is_zero(v):
+    return v is None or v == "" or v == "0"
+
 # Test 1: top-level marker queries report parent_query_id == 0
 top_rows = has("pqid_top_marker")
-top_with_nonzero_parent = [r for r in top_rows if r.get("parent_query_id", 0) != 0]
+top_with_nonzero_parent = [r for r in top_rows if not is_zero(r.get("parent_query_id"))]
 print(f"top_rows={len(top_rows)}")
 print(f"top_nonzero_parent={len(top_with_nonzero_parent)}")
 
@@ -168,10 +173,10 @@ inner_rows = has("pqid_inner_marker")
 linked = 0
 for inner in inner_rows:
     p = inner.get("parent_query_id")
-    if p and any(o.get("query_id") == p for o in outer_rows):
+    if not is_zero(p) and any(o.get("query_id") == p for o in outer_rows):
         linked += 1
-inner_orphans = [r for r in inner_rows if r.get("parent_query_id", 0) == 0]
-outer_self_parent = [r for r in outer_rows if r.get("parent_query_id", 0) != 0]
+inner_orphans = [r for r in inner_rows if is_zero(r.get("parent_query_id"))]
+outer_self_parent = [r for r in outer_rows if not is_zero(r.get("parent_query_id"))]
 print(f"outer_rows={len(outer_rows)}")
 print(f"inner_rows={len(inner_rows)}")
 print(f"inner_linked_to_outer={linked}")
@@ -185,13 +190,13 @@ err_linked = 0
 err_qid_nonzero = 0
 err_self_parent = 0
 for er in err_rows:
-    qid = er.get("query_id", 0)
-    pqid = er.get("parent_query_id", 0)
-    if qid != 0:
+    qid = er.get("query_id")
+    pqid = er.get("parent_query_id")
+    if not is_zero(qid):
         err_qid_nonzero += 1
-    if pqid and any(o.get("query_id") == pqid for o in err_outer):
+    if not is_zero(pqid) and any(o.get("query_id") == pqid for o in err_outer):
         err_linked += 1
-    if qid != 0 and qid == pqid:
+    if not is_zero(qid) and qid == pqid:
         err_self_parent += 1
 print(f"err_rows={len(err_rows)}")
 print(f"err_linked_to_outer={err_linked}")
