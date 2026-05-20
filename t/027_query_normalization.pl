@@ -53,12 +53,12 @@ sub get_captured_query {
     psch_wait_for_export($node, 1, 10);
 
     return psch_wait_for_clickhouse_query(
-        "SELECT query FROM pg_stat_ch.events_raw " .
+        "SELECT query_text FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query NOT LIKE '%pg_stat_ch%' " .
-        "AND query NOT LIKE '%pg_extension%' " .
-        "AND query != '' " .
-        "ORDER BY ts_start DESC LIMIT 1",
+        "AND query_text NOT LIKE '%pg_stat_ch%' " .
+        "AND query_text NOT LIKE '%pg_extension%' " .
+        "AND query_text != '' " .
+        "ORDER BY ts DESC LIMIT 1",
         sub { $_[0] ne '' },
         10
     );
@@ -193,11 +193,11 @@ subtest 'multi-statement normalization' => sub {
     psch_wait_for_export($node, 2, 10);
 
     my $all_queries = psch_wait_for_clickhouse_query(
-        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "SELECT groupArray(query_text) FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE '%test_norm%' " .
-        "AND query NOT LIKE '%pg_stat_ch%' " .
-        "AND query != ''",
+        "AND query_text LIKE '%test_norm%' " .
+        "AND query_text NOT LIKE '%pg_stat_ch%' " .
+        "AND query_text != ''",
         sub { $_[0] ne '' },
         10
     );
@@ -292,19 +292,19 @@ subtest 'failed query does not leak normalized text into next query' => sub {
     $session->quit();
 
     my $error_query = psch_query_clickhouse(
-        "SELECT query FROM pg_stat_ch.events_raw " .
+        "SELECT query_text FROM pg_stat_ch.events_raw " .
         "WHERE err_message != '' " .
-        "ORDER BY ts_start DESC LIMIT 1"
+        "ORDER BY ts DESC LIMIT 1"
     );
     is($error_query, '', 'Error events do not export query text');
 
     my $q = psch_wait_for_clickhouse_query(
-        "SELECT query FROM pg_stat_ch.events_raw " .
+        "SELECT query_text FROM pg_stat_ch.events_raw " .
         "WHERE err_message = '' " .
-        "AND query NOT LIKE '%pg_stat_ch%' " .
-        "AND query NOT LIKE '%pg_extension%' " .
-        "AND query != '' " .
-        "ORDER BY ts_start DESC LIMIT 1",
+        "AND query_text NOT LIKE '%pg_stat_ch%' " .
+        "AND query_text NOT LIKE '%pg_extension%' " .
+        "AND query_text != '' " .
+        "ORDER BY ts DESC LIMIT 1",
         sub { $_[0] ne '' },
         10
     );
@@ -388,8 +388,8 @@ subtest 'nested SPI executions keep distinct normalized state' => sub {
     my $nested_count = psch_wait_for_clickhouse_query(
         "SELECT count() FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE '%WHERE%' " .
-        "AND query LIKE '%nested_normalize_same_sql%'",
+        "AND query_text LIKE '%WHERE%' " .
+        "AND query_text LIKE '%nested_normalize_same_sql%'",
         sub { $_[0] >= 3 },
         10
     );
@@ -397,10 +397,10 @@ subtest 'nested SPI executions keep distinct normalized state' => sub {
         'Captured recursive nested executions of the same SPI statement');
 
     my $queries = psch_wait_for_clickhouse_query(
-        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "SELECT groupArray(query_text) FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE '%WHERE%' " .
-        "AND query LIKE '%nested_normalize_same_sql%'",
+        "AND query_text LIKE '%WHERE%' " .
+        "AND query_text LIKE '%nested_normalize_same_sql%'",
         sub { $_[0] ne '' },
         10
     );
@@ -433,8 +433,8 @@ subtest 'nested SPI executions keep distinct normalized state' => sub {
     my $repeat_count = psch_wait_for_clickhouse_query(
         "SELECT count() FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE '%WHERE%' " .
-        "AND query LIKE '%nested_normalize_same_sql%'",
+        "AND query_text LIKE '%WHERE%' " .
+        "AND query_text LIKE '%nested_normalize_same_sql%'",
         sub { $_[0] >= 4 },
         10
     );
@@ -442,10 +442,10 @@ subtest 'nested SPI executions keep distinct normalized state' => sub {
         'Captured repeated executions of the same SPI statement in one backend');
 
     my $repeat_queries = psch_wait_for_clickhouse_query(
-        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "SELECT groupArray(query_text) FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE '%WHERE%' " .
-        "AND query LIKE '%nested_normalize_same_sql%'",
+        "AND query_text LIKE '%WHERE%' " .
+        "AND query_text LIKE '%nested_normalize_same_sql%'",
         sub { $_[0] ne '' },
         10
     );

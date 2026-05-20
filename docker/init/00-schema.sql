@@ -32,7 +32,8 @@ DROP TABLE IF EXISTS pg_stat_ch.events_raw;
 -- exported in batches by the pg_stat_ch background worker.
 --
 -- Partitioned by date for efficient time-range queries and data retention.
--- Ordered by ts_start for efficient global time-range scans.
+-- Ordered by (instance_ubid, ts) to keep tenant data colocated and bound
+-- per-tenant time-range scans.
 --
 -- ============================================================================
 
@@ -41,23 +42,23 @@ CREATE TABLE pg_stat_ch.events_raw
     -- ========================================================================
     -- Core identity and timing
     -- ========================================================================
-    ts_start DateTime64(6, 'UTC') COMMENT 'Query execution start timestamp (UTC). Used for time-range filtering and partitioning.',
+    ts DateTime64(6, 'UTC') COMMENT 'Query execution start timestamp (UTC). Used for time-range filtering and partitioning.',
 
     duration_us UInt64 COMMENT 'Total query execution time in microseconds. HIGH: slow query, investigate EXPLAIN. LOW: fast query. Compare with p95/p99 from query_stats_5m to identify outliers.',
 
-    db LowCardinality(String) COMMENT 'PostgreSQL database name. Use for multi-tenant filtering and per-database load analysis.',
+    db_name LowCardinality(String) COMMENT 'PostgreSQL database name. Use for multi-tenant filtering and per-database load analysis.',
 
-    username LowCardinality(String) COMMENT 'PostgreSQL user/role name. Useful for auditing and per-user resource tracking.',
+    db_user LowCardinality(String) COMMENT 'PostgreSQL user/role name. Useful for auditing and per-user resource tracking.',
 
     pid Int32 COMMENT 'PostgreSQL backend process ID. Correlate with pg_stat_activity for session debugging.',
 
     query_id Int64 COMMENT '64-bit hash identifying normalized queries. Queries differing only in constants share the same query_id. Use for aggregating statistics across similar queries.',
 
-    cmd_type LowCardinality(String) COMMENT 'Command type: SELECT, INSERT, UPDATE, DELETE, MERGE, UTILITY, or UNKNOWN. Use for workload characterization (read-heavy vs write-heavy).',
+    db_operation LowCardinality(String) COMMENT 'Command type: SELECT, INSERT, UPDATE, DELETE, MERGE, UTILITY, or UNKNOWN. Use for workload characterization (read-heavy vs write-heavy).',
 
     rows UInt64 COMMENT 'Rows returned (SELECT) or affected (INSERT/UPDATE/DELETE). HIGH: large result sets or bulk operations. LOW: point queries. Watch for unexpected HIGH values indicating missing WHERE clauses.',
 
-    query String COMMENT 'Full SQL query text (may be truncated). Used for debugging and query analysis.',
+    query_text String COMMENT 'Full SQL query text (may be truncated). Used for debugging and query analysis.',
 
     -- ========================================================================
     -- Shared buffer metrics (main buffer cache)
@@ -176,7 +177,7 @@ CREATE TABLE pg_stat_ch.events_raw
     -- Captured via emit_log_hook when a query produces an error or warning.
     -- Useful for error tracking, debugging, and monitoring error rates.
     -- ========================================================================
-    err_sqlstate FixedString(5) COMMENT 'SQL standard 5-character error code. Examples: 42P01=undefined_table, 23505=unique_violation, 42601=syntax_error, 57014=query_canceled. See PostgreSQL error codes appendix.',
+    err_sqlstate LowCardinality(String) COMMENT 'SQL standard 5-character error code. Examples: 42P01=undefined_table, 23505=unique_violation, 42601=syntax_error, 57014=query_canceled. See PostgreSQL error codes appendix.',
 
     err_elevel UInt8 COMMENT 'Error severity level. 0=none (success), 19=WARNING, 21=ERROR, 22=FATAL, 23=PANIC. Filter err_elevel>=21 for actual errors. WARNING (19) indicates potential issues.',
 
@@ -189,11 +190,30 @@ CREATE TABLE pg_stat_ch.events_raw
     -- ========================================================================
     app LowCardinality(String) COMMENT 'Client application_name. Set via connection string or SET application_name. Use for identifying load sources: "pgAdmin", "myapp-api", "pg_dump", etc.',
 
-    client_addr String COMMENT 'Client IP address. Useful for geographic analysis, debugging connection issues, and identifying load sources by host.'
+    client_addr String COMMENT 'Client IP address. Useful for geographic analysis, debugging connection issues, and identifying load sources by host.',
+
+    -- ========================================================================
+    -- OTel resource attributes (envelope)
+    -- ========================================================================
+    -- Populated from psch_extra_attributes (pg_stat_ch GUC). One row carries
+    -- the resource context for the emitting Postgres instance. Default to ''
+    -- so the CH-native exporter (which does not yet emit these) inserts
+    -- successfully against this schema.
+    -- ========================================================================
+    instance_ubid String DEFAULT '' COMMENT 'Ubicloud ID of the emitting Postgres instance. String (opaque, not LC) — cardinality scales with active customer count.',
+    server_ubid String DEFAULT '' COMMENT 'Ubicloud ID of the underlying server. String (opaque).',
+    server_role LowCardinality(String) DEFAULT '' COMMENT 'Server role within the HA pair. ~2 values: "primary", "standby".',
+    region LowCardinality(String) DEFAULT '' COMMENT 'Cloud region (e.g. "us-east-1"). ~tens of values.',
+    cell LowCardinality(String) DEFAULT '' COMMENT 'Cell (sharded deployment unit) within the region. ~hundreds of values.',
+    service_version LowCardinality(String) DEFAULT '' COMMENT 'pg_stat_ch extension version.',
+    host_id String DEFAULT '' COMMENT 'Physical host identifier. String (opaque).',
+    pod_name String DEFAULT '' COMMENT 'Kubernetes pod name. String (opaque).'
 )
 ENGINE = MergeTree
-PARTITION BY toDate(ts_start)
-ORDER BY ts_start;
+PARTITION BY toDate(ts)
+ORDER BY (instance_ubid, ts)
+TTL toDate(ts) + INTERVAL 180 DAY
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 
 -- ============================================================================
@@ -213,10 +233,10 @@ ORDER BY ts_start;
 --   - events_raw can have longer retention (days/weeks)
 --
 -- EXAMPLE QUERY:
---   SELECT ts_start, db, duration_us/1000 AS ms, substring(query, 1, 100)
+--   SELECT ts, db_name, duration_us/1000 AS ms, substring(query_text, 1, 100)
 --   FROM pg_stat_ch.events_recent_1h
---   WHERE ts_start > now() - INTERVAL 5 MINUTE
---   ORDER BY ts_start DESC
+--   WHERE ts > now() - INTERVAL 5 MINUTE
+--   ORDER BY ts DESC
 --   LIMIT 50;
 --
 -- ============================================================================
@@ -225,9 +245,9 @@ DROP TABLE IF EXISTS pg_stat_ch.events_recent_1h;
 
 CREATE MATERIALIZED VIEW pg_stat_ch.events_recent_1h
 ENGINE = MergeTree
-PARTITION BY toDate(ts_start)
-ORDER BY ts_start
-TTL toDateTime(ts_start) + INTERVAL 1 HOUR DELETE
+PARTITION BY toDate(ts)
+ORDER BY (instance_ubid, ts)
+TTL toDateTime(ts) + INTERVAL 1 HOUR DELETE
 AS
 SELECT *
 FROM pg_stat_ch.events_raw;
@@ -260,14 +280,14 @@ FROM pg_stat_ch.events_raw;
 --
 --   SELECT
 --     query_id,
---     cmd_type,
+--     db_operation,
 --     countMerge(calls_state) AS calls,
 --     round(sumMerge(duration_sum_state) / countMerge(calls_state) / 1000, 2) AS avg_ms,
 --     round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[1] / 1000, 2) AS p95_ms,
 --     round(quantilesTDigestMerge(0.95, 0.99)(duration_q_state)[2] / 1000, 2) AS p99_ms
 --   FROM pg_stat_ch.query_stats_5m
 --   WHERE bucket >= now() - INTERVAL 1 HOUR
---   GROUP BY query_id, cmd_type
+--   GROUP BY query_id, db_operation
 --   ORDER BY p99_ms DESC
 --   LIMIT 10;
 --
@@ -278,9 +298,10 @@ DROP TABLE IF EXISTS pg_stat_ch.query_stats_5m;
 CREATE MATERIALIZED VIEW pg_stat_ch.query_stats_5m
 (
     bucket DateTime COMMENT '5-minute time bucket start',
-    db LowCardinality(String) COMMENT 'Database name',
+    instance_ubid String COMMENT 'Emitting instance ID — first ORDER BY key to keep tenant data colocated.',
+    db_name LowCardinality(String) COMMENT 'Database name',
     query_id Int64 COMMENT 'Normalized query identifier',
-    cmd_type LowCardinality(String) COMMENT 'Command type (SELECT, INSERT, etc.)',
+    db_operation LowCardinality(String) COMMENT 'Command type (SELECT, INSERT, etc.)',
 
     calls_state AggregateFunction(count) COMMENT 'Call count state. Finalize with countMerge().',
     duration_sum_state AggregateFunction(sum, UInt64) COMMENT 'Total duration state. Finalize with sumMerge().',
@@ -294,13 +315,14 @@ CREATE MATERIALIZED VIEW pg_stat_ch.query_stats_5m
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMMDD(bucket)
-ORDER BY (bucket, db, query_id, cmd_type)
+ORDER BY (instance_ubid, bucket, db_name, query_id, db_operation)
 AS
 SELECT
-    toStartOfInterval(toDateTime(ts_start), INTERVAL 5 MINUTE) AS bucket,
-    db,
+    toStartOfInterval(toDateTime(ts), INTERVAL 5 MINUTE) AS bucket,
+    instance_ubid,
+    db_name,
     query_id,
-    cmd_type,
+    db_operation,
 
     countState() AS calls_state,
     sumState(duration_us) AS duration_sum_state,
@@ -312,7 +334,7 @@ SELECT
     sumState(shared_blks_hit) AS shared_hit_sum_state,
     sumState(shared_blks_read) AS shared_read_sum_state
 FROM pg_stat_ch.events_raw
-GROUP BY bucket, db, query_id, cmd_type;
+GROUP BY bucket, instance_ubid, db_name, query_id, db_operation;
 
 
 -- ============================================================================
@@ -343,14 +365,14 @@ GROUP BY bucket, db, query_id, cmd_type;
 -- EXAMPLE: Error rate by database and user
 --
 --   SELECT
---     db,
---     username,
+--     db_name,
+--     db_user,
 --     countMerge(calls_state) AS queries,
 --     sumMerge(errors_sum_state) AS errors,
 --     round(100 * sumMerge(errors_sum_state) / countMerge(calls_state), 2) AS error_pct
 --   FROM pg_stat_ch.db_app_user_1m
 --   WHERE bucket >= now() - INTERVAL 1 HOUR
---   GROUP BY db, username
+--   GROUP BY db_name, db_user
 --   HAVING errors > 0
 --   ORDER BY error_pct DESC;
 --
@@ -361,10 +383,11 @@ DROP TABLE IF EXISTS pg_stat_ch.db_app_user_1m;
 CREATE MATERIALIZED VIEW pg_stat_ch.db_app_user_1m
 (
     bucket DateTime COMMENT '1-minute time bucket start',
-    db LowCardinality(String) COMMENT 'Database name',
+    instance_ubid String COMMENT 'Emitting instance ID — first ORDER BY key for tenant locality.',
+    db_name LowCardinality(String) COMMENT 'Database name',
     app LowCardinality(String) COMMENT 'Application name',
-    username LowCardinality(String) COMMENT 'PostgreSQL username',
-    cmd_type LowCardinality(String) COMMENT 'Command type',
+    db_user LowCardinality(String) COMMENT 'PostgreSQL user/role name',
+    db_operation LowCardinality(String) COMMENT 'Command type',
 
     calls_state AggregateFunction(count) COMMENT 'Query count state. Finalize with countMerge().',
     duration_sum_state AggregateFunction(sum, UInt64) COMMENT 'Total duration state (μs). Finalize with sumMerge().',
@@ -373,21 +396,22 @@ CREATE MATERIALIZED VIEW pg_stat_ch.db_app_user_1m
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMMDD(bucket)
-ORDER BY (bucket, db, app, username, cmd_type)
+ORDER BY (instance_ubid, bucket, db_name, app, db_user, db_operation)
 AS
 SELECT
-    toStartOfMinute(toDateTime(ts_start)) AS bucket,
-    db,
+    toStartOfMinute(toDateTime(ts)) AS bucket,
+    instance_ubid,
+    db_name,
     app,
-    username,
-    cmd_type,
+    db_user,
+    db_operation,
 
     countState() AS calls_state,
     sumState(duration_us) AS duration_sum_state,
     quantilesTDigestState(0.95, 0.99)(duration_us) AS duration_q_state,
     sumState(toUInt64(err_elevel > 0)) AS errors_sum_state
 FROM pg_stat_ch.events_raw
-GROUP BY bucket, db, app, username, cmd_type;
+GROUP BY bucket, instance_ubid, db_name, app, db_user, db_operation;
 
 
 -- ============================================================================
@@ -409,16 +433,16 @@ GROUP BY bucket, db, app, username, cmd_type;
 -- EXAMPLE: Recent errors with query context
 --
 --   SELECT
---     ts_start,
---     db,
---     username,
+--     ts,
+--     db_name,
+--     db_user,
 --     app,
 --     err_sqlstate,
 --     err_message,
---     substring(query, 1, 200) AS query_preview
+--     substring(query_text, 1, 200) AS query_preview
 --   FROM pg_stat_ch.errors_recent
---   WHERE ts_start > now() - INTERVAL 1 HOUR
---   ORDER BY ts_start DESC
+--   WHERE ts > now() - INTERVAL 1 HOUR
+--   ORDER BY ts DESC
 --   LIMIT 100;
 --
 -- EXAMPLE: Error breakdown by SQLSTATE
@@ -429,7 +453,7 @@ GROUP BY bucket, db, app, username, cmd_type;
 --     uniq(query_id) AS unique_queries,
 --     any(err_message) AS sample_message
 --   FROM pg_stat_ch.errors_recent
---   WHERE ts_start > now() - INTERVAL 24 HOUR
+--   WHERE ts > now() - INTERVAL 24 HOUR
 --   GROUP BY err_sqlstate
 --   ORDER BY occurrences DESC;
 --
@@ -450,14 +474,15 @@ DROP TABLE IF EXISTS pg_stat_ch.errors_recent;
 
 CREATE MATERIALIZED VIEW pg_stat_ch.errors_recent
 ENGINE = MergeTree
-PARTITION BY toDate(ts_start)
-ORDER BY ts_start
-TTL toDateTime(ts_start) + INTERVAL 7 DAY DELETE
+PARTITION BY toDate(ts)
+ORDER BY (instance_ubid, ts)
+TTL toDateTime(ts) + INTERVAL 7 DAY DELETE
 AS
 SELECT
-    ts_start,
-    db,
-    username,
+    ts,
+    instance_ubid,
+    db_name,
+    db_user,
     app,
     client_addr,
     pid,
@@ -465,6 +490,6 @@ SELECT
     err_sqlstate,
     err_elevel,
     err_message,
-    query
+    query_text
 FROM pg_stat_ch.events_raw
 WHERE err_elevel > 0;

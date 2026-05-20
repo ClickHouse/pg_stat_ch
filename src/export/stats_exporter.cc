@@ -233,7 +233,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
   exporter->BeginBatch();
 
-  auto col_ts_start = exporter->RecordDateTime("ts_start");
+  auto col_ts = exporter->RecordDateTime("ts");
   auto col_duration_us = exporter->DbDurationColumn();
   auto col_db = exporter->DbNameColumn();
   auto col_username = exporter->DbUserColumn();
@@ -278,7 +278,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   auto col_parallel_workers_planned = exporter->RecordInt16("parallel_workers_planned");
   auto col_parallel_workers_launched = exporter->RecordInt16("parallel_workers_launched");
 
-  auto col_err_sqlstate = exporter->MetricFixedString(5, "err_sqlstate");
+  auto col_err_sqlstate = exporter->TagString("err_sqlstate");
   auto col_err_elevel = exporter->RecordUInt8("err_elevel");
   auto col_err_message = exporter->RecordString("err_message");
 
@@ -288,7 +288,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   for (const auto& ev : events) {
     exporter->BeginRow();
 
-    col_ts_start->Append(ev.ts_start + kPostgresEpochOffsetUs);
+    col_ts->Append(ev.ts_start + kPostgresEpochOffsetUs);
     col_duration_us->Append(ev.duration_us);
     col_db->Append(std::string(ev.datname, ev.datname_len));
     col_username->Append(std::string(ev.username, ev.username_len));
@@ -335,7 +335,8 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_parallel_workers_planned->Append(ev.parallel_workers_planned);
     col_parallel_workers_launched->Append(ev.parallel_workers_launched);
 
-    col_err_sqlstate->Append(std::string_view(ev.err_sqlstate, 5));
+    col_err_sqlstate->Append(
+        std::string(ev.err_sqlstate, strnlen(ev.err_sqlstate, sizeof(ev.err_sqlstate))));
     col_err_elevel->Append(ev.err_elevel);
     auto elen = ClampFieldLen(ev.err_message_len, static_cast<uint16>(PSCH_MAX_ERR_MSG_LEN),
                               "err_message_len");

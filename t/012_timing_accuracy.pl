@@ -101,7 +101,7 @@ subtest 'pgbench timing validation' => sub {
         # Get timing statistics
         my $timing_stats = psch_query_clickhouse(
             "SELECT count(), avg(duration_us), min(duration_us), max(duration_us) " .
-            "FROM pg_stat_ch.events_raw WHERE query LIKE '%pgbench%' OR query LIKE '%UPDATE%'"
+            "FROM pg_stat_ch.events_raw WHERE query_text LIKE '%pgbench%' OR query_text LIKE '%UPDATE%'"
         );
         diag("Timing stats: $timing_stats");
 
@@ -131,7 +131,7 @@ subtest 'long query timing' => sub {
         # Check that we captured a duration close to 100ms
         my $duration = psch_query_clickhouse(
             "SELECT duration_us FROM pg_stat_ch.events_raw " .
-            "WHERE query LIKE '%pg_sleep%' ORDER BY ts_start DESC LIMIT 1"
+            "WHERE query_text LIKE '%pg_sleep%' ORDER BY ts DESC LIMIT 1"
         );
 
         if ($duration) {

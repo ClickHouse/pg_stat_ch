@@ -202,11 +202,12 @@ class ClickHouseExporter : public StatsExporter {
     return MakeCol<StringCol<string_view>>(name);
   }
 
-  shared_ptr<Column<string>> DbNameColumn() final { return TagString("db"); }
-  shared_ptr<Column<string>> DbUserColumn() final { return TagString("username"); }
+  // Semantic columns
+  shared_ptr<Column<string>> DbNameColumn() final { return TagString("db_name"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return TagString("db_user"); }
   shared_ptr<Column<uint64_t>> DbDurationColumn() final { return MetricUInt64("duration_us"); }
-  shared_ptr<Column<string>> DbOperationColumn() final { return TagString("cmd_type"); }
-  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return RecordString("query"); }
+  shared_ptr<Column<string>> DbOperationColumn() final { return TagString("db_operation"); }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return RecordString("query_text"); }
 
   void BeginBatch() final {
     for (auto& col : columns_)

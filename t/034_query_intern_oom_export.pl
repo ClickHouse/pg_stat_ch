@@ -18,7 +18,7 @@
 #   2. Send the same many-distinct-query workload as 033.
 #   3. After the workload, force-flush and wait for the drain to complete.
 #   4. Ask ClickHouse for the slice of rows where the interner failed
-#      (query = '') and assert those rows carry duration_us, db, cmd_type,
+#      (query_text = '') and assert those rows carry duration_us, db_name, db_operation,
 #      and pid — the contract that "numeric telemetry is preserved on intern
 #      failure" actually holds end-to-end.
 
@@ -144,17 +144,17 @@ cmp_ok($stats->{dsa_oom}, '>', 0,
 # Contract under test:
 #   - intern_failed > 0  (we *did* drop some text; this proves the OOM path
 #     reached the consumer, not just the in-process counter).
-#   - every intern_failed row still carries duration_us, db, and cmd_type —
-#     the numeric/identity telemetry the customer relies on for slow-query
-#     analysis even when SQL text is unavailable.
+#   - every intern_failed row still carries duration_us, db_name, and
+#     db_operation — the numeric/identity telemetry the customer relies on
+#     for slow-query analysis even when SQL text is unavailable.
 # ---------------------------------------------------------------------------
 my $intern_failed_rows = psch_wait_for_clickhouse_query(
     "SELECT count() FROM pg_stat_ch.events_raw " .
-    "WHERE pid = $pid AND query = ''",
+    "WHERE pid = $pid AND query_text = ''",
     sub { $_[0] >= 1 },
     15);
 cmp_ok($intern_failed_rows, '>=', 1,
-       "ClickHouse has rows with empty query (got $intern_failed_rows)");
+       "ClickHouse has rows with empty query_text (got $intern_failed_rows)");
 
 # Among the intern_failed rows, count how many have duration_us > 0.
 # We expect ALL of them to — a SELECT can complete in microseconds but never
@@ -164,10 +164,10 @@ cmp_ok($intern_failed_rows, '>=', 1,
 # equality with the total count of empty-query rows.
 my $intern_failed_with_metrics = psch_query_clickhouse(
     "SELECT count() FROM pg_stat_ch.events_raw " .
-    "WHERE pid = $pid AND query = '' AND duration_us > 0 " .
-    "AND db = 'postgres' AND cmd_type != ''");
+    "WHERE pid = $pid AND query_text = '' AND duration_us > 0 " .
+    "AND db_name = 'postgres' AND db_operation != ''");
 cmp_ok($intern_failed_with_metrics, '>=', $intern_failed_rows,
-       "every empty-query row carries duration_us, db, and cmd_type " .
+       "every empty-query_text row carries duration_us, db_name, and db_operation " .
        "($intern_failed_with_metrics of $intern_failed_rows)");
 
 # Sanity: there should also be at least *some* rows whose query text did
@@ -175,7 +175,7 @@ cmp_ok($intern_failed_with_metrics, '>=', $intern_failed_rows,
 # otherwise-working system, we're testing total failure.
 my $intern_ok_rows = psch_query_clickhouse(
     "SELECT count() FROM pg_stat_ch.events_raw " .
-    "WHERE pid = $pid AND query != ''");
+    "WHERE pid = $pid AND query_text != ''");
 cmp_ok($intern_ok_rows, '>=', 1,
        "ClickHouse has at least one row with non-empty query " .
        "(intern was working before pool filled; got $intern_ok_rows)");

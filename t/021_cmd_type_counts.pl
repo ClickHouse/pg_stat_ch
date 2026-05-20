@@ -28,10 +28,10 @@ my $node = psch_init_node_with_clickhouse('cmd_type_counts',
     batch_max => 100
 );
 
-# Helper: parse cmd_type counts from ClickHouse
+# Helper: parse db_operation counts from ClickHouse
 sub get_cmd_type_counts {
     my $result = psch_query_clickhouse(
-        "SELECT cmd_type, count() FROM pg_stat_ch.events_raw GROUP BY cmd_type FORMAT TabSeparated"
+        "SELECT db_operation, count() FROM pg_stat_ch.events_raw GROUP BY db_operation FORMAT TabSeparated"
     );
     my %counts;
     for my $line (split /\n/, $result) {

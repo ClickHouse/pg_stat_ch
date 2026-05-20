@@ -55,17 +55,17 @@ class StatsExporter {
   // instrument). Pure virtuals enforce explicit handling in every exporter.
   // ===========================================================================
 
-  // Database name. CH: TagString "db"; OTel semconv: "db.name" tag.
+  // Database name. CH: TagString "db_name"; OTel semconv: "db.name" tag.
   virtual shared_ptr<Column<string>> DbNameColumn() = 0;
-  // Authenticated user. CH: TagString "username"; OTel semconv: "db.user" tag.
+  // Authenticated user. CH: TagString "db_user"; OTel semconv: "db.user" tag.
   virtual shared_ptr<Column<string>> DbUserColumn() = 0;
   // Query duration. Caller appends microseconds. CH: MetricUInt64 "duration_us";
   // OTel: converts to seconds, records as Histogram<double> "db.client.operation.duration".
   virtual shared_ptr<Column<uint64_t>> DbDurationColumn() = 0;
-  // SQL command type. CH: RecordString "cmd_type"; OTel: TagString "db.operation.name"
+  // SQL command type. CH: TagString "db_operation"; OTel: TagString "db.operation.name"
   // (used as a dimension on the duration histogram).
   virtual shared_ptr<Column<string>> DbOperationColumn() = 0;
-  // Query text. CH: RecordString "query"; OTel semconv: "db.query.text".
+  // Query text. CH: RecordString "query_text"; OTel semconv: "db.query.text".
   virtual shared_ptr<Column<string_view>> DbQueryTextColumn() = 0;
 
   virtual void BeginBatch() = 0;
@@ -96,7 +96,7 @@ void RecordExporterFailure(const char* message);
 // Expected usage:
 // void ProcessBatch(StatsExporter *exporter) {
 //   exporter->BeginBatch(); // no op or ClickHouse column reset
-//   auto col_user = exporter->TagString("username");
+//   auto col_user = exporter->TagString("db_user");
 //   auto col_rows = exporter->MetricUInt64("rows");
 //
 //   for (const auto &ev : events) {
