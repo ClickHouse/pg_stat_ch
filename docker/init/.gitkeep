@@ -1,0 +1,5 @@
+# Reserved for legacy docker/quickstart bind mounts. The canonical CH schema
+# now lives in schema/migrations/ and is applied via goose (see CI workflow).
+# This directory is intentionally empty; the .gitkeep keeps the bind mount
+# in docker/docker-compose.test.yml and docker/quickstart/docker-compose.yml
+# from failing on a missing host path.

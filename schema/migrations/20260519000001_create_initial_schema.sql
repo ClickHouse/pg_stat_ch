@@ -1,18 +1,10 @@
 -- ============================================================================
--- ClickHouse schema for pg_stat_ch events
+-- Initial pg_stat_ch ClickHouse schema: events_raw + 4 aggregation MVs.
 -- ============================================================================
 --
--- CANONICAL SCHEMA REFERENCE
---
--- This file is the single source of truth for the pg_stat_ch ClickHouse schema.
--- It serves a dual role:
---   1. Docker init script (applied automatically by docker-compose)
---   2. Schema documentation (column comments, MV explanations)
---
--- For production deployments:  clickhouse-client < docker/init/00-schema.sql
--- For documentation:           see docs/clickhouse.md
---
--- ============================================================================
+-- This is the first real migration on top of bootstrap; everything in here is
+-- authored together pre-GA, applied together, and not subject to historical
+-- evolution. Subsequent schema changes get their own timestamped files.
 --
 -- This schema is designed for the pg_stat_ch PostgreSQL extension which exports
 -- raw query execution telemetry to ClickHouse. All aggregation (p50/p95/p99,
@@ -20,9 +12,11 @@
 --
 -- ============================================================================
 
-CREATE DATABASE IF NOT EXISTS pg_stat_ch;
+-- +goose Up
 
-DROP TABLE IF EXISTS pg_stat_ch.events_raw;
+-- +goose StatementBegin
+CREATE DATABASE IF NOT EXISTS pg_stat_ch;
+-- +goose StatementEnd
 
 -- ============================================================================
 -- events_raw: Raw query execution events
@@ -37,6 +31,7 @@ DROP TABLE IF EXISTS pg_stat_ch.events_raw;
 --
 -- ============================================================================
 
+-- +goose StatementBegin
 CREATE TABLE pg_stat_ch.events_raw
 (
     -- ========================================================================
@@ -214,6 +209,7 @@ PARTITION BY toDate(ts)
 ORDER BY (instance_ubid, ts)
 TTL toDate(ts) + INTERVAL 180 DAY
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+-- +goose StatementEnd
 
 
 -- ============================================================================
@@ -241,8 +237,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 --
 -- ============================================================================
 
-DROP TABLE IF EXISTS pg_stat_ch.events_recent_1h;
-
+-- +goose StatementBegin
 CREATE MATERIALIZED VIEW pg_stat_ch.events_recent_1h
 ENGINE = MergeTree
 PARTITION BY toDate(ts)
@@ -251,6 +246,7 @@ TTL toDateTime(ts) + INTERVAL 1 HOUR DELETE
 AS
 SELECT *
 FROM pg_stat_ch.events_raw;
+-- +goose StatementEnd
 
 
 -- ============================================================================
@@ -293,8 +289,7 @@ FROM pg_stat_ch.events_raw;
 --
 -- ============================================================================
 
-DROP TABLE IF EXISTS pg_stat_ch.query_stats_5m;
-
+-- +goose StatementBegin
 CREATE MATERIALIZED VIEW pg_stat_ch.query_stats_5m
 (
     bucket DateTime COMMENT '5-minute time bucket start',
@@ -335,6 +330,7 @@ SELECT
     sumState(shared_blks_read) AS shared_read_sum_state
 FROM pg_stat_ch.events_raw
 GROUP BY bucket, instance_ubid, db_name, query_id, db_operation;
+-- +goose StatementEnd
 
 
 -- ============================================================================
@@ -378,8 +374,7 @@ GROUP BY bucket, instance_ubid, db_name, query_id, db_operation;
 --
 -- ============================================================================
 
-DROP TABLE IF EXISTS pg_stat_ch.db_app_user_1m;
-
+-- +goose StatementBegin
 CREATE MATERIALIZED VIEW pg_stat_ch.db_app_user_1m
 (
     bucket DateTime COMMENT '1-minute time bucket start',
@@ -412,6 +407,7 @@ SELECT
     sumState(toUInt64(err_elevel > 0)) AS errors_sum_state
 FROM pg_stat_ch.events_raw
 GROUP BY bucket, instance_ubid, db_name, app, db_user, db_operation;
+-- +goose StatementEnd
 
 
 -- ============================================================================
@@ -470,8 +466,7 @@ GROUP BY bucket, instance_ubid, db_name, app, db_user, db_operation;
 --
 -- ============================================================================
 
-DROP TABLE IF EXISTS pg_stat_ch.errors_recent;
-
+-- +goose StatementBegin
 CREATE MATERIALIZED VIEW pg_stat_ch.errors_recent
 ENGINE = MergeTree
 PARTITION BY toDate(ts)
@@ -493,3 +488,26 @@ SELECT
     query_text
 FROM pg_stat_ch.events_raw
 WHERE err_elevel > 0;
+-- +goose StatementEnd
+
+-- +goose Down
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS pg_stat_ch.errors_recent;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS pg_stat_ch.db_app_user_1m;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS pg_stat_ch.query_stats_5m;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS pg_stat_ch.events_recent_1h;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TABLE IF EXISTS pg_stat_ch.events_raw;
+-- +goose StatementEnd
