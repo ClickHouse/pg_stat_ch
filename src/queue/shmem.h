@@ -52,10 +52,10 @@ void PschRecordExportSuccess(void);
 void PschRecordExportFailure(const char* error_msg);
 
 // Get the background worker PID (for signaling)
-int PschGetBgworkerPid(void);
+pid_t PschGetBgworkerPid(void);
 
 // Set the background worker PID (called at bgworker startup)
-void PschSetBgworkerPid(int pid);
+void PschSetBgworkerPid(pid_t pid);
 
 #ifdef __cplusplus
 }

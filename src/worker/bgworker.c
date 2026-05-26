@@ -85,9 +85,12 @@ static void HandleConfigReload(void) {
   }
 }
 
-// Callback for bgworker process exit (registered via on_proc_exit)
+// Callback for bgworker process exit (registered via on_proc_exit).
+// Clear bgworker_pid before exporter teardown so a concurrent
+// pg_stat_ch_flush() cannot race a SIGUSR2 to a recycled PID.
 static void PschBgworkerShutdown(int code pg_attribute_unused(),
                                  Datum arg pg_attribute_unused()) {
+  PschSetBgworkerPid(0);
   PschExporterShutdown();
 }
 
@@ -219,14 +222,18 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
 // Called from pg_stat_ch_flush() SQL function.
 // Uses SIGUSR2 since SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
 void PschSignalFlush(void) {
-  int bgworker_pid = PschGetBgworkerPid();
+  pid_t bgworker_pid = PschGetBgworkerPid();
   if (bgworker_pid == 0) {
     ereport(WARNING, (errmsg("pg_stat_ch: background worker not running")));
-    return;
-  }
-
-  if (kill(bgworker_pid, SIGUSR2) != 0) {
-    ereport(WARNING, (errmsg("pg_stat_ch: failed to signal background worker")));
+  } else if (kill(bgworker_pid, SIGUSR2) != 0) {
+    // Stale pid: worker died without running on_proc_exit. Clear shmem so we
+    // don't keep signaling a recycled pid; postmaster restart will repopulate.
+    // Only clear when shmem still holds the stale pid we observed.
+    if (errno == ESRCH) {
+      uint32 expected = (uint32)bgworker_pid;
+      pg_atomic_compare_exchange_u32(&psch_shared_state->bgworker_pid, &expected, 0);
+    }
+    ereport(WARNING, (errmsg("pg_stat_ch: failed to signal background worker: %m")));
   }
 }
 
