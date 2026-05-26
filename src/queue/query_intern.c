@@ -86,10 +86,17 @@ void PschQueryInternShmemInit(void* lwlock_base) {
   MemSet(&info, 0, sizeof(info));
   info.keysize = sizeof(PschQueryInternKey);
   info.entrysize = sizeof(PschQueryInternEntry);
+  info.num_partitions = PSCH_QUERY_INTERN_PARTITIONS;
 
-  psch_query_intern_htab =
-      ShmemInitHash("pg_stat_ch query intern", PschQueryInternMaxEntries(),
-                    PschQueryInternMaxEntries(), &info, HASH_ELEM | HASH_BLOBS);
+  // HASH_PARTITION is required when external partition locks guard concurrent
+  // mutation: it disables on-the-fly bucket splits and gives each partition
+  // its own spinlock-protected freelist.  Our external partition lock for a
+  // given key is derived from dynahash's own hashcode (get_hash_value) so the
+  // external and internal partition agree, matching the LockTagHashCode /
+  // LockHashPartitionLock pattern in src/backend/storage/lmgr/lock.c.
+  psch_query_intern_htab = ShmemInitHash(
+      "pg_stat_ch query intern", PschQueryInternMaxEntries(), PschQueryInternMaxEntries(), &info,
+      HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 }
 
 static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const char* query,
@@ -102,8 +109,13 @@ static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const cha
   key->query_len = query_len;
 }
 
-static LWLock* PartitionLockFor(uint64 query_hash) {
-  uint32 idx = (uint32)(query_hash & (PSCH_QUERY_INTERN_PARTITIONS - 1));
+// Partition lock index must come from dynahash's own hashcode (the low-order
+// bits, per dynahash.c "we expect callers to use the low-order bits of a
+// lookup key's hash value as a partition number").  Using a different hash
+// (e.g. our PschQueryInternKey.query_hash field) would mis-align the external
+// lock with dynahash's internal partition and risk freelist/bucket corruption.
+static LWLock* PartitionLockFor(uint32 hashcode) {
+  uint32 idx = hashcode & (PSCH_QUERY_INTERN_PARTITIONS - 1);
   return &psch_query_intern_locks[idx].lock;
 }
 
@@ -149,6 +161,7 @@ static bool ObjectMatches(dsa_area* dsa, dsa_pointer dp, const char* query, uint
 
 dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, uint16 query_len) {
   PschQueryInternKey key;
+  uint32 hashcode;
   LWLock* partition;
   PschQueryInternEntry* entry;
   dsa_area* dsa;
@@ -165,11 +178,13 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
   }
 
   MakeKey(&key, dbid, queryid, query, query_len);
-  partition = PartitionLockFor(key.query_hash);
+  hashcode = get_hash_value(psch_query_intern_htab, &key);
+  partition = PartitionLockFor(hashcode);
 
   // First lookup: fast path for a hit.
   LWLockAcquire(partition, LW_EXCLUSIVE);
-  entry = (PschQueryInternEntry*)hash_search(psch_query_intern_htab, &key, HASH_FIND, NULL);
+  entry = (PschQueryInternEntry*)hash_search_with_hash_value(psch_query_intern_htab, &key, hashcode,
+                                                             HASH_FIND, NULL);
   if (entry != NULL && ObjectMatches(dsa, entry->object, query, query_len)) {
     entry->refcount++;
     LWLockRelease(partition);
@@ -195,7 +210,8 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
   // Re-lock partition and re-check.  Another backend may have inserted the
   // same key while we were allocating.
   LWLockAcquire(partition, LW_EXCLUSIVE);
-  entry = (PschQueryInternEntry*)hash_search(psch_query_intern_htab, &key, HASH_ENTER_NULL, &found);
+  entry = (PschQueryInternEntry*)hash_search_with_hash_value(psch_query_intern_htab, &key, hashcode,
+                                                             HASH_ENTER_NULL, &found);
   if (entry == NULL) {
     // Hash table is full — back out the loser allocation and report miss.
     LWLockRelease(partition);
@@ -232,6 +248,7 @@ static void ReleaseRef(dsa_pointer ref) {
   dsa_area* dsa;
   PschQueryInternObject* obj;
   PschQueryInternKey key;
+  uint32 hashcode;
   LWLock* partition;
   PschQueryInternEntry* entry;
   dsa_pointer freed_dp = InvalidDsaPointer;
@@ -253,16 +270,18 @@ static void ReleaseRef(dsa_pointer ref) {
   }
 
   key = obj->key;
-  partition = PartitionLockFor(key.query_hash);
+  hashcode = get_hash_value(psch_query_intern_htab, &key);
+  partition = PartitionLockFor(hashcode);
 
   LWLockAcquire(partition, LW_EXCLUSIVE);
-  entry = (PschQueryInternEntry*)hash_search(psch_query_intern_htab, &key, HASH_FIND, NULL);
+  entry = (PschQueryInternEntry*)hash_search_with_hash_value(psch_query_intern_htab, &key, hashcode,
+                                                             HASH_FIND, NULL);
   if (entry != NULL && entry->object == ref) {
     Assert(entry->refcount > 0);
     entry->refcount--;
     if (entry->refcount == 0) {
       freed_dp = entry->object;
-      hash_search(psch_query_intern_htab, &key, HASH_REMOVE, NULL);
+      hash_search_with_hash_value(psch_query_intern_htab, &key, hashcode, HASH_REMOVE, NULL);
     }
   }
   LWLockRelease(partition);

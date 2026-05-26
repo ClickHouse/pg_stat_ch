@@ -16,9 +16,11 @@
 //   - Variable-length query bodies live inside the existing pg_stat_ch DSA
 //     area (same pool used for err_message strings).
 //
-// Concurrency: a small set of partitioned LWLocks (PSCH_QUERY_INTERN_PARTITIONS)
-// protects the HTAB and per-entry refcount.  The partition is selected from
-// the query_hash so unrelated query texts contend on different locks.
+// Concurrency: HASH_PARTITION enables dynahash's partitioned mode (per-partition
+// freelists, no on-the-fly bucket splits) and PSCH_QUERY_INTERN_PARTITIONS
+// LWLocks guard mutation.  The partition index for both the external lock and
+// dynahash's internal freelist is the low-order bits of get_hash_value(), so
+// they always agree (same pattern as LockHashPartitionLock in lock.c).
 #ifndef PG_STAT_CH_SRC_QUEUE_QUERY_INTERN_H_
 #define PG_STAT_CH_SRC_QUEUE_QUERY_INTERN_H_
 
@@ -31,7 +33,7 @@ extern "C" {
 #include "utils/dsa.h"
 
 // Number of LWLock partitions guarding the interner HTAB.  Power of two so
-// the partition index can be derived from query_hash with a bitmask.
+// partition index can be derived from dynahash's get_hash_value() with bitmask.
 #define PSCH_QUERY_INTERN_PARTITIONS 32
 
 // Returns the HTAB shmem requirement (hash_estimate_size for the interner)
