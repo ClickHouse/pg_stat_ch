@@ -335,7 +335,3 @@ void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_siz
 
   ReleaseRef(ref);
 }
-
-void PschQueryInternRelease(dsa_pointer ref) {
-  ReleaseRef(ref);
-}

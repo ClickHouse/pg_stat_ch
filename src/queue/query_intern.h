@@ -77,10 +77,6 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
 // Called by the bgworker (single consumer) on every dequeued event.
 void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len);
 
-// Drop one reference without resolving the bytes.  Used when an enqueue path
-// has acquired a reference but decides not to publish the ring slot.
-void PschQueryInternRelease(dsa_pointer ref);
-
 #ifdef __cplusplus
 }
 #endif
