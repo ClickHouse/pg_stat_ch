@@ -123,9 +123,7 @@ if(APPLE)
   execute_process(COMMAND ${PG_CONFIG} --bindir
                   OUTPUT_VARIABLE PG_BINDIR
                   OUTPUT_STRIP_TRAILING_WHITESPACE)
-  target_link_options(pg_stat_ch PRIVATE
-    -bundle_loader ${PG_BINDIR}/postgres
-    -Wl,-undefined,dynamic_lookup)
+  target_link_options(pg_stat_ch PRIVATE -bundle_loader ${PG_BINDIR}/postgres)
 endif()
 
 # Install targets
