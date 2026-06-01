@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
 
 # Install vcpkg
 # Pin to the same commit as the vcpkg submodule for reproducible builds
-ARG VCPKG_COMMIT=12159785447291b4069c82a3fe9c2770a393ac7f
+# (vcpkg tag 2026.04.27).
+ARG VCPKG_COMMIT=56bb2411609227288b70117ead2c47585ba07713
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
     && git -C /opt/vcpkg checkout "$VCPKG_COMMIT" \
     && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
