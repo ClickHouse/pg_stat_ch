@@ -110,7 +110,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tap-test-logs
-          path: tmp_check/
+          path: |
+            tmp_check/
+            log/
 
       - name: Cleanup ClickHouse
         if: always()
