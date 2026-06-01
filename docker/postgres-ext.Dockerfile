@@ -35,6 +35,7 @@ WORKDIR /build/pg_stat_ch
 # Copy dependency manifests first for layer caching
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY triplets/ triplets/
+COPY vcpkg-overlay-ports/ vcpkg-overlay-ports/
 COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
