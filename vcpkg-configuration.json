@@ -3,5 +3,6 @@
     "kind": "builtin",
     "baseline": "56bb2411609227288b70117ead2c47585ba07713"
   },
-  "overlay-triplets": ["./triplets"]
+  "overlay-triplets": ["./triplets"],
+  "overlay-ports": ["./overlay-ports"]
 }

@@ -35,7 +35,7 @@ WORKDIR /build/pg_stat_ch
 # Copy dependency manifests first for layer caching
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY triplets/ triplets/
-COPY vcpkg-overlay-ports/ vcpkg-overlay-ports/
+COPY overlay-ports/ overlay-ports/
 COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
@@ -48,7 +48,6 @@ RUN cmake -B build -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
     -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
     -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
-    -DVCPKG_OVERLAY_PORTS=/build/pg_stat_ch/vcpkg-overlay-ports \
     && cmake --build build --parallel $(nproc)
 
 FROM postgres:18-bookworm
