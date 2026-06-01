@@ -80,13 +80,10 @@ jobs:
 
       - name: Start ClickHouse
         run: |
-          docker rm -f clickhouse-test 2>/dev/null || true
-          docker run -d --name clickhouse-test \
-            --network host \
-            clickhouse/clickhouse-server:26.1
-          # Wait for ClickHouse to be ready
+          docker compose -f docker/docker-compose.test.yml up -d --wait
+          # Sanity-probe the host-mapped HTTP port the TAP suite uses.
           for i in {1..30}; do
-            if curl -sf 'http://localhost:8123/' --data 'SELECT 1' >/dev/null 2>&1; then
+            if curl -sf 'http://localhost:18123/' --data 'SELECT 1' >/dev/null 2>&1; then
               echo "ClickHouse ready"
               exit 0
             fi
@@ -94,12 +91,12 @@ jobs:
             sleep 1
           done
           echo "ClickHouse not ready after 30s"
-          docker logs clickhouse-test
+          docker compose -f docker/docker-compose.test.yml logs
           exit 1
 
       - name: Initialize ClickHouse schema
         run: |
-          docker exec clickhouse-test clickhouse-client --multiquery < docker/init/00-schema.sql
+          docker exec psch-clickhouse clickhouse-client --multiquery < docker/init/00-schema.sql
 
       - name: Run TAP tests
         run: |
@@ -113,8 +110,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tap-test-logs
-          path: t/tmp_check/
+          path: |
+            tmp_check/
+            log/
 
       - name: Cleanup ClickHouse
         if: always()
-        run: docker rm -f clickhouse-test 2>/dev/null || true
+        run: docker compose -f docker/docker-compose.test.yml down -v
