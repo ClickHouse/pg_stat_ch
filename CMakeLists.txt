@@ -80,7 +80,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 # Build shared library
-add_library(pg_stat_ch SHARED
+add_library(pg_stat_ch MODULE
   ${PG_STAT_CH_PLUGIN_SOURCES}
   ${PG_STAT_CH_EXPORTER_SOURCES}
 )
@@ -114,7 +114,18 @@ set_target_properties(pg_stat_ch PROPERTIES
   SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
 )
 if(APPLE)
-  target_link_options(pg_stat_ch PRIVATE -undefined dynamic_lookup)
+  # PGXS uses -bundle_loader on Darwin (Makefile.port) instead of
+  # -undefined dynamic_lookup so undefined symbols resolve against the
+  # postgres executable rather than whichever loaded dylib exports the name
+  # first.  Without this, common PG symbols (e.g. hash_search) clash with
+  # libSystem exports of the same name and the wrong implementation gets
+  # bound at runtime — corruption / SIGTRAP.
+  execute_process(COMMAND ${PG_CONFIG} --bindir
+                  OUTPUT_VARIABLE PG_BINDIR
+                  OUTPUT_STRIP_TRAILING_WHITESPACE)
+  target_link_options(pg_stat_ch PRIVATE
+    -bundle_loader ${PG_BINDIR}/postgres
+    -Wl,-undefined,dynamic_lookup)
 endif()
 
 # Install targets
