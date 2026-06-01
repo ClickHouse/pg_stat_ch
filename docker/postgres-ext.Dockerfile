@@ -47,6 +47,7 @@ RUN cmake -B build -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
     -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
     -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
+    -DVCPKG_OVERLAY_PORTS=/build/pg_stat_ch/vcpkg-overlay-ports \
     && cmake --build build --parallel $(nproc)
 
 FROM postgres:18-bookworm

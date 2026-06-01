@@ -73,6 +73,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
             -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
             -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets \
+            -DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/vcpkg-overlay-ports \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build --parallel
