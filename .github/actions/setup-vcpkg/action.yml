@@ -39,6 +39,6 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/vcpkg-archives
-        key: vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/*.cmake') }}
+        key: vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/*.cmake', 'overlay-ports/**') }}
         restore-keys: |
           vcpkg-${{ inputs.triplet }}-
