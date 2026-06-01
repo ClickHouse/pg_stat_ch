@@ -110,9 +110,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tap-test-logs
-          # PostgreSQL::Test::Cluster writes per-node logs under tmp_check/
-          # at prove's CWD (the project root), not t/tmp_check/.  The earlier
-          # path silently uploaded nothing.
           path: tmp_check/
 
       - name: Cleanup ClickHouse
