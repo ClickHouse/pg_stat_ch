@@ -23,10 +23,10 @@ use strict;
 use warnings;
 use lib 't';
 
+use PostgreSQL::Test::BackgroundPsql;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
-
 use psch;
 
 # ---------------------------------------------------------------------------
