@@ -109,6 +109,14 @@ static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const cha
   key->query_len = query_len;
 }
 
+static void CopyKeyFields(PschQueryInternKey* dst, const PschQueryInternKey* src) {
+  MemSet(dst, 0, sizeof(*dst));
+  dst->dbid = src->dbid;
+  dst->queryid = src->queryid;
+  dst->query_hash = src->query_hash;
+  dst->query_len = src->query_len;
+}
+
 // Partition lock index must come from dynahash's own hashcode (the low-order
 // bits, per dynahash.c "we expect callers to use the low-order bits of a
 // lookup key's hash value as a partition number").  Using a different hash
@@ -136,7 +144,7 @@ static dsa_pointer AllocInternObject(dsa_area* dsa, const PschQueryInternKey* ke
   }
 
   obj = (PschQueryInternObject*)dsa_get_address(dsa, dp);
-  obj->key = *key;
+  CopyKeyFields(&obj->key, key);
   obj->magic = PSCH_QUERY_INTERN_MAGIC;
   memcpy(obj->query, query, query_len);
   obj->query[query_len] = '\0';
@@ -268,7 +276,7 @@ static void ReleaseRef(dsa_pointer ref) {
     return;
   }
 
-  key = obj->key;
+  CopyKeyFields(&key, &obj->key);
   hashcode = get_hash_value(psch_query_intern_htab, &key);
   partition = PartitionLockFor(hashcode);
 
