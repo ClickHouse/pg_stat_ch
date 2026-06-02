@@ -299,39 +299,32 @@ static void ReleaseRef(dsa_pointer ref) {
   }
 }
 
-void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size,
-                                      uint16* out_len) {
+// Copy the resolved query bytes into the caller's buffer.  Pure read; does
+// not touch the refcount.  No-op when ref is invalid, output args are
+// unusable, the DSA area is gone, or the object's magic doesn't match
+// (caller's buffer is left as-is — the public entry point zeroes it first).
+//
+// We hold a reference (the caller's slot), so the object cannot be freed
+// underneath us during the copy.  No partition lock is needed for the read.
+static void ResolveInto(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len) {
   dsa_area* dsa;
   PschQueryInternObject* obj;
   uint16 copy_len;
 
   if (!DsaPointerIsValid(ref) || dst == NULL || dst_size == 0 || out_len == NULL) {
-    if (dst != NULL && dst_size > 0) {
-      dst[0] = '\0';
-    }
-    if (out_len != NULL) {
-      *out_len = 0;
-    }
     return;
   }
 
   dsa = PschDsaGetArea();
   if (dsa == NULL) {
-    dst[0] = '\0';
-    *out_len = 0;
     return;
   }
 
   obj = (PschQueryInternObject*)dsa_get_address(dsa, ref);
   if (obj->magic != PSCH_QUERY_INTERN_MAGIC) {
-    dst[0] = '\0';
-    *out_len = 0;
     return;
   }
 
-  // We hold a reference (the caller's slot), so the object cannot be freed
-  // underneath us during the copy.  No partition lock is needed for the
-  // read itself.
   copy_len = obj->key.query_len;
   if (copy_len >= dst_size) {
     copy_len = dst_size - 1;
@@ -339,6 +332,21 @@ void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_siz
   memcpy(dst, obj->query, copy_len);
   dst[copy_len] = '\0';
   *out_len = copy_len;
+}
 
+void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size,
+                                      uint16* out_len) {
+  // Zero outputs first so callers see a consistent empty result on any
+  // failure inside ResolveInto.  The release is independent of the resolve:
+  // ReleaseRef always runs and has its own guards for invalid ref / no DSA /
+  // bad magic, so passing degenerate output args still drops the reference.
+  if (out_len != NULL) {
+    *out_len = 0;
+  }
+  if (dst != NULL && dst_size > 0) {
+    dst[0] = '\0';
+  }
+
+  ResolveInto(ref, dst, dst_size, out_len);
   ReleaseRef(ref);
 }
