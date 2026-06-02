@@ -35,6 +35,8 @@ extern "C" {
 // Number of LWLock partitions guarding the interner HTAB.  Power of two so
 // partition index can be derived from dynahash's get_hash_value() with bitmask.
 #define PSCH_QUERY_INTERN_PARTITIONS 32
+StaticAssertDecl((PSCH_QUERY_INTERN_PARTITIONS & (PSCH_QUERY_INTERN_PARTITIONS - 1)) == 0,
+                 "PSCH_QUERY_INTERN_PARTITIONS must be a power of two");
 
 // Returns the HTAB shmem requirement (hash_estimate_size for the interner)
 // that callers must fold into their total RequestAddinShmemSpace reservation.
