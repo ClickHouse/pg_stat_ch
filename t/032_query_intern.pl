@@ -73,6 +73,7 @@ is($ret, 0, 'PREPARE long normalized query succeeds');
 # scalar (the `x` operator on a scalar repeats it) — passing a list to query()
 # would only use the first element.
 my $chunk_size = 1000;
+die "exec_count must be a multiple of chunk_size" if $exec_count % $chunk_size;
 my $chunk_sql  = "EXECUTE intern_test;\n" x $chunk_size;
 my $chunks     = int($exec_count / $chunk_size);
 for (my $i = 0; $i < $chunks; $i++) {
