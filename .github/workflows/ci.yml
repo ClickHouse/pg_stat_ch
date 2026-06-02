@@ -30,9 +30,12 @@ jobs:
             triplet: arm64-linux-pic
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Checkout clickhouse-c submodule
+        run: git submodule update --init third_party/clickhouse-c
 
       - name: Add PostgreSQL APT repository
         run: |
@@ -99,7 +102,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-pg${{ matrix.pg_version }}-${{ matrix.arch }}
           path: |
@@ -112,7 +115,7 @@ jobs:
     name: Code Style
     runs-on: depot-ubuntu-22.04-16
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check formatting
         run: |
@@ -128,9 +131,12 @@ jobs:
     name: Build (Clang, PG 18)
     runs-on: depot-ubuntu-22.04-16
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Checkout clickhouse-c submodule
+        run: git submodule update --init third_party/clickhouse-c
 
       - name: Add PostgreSQL APT repository
         run: |

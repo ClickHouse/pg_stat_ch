@@ -35,13 +35,15 @@ WORKDIR /build/pg_stat_ch
 # Copy dependency manifests first for layer caching
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY triplets/ triplets/
-COPY overlay-ports/ overlay-ports/
 COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
 COPY src/ src/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
+# Vendored header-only clickhouse-c client (git submodule, must be checked out
+# on the host before `docker build`).
+COPY third_party/clickhouse-c/ third_party/clickhouse-c/
 
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \

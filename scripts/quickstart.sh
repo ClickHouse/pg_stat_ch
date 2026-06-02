@@ -16,6 +16,8 @@ USAGE
 }
 
 cmd_up() {
+  # clickhouse-c is a git submodule the image build COPYs in; ensure it's present.
+  git submodule update --init third_party/clickhouse-c
   docker compose -f "$COMPOSE_FILE" up -d --build --wait
   echo "Quickstart stack is up."
   echo "PostgreSQL: localhost:55432"

@@ -17,6 +17,7 @@ class StatsExporter {
   class BasicColumn {
    public:
     virtual void Crunch() = 0;  // Implementation-defined processing helper.
+    virtual void Clear() {}
     virtual ~BasicColumn() = default;
   };
   template <typename T>

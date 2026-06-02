@@ -94,7 +94,7 @@ Prerequisites:
 - PostgreSQL 16+ development headers
 - [mise](https://mise.jdx.dev/) (recommended) or manual PostgreSQL installation
 
-[clickhouse-cpp](https://github.com/ClickHouse/clickhouse-cpp) is vendored as a submodule and statically linked.
+[clickhouse-c](https://github.com/ClickHouse/clickhouse-c) is vendored as a submodule and statically linked.
 
 ```bash
 git submodule update --init --recursive

@@ -1,6 +1,6 @@
 # Installing pg_stat_ch
 
-The extension is self-contained with all dependencies (including clickhouse-cpp) statically linked. No additional shared libraries are required at runtime.
+The extension is self-contained with all dependencies (including clickhouse-c) statically linked. No additional shared libraries are required at runtime.
 
 1. Copy files to PostgreSQL directories:
    ```bash

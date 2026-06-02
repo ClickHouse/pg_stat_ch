@@ -25,9 +25,12 @@ jobs:
             triplet: arm64-linux-pic
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Checkout clickhouse-c submodule
+        run: git submodule update --init third_party/clickhouse-c
 
       - name: Add PostgreSQL APT repository
         run: |
@@ -108,13 +111,13 @@ jobs:
           echo "debug_artifact=$DEBUG_NAME.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pg_stat_ch-pg${{ matrix.pg }}-${{ matrix.arch }}
           path: pg_stat_ch-*-pg${{ matrix.pg }}-linux-${{ matrix.arch }}.tar.gz
 
       - name: Upload debug symbols artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pg_stat_ch-pg${{ matrix.pg }}-${{ matrix.arch }}-debuginfo
           path: pg_stat_ch-*-pg${{ matrix.pg }}-linux-${{ matrix.arch }}-debuginfo.tar.gz
@@ -125,16 +128,16 @@ jobs:
     runs-on: depot-ubuntu-22.04-16
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*.tar.gz
           generate_release_notes: true

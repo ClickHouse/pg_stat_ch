@@ -221,12 +221,11 @@ run_clickhouse() {
         return 1
     fi
 
-    # Check if ClickHouse container is running
-    if ! curl -s 'http://localhost:18123/' --data 'SELECT 1' 2>/dev/null | grep -q '^1'; then
-        log_info "Starting ClickHouse container..."
-        docker compose -f docker/docker-compose.test.yml up -d --wait
-        sleep 5  # Extra wait for healthcheck
-    fi
+    log_info "Starting ClickHouse container..."
+    ./docker/tls/generate-certs.sh
+    docker compose -f docker/docker-compose.test.yml -f docker/docker-compose.tls.yml up -d --wait
+    docker exec -i psch-clickhouse clickhouse-client --multiquery < docker/init/00-schema.sql
+    sleep 5  # Extra wait for healthcheck
 
     local perl_lib="${PG_LIB}/pgxs/src/test/perl"
     if [[ ! -d "${perl_lib}" ]]; then
@@ -253,7 +252,7 @@ run_clickhouse() {
     PG_REGRESS="${pg_regress}" prove -v --timer \
         -I "${perl_lib}" \
         -I t \
-        t/010_clickhouse_export.pl t/011_clickhouse_reconnect.pl
+        t/*clickhouse*.pl
 }
 
 # Run OTel integration tests

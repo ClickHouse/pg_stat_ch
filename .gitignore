@@ -40,3 +40,7 @@ vcpkg_installed/
 
 # Release artifacts
 pg_stat_ch-*.zip
+
+# Generated TLS test certs (see docker/tls/generate-certs.sh)
+docker/tls/certs/*.crt
+docker/tls/certs/*.key

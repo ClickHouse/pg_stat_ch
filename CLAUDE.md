@@ -11,11 +11,13 @@ All aggregation (p50/p95/p99, top queries, errors) happens in ClickHouse via mat
 
 ## Dependencies
 
-Third-party dependencies are managed via **vcpkg** (manifest mode). The vcpkg submodule lives at `third_party/vcpkg`; the manifest is `vcpkg.json`.
+Most third-party dependencies (OpenTelemetry, Arrow, OpenSSL, lz4, zstd) are managed via **vcpkg** (manifest mode). The vcpkg submodule lives at `third_party/vcpkg`; the manifest is `vcpkg.json`.
+
+The ClickHouse client is **clickhouse-c** (`https://github.com/ClickHouse/clickhouse-c`), a header-only C library vendored as the `third_party/clickhouse-c` submodule. Its sole `CHC_IMPLEMENTATION` unit is `src/export/clickhouse_c_impl.c`; the C++ exporter includes the headers for declarations only.
 
 **First-time setup:**
 ```bash
-git submodule update --init  # clone vcpkg
+git submodule update --init  # clone vcpkg + clickhouse-c
 third_party/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 ```
 
@@ -90,7 +92,6 @@ mise run test:isolation     # Isolation tests (race conditions)
 - CMake with presets (default=debug, release, release-arm64)
 - vcpkg manifest mode (`vcpkg.json`) with custom triplets in `triplets/`
 - `cmake/FindPostgreSQLServer.cmake` - Finds PostgreSQL via pg_config
-- `cmake/FindClickHouseCpp.cmake` - Finds clickhouse-cpp (vcpkg port has no cmake config)
 - `cmake/CompilerWarnings.cmake` - Strict warning flags
 - `cmake/GitVersion.cmake` - Version extraction from git
 
@@ -127,7 +128,7 @@ Two independent versions exist:
 These projects are available in the workspace as references:
 
 - **`../pg_stat_monitor`** - Primary reference for PostgreSQL hook patterns, shared memory management, and query statistics collection. Our hook implementations are based on patterns from this project.
-- **`../clickhouse-cpp`** - C++ client library for ClickHouse; reference for HTTP transport to ClickHouse
+- **`~/s/pg_clickhouse`** - Sibling PG extension that embeds clickhouse-c; reference for the connection setup, `CHC_IMPLEMENTATION` TU, and INSERT packet loop (`src/binary/connection.c`, `insert.c`)
 - **`../pg_duckdb`** - Another PG extension in C++; reference for C++/PostgreSQL integration patterns
 - **`../postgres`** - PostgreSQL source code for understanding internal APIs
 
