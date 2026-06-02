@@ -191,10 +191,9 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
     return entry->object;
   }
   if (entry != NULL) {
-    // Hash hit but bytes differ — collision.  Treat as a miss; the safe
-    // fallback below will attempt to install our own entry, which can't
-    // happen because the slot is taken.  Return InvalidDsaPointer so the
-    // caller exports empty query text rather than wrong SQL.
+    // Hash hit but bytes differ — collision. Don't attempt to insert a second
+    // entry for the same key; return InvalidDsaPointer so the caller exports
+    // empty query text rather than wrong SQL.
     LWLockRelease(partition);
     return InvalidDsaPointer;
   }
