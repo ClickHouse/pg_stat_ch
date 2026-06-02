@@ -11,6 +11,9 @@ env:
   PG_VERSION: REL_18_STABLE
   PG_TAP_DIR: ${{ github.workspace }}/pg-tap
 
+permissions:
+  contents: read
+
 jobs:
   tap-tests:
     name: TAP Tests (PG 18)

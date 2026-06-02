@@ -9,6 +9,9 @@ on:
 env:
   CI: true  # Enables -Werror
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build & Test (PG ${{ matrix.pg_version }}, ${{ matrix.arch }})

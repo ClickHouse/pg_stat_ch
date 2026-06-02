@@ -1,6 +1,10 @@
 name: 🚀 Bundle & Release on PGXN
 on:
   push:
+
+permissions:
+  contents: read
+
 jobs:
   release:
     name: Release on PGXN
