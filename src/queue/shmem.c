@@ -516,14 +516,14 @@ void PschRecordExportFailure(const char* error_msg) {
   LWLockRelease(psch_shared_state->lock);
 }
 
-int PschGetBgworkerPid(void) {
+pid_t PschGetBgworkerPid(void) {
   if (psch_shared_state == NULL) {
     return 0;
   }
-  return (int)pg_atomic_read_u32(&psch_shared_state->bgworker_pid);
+  return (pid_t)pg_atomic_read_u32(&psch_shared_state->bgworker_pid);
 }
 
-void PschSetBgworkerPid(int pid) {
+void PschSetBgworkerPid(pid_t pid) {
   if (psch_shared_state == NULL) {
     return;
   }
