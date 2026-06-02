@@ -78,10 +78,10 @@ int PschQueryInternLockCount(void) {
   return PSCH_QUERY_INTERN_PARTITIONS;
 }
 
-void PschQueryInternShmemInit(void* lwlock_base) {
+void PschQueryInternShmemInit(LWLockPadded* lwlock_base) {
   HASHCTL info;
 
-  psch_query_intern_locks = (LWLockPadded*)lwlock_base;
+  psch_query_intern_locks = lwlock_base;
 
   MemSet(&info, 0, sizeof(info));
   info.keysize = sizeof(PschQueryInternKey);

@@ -30,6 +30,7 @@ extern "C" {
 
 #include "postgres.h"
 
+#include "storage/lwlock.h"
 #include "utils/dsa.h"
 
 // Number of LWLock partitions guarding the interner HTAB.  Power of two so
@@ -51,7 +52,7 @@ int PschQueryInternLockCount(void);
 //
 // `lwlock_base` must point at the first interner partition lock inside the
 // pg_stat_ch named tranche (i.e. immediately after the main queue lock).
-void PschQueryInternShmemInit(void* lwlock_base);
+void PschQueryInternShmemInit(LWLockPadded* lwlock_base);
 
 // Acquire (or create) an intern reference for the given query text.
 //
