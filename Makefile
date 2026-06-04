@@ -4,25 +4,21 @@ DISTVERSION  = $(shell grep -m 1 '[[:space:]]\{3\}"version":' META.json | \
                sed -e 's/[[:space:]]*"version":[[:space:]]*"\([^"]*\)",\{0,1\}/\1/')
 
 PG_CONFIG   ?= pg_config
-CH_CPP_DIR  := third_party/clickhouse-cpp
 BUILD_DIR   := build
-CH_CPP_LIB  := $(BUILD_DIR)/third_party/libclickhouse-cpp-lib.a
-PGXS        := $(shell $(PG_CONFIG) --pgxs)
-DLSUFFIX 		:= $(shell make -f "$(PGXS)" show_dl_suffix "$(PGXS)")
+CMAKE       ?= cmake
+CMAKE_ARGS  ?= -DPG_CONFIG=$(PG_CONFIG)
 
-all: $(BUILD_DIR)/pg_stat_ch$(DLSUFFIX)
+.PHONY: all install installcheck dist
 
-$(CH_CPP_DIR)/CMakeLists.txt:
-	git submodule update --init
+all: third_party/clickhouse-c/clickhouse.h
+	$(CMAKE) -B $(BUILD_DIR) $(CMAKE_ARGS)
+	$(CMAKE) --build $(BUILD_DIR)
 
-$(CH_CPP_LIB): $(CH_CPP_DIR)/CMakeLists.txt
+third_party/clickhouse-c/clickhouse.h:
+	git submodule update --init third_party/clickhouse-c
 
-$(BUILD_DIR)/pg_stat_ch$(DLSUFFIX): $(CH_CPP_LIB)
-	cmake -B $(BUILD_DIR)
-	cmake --build $(BUILD_DIR)
-
-install: $(BUILD_DIR)/pg_stat_ch$(DLSUFFIX)
-	cmake --install $(BUILD_DIR) --parallel $$(nproc)
+install: all
+	$(CMAKE) --install $(BUILD_DIR) --parallel $$(nproc)
 
 installcheck:
 	@echo TODO

@@ -23,7 +23,7 @@ function(pg_stat_ch_set_warnings target)
     -fPIC
     -fvisibility=hidden
     -fno-omit-frame-pointer  # Enable frame pointers for perf profiling
-    # Note: We need exceptions and RTTI for clickhouse-cpp integration
+    # Note: We need exceptions and RTTI for the OpenTelemetry/Arrow exporters
     # -fno-exceptions
     # -fno-rtti
   )

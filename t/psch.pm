@@ -142,6 +142,8 @@ sub psch_init_node_with_clickhouse {
     my $clickhouse_host = $opts{clickhouse_host} // 'localhost';
     my $clickhouse_port = $opts{clickhouse_port} // 19000;
     my $clickhouse_database = $opts{clickhouse_database} // 'pg_stat_ch';
+    my $use_tls = $opts{use_tls} ? 'on' : 'off';
+    my $skip_tls_verify = $opts{skip_tls_verify} ? 'on' : 'off';
 
     my $node = PostgreSQL::Test::Cluster->new($name);
     $node->init();
@@ -154,6 +156,8 @@ pg_stat_ch.batch_max = $batch_max
 pg_stat_ch.clickhouse_host = '$clickhouse_host'
 pg_stat_ch.clickhouse_port = $clickhouse_port
 pg_stat_ch.clickhouse_database = '$clickhouse_database'
+pg_stat_ch.clickhouse_use_tls = $use_tls
+pg_stat_ch.clickhouse_skip_tls_verify = $skip_tls_verify
 });
     $node->start();
     $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');

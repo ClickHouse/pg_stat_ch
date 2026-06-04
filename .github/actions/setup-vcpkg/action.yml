@@ -36,9 +36,9 @@ runs:
         echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/.cache/vcpkg-archives" >> "$GITHUB_ENV"
 
     - name: Cache vcpkg binary archives
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cache/vcpkg-archives
-        key: vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/*.cmake', 'overlay-ports/**') }}
+        key: vcpkg-${{ inputs.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/*.cmake') }}
         restore-keys: |
           vcpkg-${{ inputs.triplet }}-

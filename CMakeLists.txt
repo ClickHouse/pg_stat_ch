@@ -20,7 +20,7 @@ message(STATUS "PostgreSQL ${PostgreSQLServer_VERSION} found")
 # Compiler warnings
 include(CompilerWarnings)
 
-# OpenSSL (required — vcpkg manifest always builds clickhouse-cpp with openssl)
+# OpenSSL (required for clickhouse-c TLS transport)
 find_package(OpenSSL REQUIRED)
 message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 
@@ -28,8 +28,11 @@ message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 # Third-party dependencies (via vcpkg)
 # ---------------------------------------------------------------------------
 find_package(opentelemetry-cpp CONFIG REQUIRED)
-find_package(ClickHouseCpp REQUIRED)
 find_package(Arrow CONFIG REQUIRED)
+# clickhouse-c (vendored under third_party/) is header-only; its compression
+# codecs link against lz4 + zstd.
+find_package(lz4 CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 # Source layout: src/*.c is the C plugin layer; src/export/*.cc is the C++
 # exporter.  Keeping the PG ↔ extension boundary in pure C is what prevents
@@ -95,9 +98,13 @@ target_include_directories(pg_stat_ch PRIVATE
   include
   src
 )
+# clickhouse-c is vendored third-party code: include it as SYSTEM so its
+# header-only bodies don't trip the strict warning flags / -Werror below.
+target_include_directories(pg_stat_ch SYSTEM PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/clickhouse-c
+)
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
-  ClickHouseCpp::ClickHouseCpp
   opentelemetry-cpp::api
   opentelemetry-cpp::sdk
   opentelemetry-cpp::otlp_grpc_metrics_exporter
@@ -106,7 +113,7 @@ target_link_libraries(pg_stat_ch PRIVATE
   opentelemetry-cpp::logs
   Arrow::arrow_static
 )
-target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto lz4::lz4 zstd::libzstd)
 pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES

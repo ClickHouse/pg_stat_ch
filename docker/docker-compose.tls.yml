@@ -1,0 +1,9 @@
+services:
+  clickhouse:
+    ports:
+      - "29440:9440"   # Native protocol (TLS)
+    volumes:
+      - ./tls/secure.xml:/etc/clickhouse-server/config.d/secure.xml:ro
+      - ./tls/certs:/etc/clickhouse-server/certs:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--secure", "--host", "localhost", "--port", "9440", "--accept-invalid-certificate", "-q", "SELECT 1"]

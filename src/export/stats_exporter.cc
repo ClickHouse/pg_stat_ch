@@ -13,8 +13,6 @@ extern "C" {
 #include <string>
 #include <vector>
 
-#include <clickhouse/client.h>
-
 #include "config/guc.h"
 #include "export/arrow_batch.h"
 #include "export/clickhouse_exporter.h"
@@ -529,9 +527,9 @@ int PschGetConsecutiveFailures(void) {
   }
 }
 
-// Exception barrier: exporter destructors (clickhouse-cpp socket close, gRPC
-// stub teardown, protobuf arena release) can throw. Catching here prevents the
-// throw from crossing the on_proc_exit chain.
+// Exception barrier: the OTel exporter's destructors (gRPC stub teardown,
+// protobuf arena release) can throw. Catching here prevents the throw from
+// crossing the on_proc_exit chain.
 void PschExporterShutdown(void) {
   try {
     g_exporter.exporter.reset();

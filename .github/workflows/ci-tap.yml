@@ -20,9 +20,12 @@ jobs:
     runs-on: depot-ubuntu-22.04-16
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Checkout clickhouse-c submodule
+        run: git submodule update --init third_party/clickhouse-c
 
       - name: Install PostgreSQL build dependencies
         run: |
@@ -47,7 +50,7 @@ jobs:
 
       - name: Cache PostgreSQL build
         id: cache-pg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.PG_TAP_DIR }}
           key: pg-tap-${{ env.PG_VERSION }}-ubuntu22.04-v3
@@ -83,7 +86,8 @@ jobs:
 
       - name: Start ClickHouse
         run: |
-          docker compose -f docker/docker-compose.test.yml up -d --wait
+          ./docker/tls/generate-certs.sh
+          docker compose -f docker/docker-compose.test.yml -f docker/docker-compose.tls.yml up -d --wait
           # Sanity-probe the host-mapped HTTP port the TAP suite uses.
           for i in {1..30}; do
             if curl -sf 'http://localhost:18123/' --data 'SELECT 1' >/dev/null 2>&1; then
@@ -110,7 +114,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tap-test-logs
           path: |
@@ -119,4 +123,5 @@ jobs:
 
       - name: Cleanup ClickHouse
         if: always()
-        run: docker compose -f docker/docker-compose.test.yml down -v
+        run: |
+          docker compose -f docker/docker-compose.test.yml -f docker/docker-compose.tls.yml down -v
