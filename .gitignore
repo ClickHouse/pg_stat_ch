@@ -4,7 +4,9 @@
 *.dylib
 *.a
 .deps/
+.build_deps/
 build/
+build_*/
 CMakeCache.txt
 CMakeFiles/
 
@@ -44,3 +46,14 @@ pg_stat_ch-*.zip
 # Generated TLS test certs (see docker/tls/generate-certs.sh)
 docker/tls/certs/*.crt
 docker/tls/certs/*.key
+
+# Local dev-only checkouts in third_party (only vcpkg + clickhouse-c are submodules)
+third_party/clickhouse-cpp/
+third_party/opentelemetry-cpp/
+
+# Local outputs from docker harnesses
+docker/perf-results/
+docker/quickstart/arrow-dump/
+
+# Claude scheduled-task runtime state
+.claude/scheduled_tasks.lock
