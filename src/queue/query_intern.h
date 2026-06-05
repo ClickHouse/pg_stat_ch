@@ -75,7 +75,11 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
 // decrements the refcount; if the refcount reaches zero the entry is removed
 // from the HTAB and the DSA object is freed.
 //
-// If `ref` is InvalidDsaPointer, sets `dst[0] = '\0'` and `*out_len = 0`.
+// The two halves are independent.  The release runs whenever `ref` is valid
+// and points at one of ours, regardless of whether `dst`/`out_len` are
+// usable; passing NULL/zero output args just makes the resolve a no-op.  If
+// `ref` is InvalidDsaPointer both halves are no-ops (output zeroed, nothing
+// to release).
 //
 // Called by the bgworker (single consumer) on every dequeued event.
 void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len);
