@@ -30,7 +30,7 @@
       "abstract": "PostgreSQL Query Telemetry Exporter to ClickHouse",
       "docfile": "README.md",
       "file": "pg_stat_ch.control",
-      "version": "0.3.9"
+      "version": "0.3.10"
     }
   },
   "resources": {
@@ -49,5 +49,5 @@
     "metrics",
     "clickhouse"
   ],
-  "version": "0.3.9"
+  "version": "0.3.10"
 }
