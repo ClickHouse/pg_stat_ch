@@ -203,6 +203,11 @@ assert dur_field.type == pa.uint64(), f"duration_us type wrong: {dur_field.type}
 rows_field = schema.field('rows')
 assert rows_field.type == pa.uint64(), f"rows type wrong: {rows_field.type}"
 
+# read_replica is a dictionary-encoded column (like server_role/region), not plain utf8.
+rr_field = schema.field('read_replica')
+assert pa.types.is_dictionary(rr_field.type), f"read_replica not dict-encoded: {rr_field.type}"
+assert rr_field.type.value_type == pa.utf8(), f"read_replica dict value type wrong: {rr_field.type.value_type}"
+
 print(f"OK:fields={len(schema)},rows={total_rows}")
 PYEOF
 
