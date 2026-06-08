@@ -198,6 +198,7 @@ CREATE TABLE pg_stat_ch.events_raw
     instance_ubid String DEFAULT '' COMMENT 'Ubicloud ID of the emitting Postgres instance. String (opaque, not LC) — cardinality scales with active customer count.',
     server_ubid String DEFAULT '' COMMENT 'Ubicloud ID of the underlying server. String (opaque).',
     server_role LowCardinality(String) DEFAULT '' COMMENT 'Server role within the HA pair. ~2 values: "primary", "standby".',
+    read_replica_type LowCardinality(String) DEFAULT 'none' COMMENT 'Read-replica classification. ~few values: "regional", "none". Lets downstream promote read-replica traffic that would otherwise report server_role=standby. Default ''none'' matches clickgres-platform query_logs_arrow.',
     region LowCardinality(String) DEFAULT '' COMMENT 'Cloud region (e.g. "us-east-1"). ~tens of values.',
     cell LowCardinality(String) DEFAULT '' COMMENT 'Cell (sharded deployment unit) within the region. ~hundreds of values.',
     service_version LowCardinality(String) DEFAULT '' COMMENT 'pg_stat_ch extension version.',
