@@ -426,7 +426,8 @@ struct ArrowBatchBuilder::Impl {
                       "Arrow instance_ubid append") ||
         !AppendString(&server_ubid_builder, ExtraAttr("server_ubid"), "Arrow server_ubid append") ||
         !AppendString(&server_role_builder, ExtraAttr("server_role"), "Arrow server_role append") ||
-        !AppendString(&read_replica_builder, ExtraAttr("read_replica"), "Arrow read_replica append") ||
+        !AppendString(&read_replica_builder, ExtraAttr("read_replica"),
+                      "Arrow read_replica append") ||
         !AppendString(&region_builder, ExtraAttr("region"), "Arrow region append") ||
         !AppendString(&cell_builder, ExtraAttr("cell"), "Arrow cell append") ||
         !AppendString(&service_version_builder, service_version, "Arrow service_version append") ||
@@ -435,13 +436,13 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    estimated_bytes +=
-        kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() + client_addr.size() +
-        query_text.size() + err_message.size() + err_sqlstate.size() + service_version.size() +
-        ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
-        ExtraAttr("server_role").size() + ExtraAttr("read_replica").size() +
-        ExtraAttr("region").size() + ExtraAttr("cell").size() +
-        ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
+    estimated_bytes += kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() +
+                       client_addr.size() + query_text.size() + err_message.size() +
+                       err_sqlstate.size() + service_version.size() +
+                       ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
+                       ExtraAttr("server_role").size() + ExtraAttr("read_replica").size() +
+                       ExtraAttr("region").size() + ExtraAttr("cell").size() +
+                       ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
     ++num_rows;
     return true;
   }
