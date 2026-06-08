@@ -186,7 +186,7 @@ expected = [
     'duration_us', 'rows', 'pid', 'query_id',
     'shared_blks_hit', 'shared_blks_read',
     'wal_records', 'wal_bytes',
-    'service_version', 'region',
+    'service_version', 'region', 'read_replica',
 ]
 missing = [c for c in expected if schema.get_field_index(c) == -1]
 if missing:

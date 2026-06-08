@@ -373,7 +373,7 @@ void PschInitGuc(void) {
       "pg_stat_ch.extra_attributes",
       "Key-value pairs appended to exported Arrow batches.",
       "Semicolon-separated k:v pairs for resource columns: "
-      "'instance_ubid:abc;server_role:primary;region:us-east-1'.",
+      "'instance_ubid:abc;server_role:primary;read_replica:false;region:us-east-1'.",
       &psch_extra_attributes,
       "",
       PGC_SIGHUP,

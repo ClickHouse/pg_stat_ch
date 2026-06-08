@@ -193,6 +193,7 @@ struct ArrowBatchBuilder::Impl {
   arrow::StringBuilder instance_ubid_builder;
   arrow::StringBuilder server_ubid_builder;
   DictBuilder server_role_builder;
+  DictBuilder read_replica_builder;
   DictBuilder region_builder;
   DictBuilder cell_builder;
   DictBuilder service_version_builder;
@@ -260,6 +261,7 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("instance_ubid", arrow::utf8()),
         arrow::field("server_ubid", arrow::utf8()),
         arrow::field("server_role", DictionaryUtf8Type()),
+        arrow::field("read_replica", DictionaryUtf8Type()),
         arrow::field("region", DictionaryUtf8Type()),
         arrow::field("cell", DictionaryUtf8Type()),
         arrow::field("service_version", DictionaryUtf8Type()),
@@ -424,6 +426,7 @@ struct ArrowBatchBuilder::Impl {
                       "Arrow instance_ubid append") ||
         !AppendString(&server_ubid_builder, ExtraAttr("server_ubid"), "Arrow server_ubid append") ||
         !AppendString(&server_role_builder, ExtraAttr("server_role"), "Arrow server_role append") ||
+        !AppendString(&read_replica_builder, ExtraAttr("read_replica"), "Arrow read_replica append") ||
         !AppendString(&region_builder, ExtraAttr("region"), "Arrow region append") ||
         !AppendString(&cell_builder, ExtraAttr("cell"), "Arrow cell append") ||
         !AppendString(&service_version_builder, service_version, "Arrow service_version append") ||
@@ -436,7 +439,8 @@ struct ArrowBatchBuilder::Impl {
         kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() + client_addr.size() +
         query_text.size() + err_message.size() + err_sqlstate.size() + service_version.size() +
         ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
-        ExtraAttr("server_role").size() + ExtraAttr("region").size() + ExtraAttr("cell").size() +
+        ExtraAttr("server_role").size() + ExtraAttr("read_replica").size() +
+        ExtraAttr("region").size() + ExtraAttr("cell").size() +
         ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
     ++num_rows;
     return true;
@@ -519,6 +523,7 @@ struct ArrowBatchBuilder::Impl {
         !add_array(&instance_ubid_builder, "Arrow instance_ubid finish") ||
         !add_array(&server_ubid_builder, "Arrow server_ubid finish") ||
         !add_dict_array(&server_role_builder, "Arrow server_role finish") ||
+        !add_dict_array(&read_replica_builder, "Arrow read_replica finish") ||
         !add_dict_array(&region_builder, "Arrow region finish") ||
         !add_dict_array(&cell_builder, "Arrow cell finish") ||
         !add_dict_array(&service_version_builder, "Arrow service_version finish") ||
@@ -625,6 +630,7 @@ struct ArrowBatchBuilder::Impl {
     instance_ubid_builder.Reset();
     server_ubid_builder.Reset();
     server_role_builder.ResetFull();
+    read_replica_builder.ResetFull();
     region_builder.ResetFull();
     cell_builder.ResetFull();
     service_version_builder.ResetFull();
