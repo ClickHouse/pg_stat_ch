@@ -335,8 +335,8 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_parallel_workers_planned->Append(ev.parallel_workers_planned);
     col_parallel_workers_launched->Append(ev.parallel_workers_launched);
 
-    col_err_sqlstate->Append(
-        std::string(ev.err_sqlstate, strnlen(ev.err_sqlstate, sizeof(ev.err_sqlstate))));
+    col_err_sqlstate->Append(std::string(
+        ev.err_sqlstate, strnlen(ev.err_sqlstate, sizeof(ev.err_sqlstate) - 1)));
     col_err_elevel->Append(ev.err_elevel);
     auto elen = ClampFieldLen(ev.err_message_len, static_cast<uint16>(PSCH_MAX_ERR_MSG_LEN),
                               "err_message_len");
