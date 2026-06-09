@@ -177,7 +177,7 @@ my $intern_ok_rows = psch_query_clickhouse(
     "SELECT count() FROM pg_stat_ch.events_raw " .
     "WHERE pid = $pid AND query_text != ''");
 cmp_ok($intern_ok_rows, '>=', 1,
-       "ClickHouse has at least one row with non-empty query " .
+       "ClickHouse has at least one row with non-empty query_text " .
        "(intern was working before pool filled; got $intern_ok_rows)");
 
 $node->stop();
