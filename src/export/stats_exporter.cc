@@ -235,13 +235,13 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
   auto col_ts = exporter->RecordDateTime("ts");
   auto col_duration_us = exporter->DbDurationColumn();
-  auto col_db = exporter->DbNameColumn();
-  auto col_username = exporter->DbUserColumn();
+  auto col_db_name = exporter->DbNameColumn();
+  auto col_db_user = exporter->DbUserColumn();
   auto col_pid = exporter->RecordInt32("pid");
   auto col_query_id = exporter->RecordInt64("query_id");
-  auto col_cmd_type = exporter->DbOperationColumn();
+  auto col_db_operation = exporter->DbOperationColumn();
   auto col_rows = exporter->MetricUInt64("rows");
-  auto col_query = exporter->DbQueryTextColumn();
+  auto col_query_text = exporter->DbQueryTextColumn();
 
   auto col_shared_blks_hit = exporter->MetricInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->MetricInt64("shared_blks_read");
@@ -290,15 +290,15 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
     col_ts->Append(ev.ts_start + kPostgresEpochOffsetUs);
     col_duration_us->Append(ev.duration_us);
-    col_db->Append(std::string(ev.datname, ev.datname_len));
-    col_username->Append(std::string(ev.username, ev.username_len));
+    col_db_name->Append(std::string(ev.datname, ev.datname_len));
+    col_db_user->Append(std::string(ev.username, ev.username_len));
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
-    col_cmd_type->Append(PschCmdTypeToString(ev.cmd_type));
+    col_db_operation->Append(PschCmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
 
     auto qlen = ClampFieldLen(ev.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
-    col_query->Append(std::string(ev.query, qlen));
+    col_query_text->Append(std::string(ev.query, qlen));
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);
