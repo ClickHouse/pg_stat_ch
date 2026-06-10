@@ -316,8 +316,10 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   // Suppress error capture for the duration of this function to prevent deadlock.
   // HandleOverflow() calls ereport(WARNING) which triggers emit_log_hook, which
-  // would re-enter PschEnqueueEvent() and deadlock on LWLockAcquire.
-  PschSuppressErrorCapture(true);
+  // would re-enter PschEnqueueEvent() and deadlock on LWLockAcquire. Restore
+  // (rather than clear) on exit: when we're called from the emit_log_hook
+  // capture path, the hook already holds the guard and must keep holding it.
+  bool saved_capture = PschSuppressErrorCapture(true);
 
   uint32 capacity = psch_shared_state->capacity;
 
@@ -329,24 +331,29 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   if (head - tail >= capacity) {
     HandleOverflow();
-    PschSuppressErrorCapture(false);
+    PschSuppressErrorCapture(saved_capture);
     return false;
   }
 
   // === TRY-LOCK PATH: Attempt non-blocking lock ===
   if (LWLockConditionalAcquire(psch_shared_state->lock, LW_EXCLUSIVE)) {
     bool result = false;
+    // Restore suppression in PG_FINALLY: an error escaping the locked section
+    // would otherwise longjmp past the restore and leave capture disabled for
+    // the rest of the backend's lifetime.
     PG_TRY();
     { result = TryEnqueueLocked(event, capacity); }
     PG_FINALLY();
-    { LWLockRelease(psch_shared_state->lock); }
+    {
+      LWLockRelease(psch_shared_state->lock);
+      PschSuppressErrorCapture(saved_capture);
+    }
     PG_END_TRY();
-    PschSuppressErrorCapture(false);
     return result;
   }
 
   // === CONTENDED PATH: Buffer locally, flush at transaction end ===
-  PschSuppressErrorCapture(false);
+  PschSuppressErrorCapture(saved_capture);
   PschLocalBatchAdd(event);
   return true;
 }
@@ -357,7 +364,7 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   if (psch_shared_state == NULL || !psch_enabled || count == 0)
     return 0;
 
-  PschSuppressErrorCapture(true);
+  bool saved_capture = PschSuppressErrorCapture(true);
   uint32 capacity = psch_shared_state->capacity;
 
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
@@ -366,12 +373,15 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   if (head - tail >= capacity) {
     for (int i = 0; i < count; i++)
       HandleOverflow();
-    PschSuppressErrorCapture(false);
+    PschSuppressErrorCapture(saved_capture);
     return 0;
   }
 
   int enqueued = 0;
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
+  // Restore suppression in PG_FINALLY: an error escaping the locked section
+  // would otherwise longjmp past the restore and leave capture disabled for
+  // the rest of the backend's lifetime.
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
@@ -380,10 +390,12 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
     }
   }
   PG_FINALLY();
-  { LWLockRelease(psch_shared_state->lock); }
+  {
+    LWLockRelease(psch_shared_state->lock);
+    PschSuppressErrorCapture(saved_capture);
+  }
   PG_END_TRY();
 
-  PschSuppressErrorCapture(false);
   return enqueued;
 }
 

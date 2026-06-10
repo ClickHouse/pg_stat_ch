@@ -51,8 +51,10 @@ jobs:
             postgresql-${{ matrix.pg_version }} \
             postgresql-server-dev-${{ matrix.pg_version }}
 
+      # libkrb5-dev: PGDG packages are built with GSSAPI, so including
+      # libpq/libpq-be.h (for MyProcPort) pulls in gssapi/gssapi.h.
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
+        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev libkrb5-dev pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg
         with:
@@ -150,7 +152,7 @@ jobs:
         run: |
           sudo apt-get install -y \
             postgresql-18 postgresql-server-dev-18 \
-            cmake ninja-build clang libssl-dev pkg-config curl zip unzip tar
+            cmake ninja-build clang libssl-dev libkrb5-dev pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg
         with:
