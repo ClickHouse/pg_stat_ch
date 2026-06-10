@@ -1,0 +1,5 @@
+apache/arrow-nanoarrow 0.8.0 (tag apache-arrow-nanoarrow-0.8.0, commit a579fbf5d192e85b6249935e117de7d02a6dc4e9)
+Generated with: python3 ci/scripts/bundle.py --output-dir <dir> --with-ipc --with-flatcc --symbol-namespace PgStatCh
+License: Apache-2.0 (see upstream LICENSE.txt)
+Local modifications: none yet (write-side ZSTD buffer compression and dictionary-batch
+emission live in src/export/arrow_ipc_emit.c, NOT as patches to these files)
