@@ -63,7 +63,7 @@ subtest 'export over TLS' => sub {
         "events visible in TLS ClickHouse (got $ch_count)");
 
     my $query_check = psch_wait_for_clickhouse_query(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE query != ''", sub { $_[0] >= 1 }, 10);
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query_text != ''", sub { $_[0] >= 1 }, 10);
     cmp_ok($query_check, '>=', 1, 'query text captured over TLS');
 };
 

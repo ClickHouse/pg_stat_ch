@@ -23,15 +23,15 @@ if ($ch_check !~ /^1/) {
     plan skip_all => 'ClickHouse container not running';
 }
 
-my $node = psch_init_node_with_clickhouse('cmd_type_counts',
+my $node = psch_init_node_with_clickhouse('db_operation_counts',
     flush_interval_ms => 100,
     batch_max => 100
 );
 
-# Helper: parse cmd_type counts from ClickHouse
-sub get_cmd_type_counts {
+# Helper: parse db_operation counts from ClickHouse
+sub get_db_operation_counts {
     my $result = psch_query_clickhouse(
-        "SELECT cmd_type, count() FROM pg_stat_ch.events_raw GROUP BY cmd_type FORMAT TabSeparated"
+        "SELECT db_operation, count() FROM pg_stat_ch.events_raw GROUP BY db_operation FORMAT TabSeparated"
     );
     my %counts;
     for my $line (split /\n/, $result) {
@@ -72,7 +72,7 @@ subtest 'DML command type counts' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
     sleep(2);  # Wait for export without polling (polling adds SELECTs)
 
-    my %counts = get_cmd_type_counts();
+    my %counts = get_db_operation_counts();
 
     # Verify exact counts (flush adds 1 SELECT, so expect 4)
     is($counts{SELECT} // 0, 4, 'SELECT count = 4 (3 + flush)');
@@ -109,7 +109,7 @@ subtest 'DDL/Utility command type counts' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
     sleep(2);  # Wait for export without polling
 
-    my %counts = get_cmd_type_counts();
+    my %counts = get_db_operation_counts();
 
     is($counts{UTILITY} // 0, 8, 'UTILITY count = 8 DDL statements');
     is($counts{SELECT} // 0, 1, 'SELECT count = 1 (flush only)');
@@ -156,7 +156,7 @@ subtest 'mixed workload counts' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
     sleep(2);  # Wait for export without polling
 
-    my %counts = get_cmd_type_counts();
+    my %counts = get_db_operation_counts();
 
     # Verify exact counts
     # SELECT: 2 queries + 1 flush = 3
@@ -206,7 +206,7 @@ subtest 'comprehensive DDL coverage' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
     sleep(2);  # Wait for export without polling
 
-    my %counts = get_cmd_type_counts();
+    my %counts = get_db_operation_counts();
 
     # All DDL should be UTILITY - exactly 11
     is($counts{UTILITY} // 0, 11,

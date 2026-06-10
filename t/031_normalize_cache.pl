@@ -85,11 +85,11 @@ pg_stat_ch.normalize_cache_max = 64
 
     # Collect all exported query texts from this backend.
     my $all_queries = psch_wait_for_clickhouse_query(
-        "SELECT groupArray(query) FROM pg_stat_ch.events_raw " .
+        "SELECT groupArray(query_text) FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query NOT LIKE '%pg_stat_ch%' " .
-        "AND query NOT LIKE '%pg_extension%' " .
-        "AND query != ''",
+        "AND query_text NOT LIKE '%pg_stat_ch%' " .
+        "AND query_text NOT LIKE '%pg_extension%' " .
+        "AND query_text != ''",
         sub { $_[0] ne '' },
         10
     );
@@ -107,9 +107,9 @@ pg_stat_ch.normalize_cache_max = 64
     my $count = psch_wait_for_clickhouse_query(
         "SELECT count() FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query NOT LIKE '%pg_stat_ch%' " .
-        "AND query NOT LIKE '%pg_extension%' " .
-        "AND query != ''",
+        "AND query_text NOT LIKE '%pg_stat_ch%' " .
+        "AND query_text NOT LIKE '%pg_extension%' " .
+        "AND query_text != ''",
         sub { $_[0] >= scalar(@queries) },
         10
     );
@@ -160,10 +160,10 @@ subtest 'long normalized query is clamped to max export length' => sub {
     psch_wait_for_export($node, 1, 10);
 
     my $exported_query = psch_wait_for_clickhouse_query(
-        "SELECT query FROM pg_stat_ch.events_raw " .
+        "SELECT query_text FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE 'SELECT%pg_class%' " .
-        "ORDER BY ts_start DESC LIMIT 1",
+        "AND query_text LIKE 'SELECT%pg_class%' " .
+        "ORDER BY ts DESC LIMIT 1",
         sub { $_[0] ne '' },
         10
     );
@@ -236,10 +236,10 @@ pg_stat_ch.normalize_cache_max = 64
     psch_wait_for_export($node, 1, 10);
 
     my $first = psch_wait_for_clickhouse_query(
-        "SELECT query FROM pg_stat_ch.events_raw " .
+        "SELECT query_text FROM pg_stat_ch.events_raw " .
         "WHERE pid = $pid " .
-        "AND query LIKE '%pg_class%' " .
-        "AND query LIKE '%\$1%' " .
+        "AND query_text LIKE '%pg_class%' " .
+        "AND query_text LIKE '%\$1%' " .
         "LIMIT 1",
         sub { $_[0] ne '' },
         10
@@ -281,7 +281,7 @@ pg_stat_ch.normalize_cache_max = 64
 
     my $empty_count = psch_query_clickhouse(
         "SELECT count() FROM pg_stat_ch.events_raw " .
-        "WHERE pid = $pid AND query = ''"
+        "WHERE pid = $pid AND query_text = ''"
     );
     cmp_ok($empty_count, '>=', 1,
         'Evicted cache entry produces empty query text on re-EXECUTE');

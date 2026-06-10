@@ -58,7 +58,7 @@ subtest 'basic export' => sub {
 
     # Verify query field is populated
     my $query_check = psch_wait_for_clickhouse_query(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE query != ''",
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query_text != ''",
         sub { $_[0] >= 1 },
         10
     );
@@ -134,18 +134,18 @@ subtest 'all fields populated' => sub {
     cmp_ok($duration_check, '>=', 1, 'duration_us is populated');
 
     my $db_check = psch_wait_for_clickhouse_query(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE db = 'postgres'",
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE db_name = 'postgres'",
         sub { $_[0] >= 1 },
         10
     );
-    cmp_ok($db_check, '>=', 1, 'db field is populated');
+    cmp_ok($db_check, '>=', 1, 'db_name field is populated');
 
-    my $cmd_type_check = psch_wait_for_clickhouse_query(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE cmd_type != ''",
+    my $db_operation_check = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE db_operation != ''",
         sub { $_[0] >= 1 },
         10
     );
-    cmp_ok($cmd_type_check, '>=', 1, 'cmd_type is populated');
+    cmp_ok($db_operation_check, '>=', 1, 'db_operation is populated');
 
     # Clean up
     $node->safe_psql('postgres', 'DROP TABLE IF EXISTS test_fields');
