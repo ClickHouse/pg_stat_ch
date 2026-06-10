@@ -338,12 +338,17 @@ bool PschEnqueueEvent(const PschEvent* event) {
   // === TRY-LOCK PATH: Attempt non-blocking lock ===
   if (LWLockConditionalAcquire(psch_shared_state->lock, LW_EXCLUSIVE)) {
     bool result = false;
+    // Restore suppression in PG_FINALLY: an error escaping the locked section
+    // would otherwise longjmp past the restore and leave capture disabled for
+    // the rest of the backend's lifetime.
     PG_TRY();
     { result = TryEnqueueLocked(event, capacity); }
     PG_FINALLY();
-    { LWLockRelease(psch_shared_state->lock); }
+    {
+      LWLockRelease(psch_shared_state->lock);
+      PschSuppressErrorCapture(saved_capture);
+    }
     PG_END_TRY();
-    PschSuppressErrorCapture(saved_capture);
     return result;
   }
 
@@ -374,6 +379,9 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
 
   int enqueued = 0;
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
+  // Restore suppression in PG_FINALLY: an error escaping the locked section
+  // would otherwise longjmp past the restore and leave capture disabled for
+  // the rest of the backend's lifetime.
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
@@ -382,10 +390,12 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
     }
   }
   PG_FINALLY();
-  { LWLockRelease(psch_shared_state->lock); }
+  {
+    LWLockRelease(psch_shared_state->lock);
+    PschSuppressErrorCapture(saved_capture);
+  }
   PG_END_TRY();
 
-  PschSuppressErrorCapture(saved_capture);
   return enqueued;
 }
 
