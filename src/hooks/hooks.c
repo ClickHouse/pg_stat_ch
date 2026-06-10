@@ -11,10 +11,10 @@
 #include "common/pg_prng.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
+#include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "tcop/utility.h"
-#include "utils/backend_status.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
@@ -178,37 +178,11 @@ static void UnpackSqlState(int sql_state, char* buf) {
   buf[5] = '\0';
 }
 
-// Get PgBackendStatus for the current backend (version-compatible)
-static PgBackendStatus* GetBackendStatus(void) {
-#if PG_VERSION_NUM >= 170000
-  return pgstat_get_beentry_by_proc_number(MyProcNumber);
-#else
-  // PG16 and earlier: iterate through all backends
-  LocalPgBackendStatus* local_beentry;
-  int num_backends = pgstat_fetch_stat_numbackends();
-  for (int i = 1; i <= num_backends; i++) {
-    local_beentry = pgstat_get_local_beentry_by_index(i);
-    if (local_beentry == NULL) {
-      continue;
-    }
-    PgBackendStatus* beentry = &local_beentry->backendStatus;
-    if (beentry->st_procpid == MyProcPid) {
-      return beentry;
-    }
-  }
-  return NULL;
-#endif
-}
-
 static int GetApplicationName(char* buf, int buf_size) {
-  // Try application_name GUC first (always up-to-date)
+  // The application_name GUC is the authoritative live value (the beentry's
+  // st_appname is populated from it, never the other way around).
   if (application_name != NULL && application_name[0] != '\0') {
     return (int)(PschCopyTrimmed(buf, buf_size, application_name));
-  }
-
-  PgBackendStatus* beentry = GetBackendStatus();
-  if (beentry != NULL && beentry->st_appname != NULL) {
-    return (int)(PschCopyTrimmed(buf, buf_size, beentry->st_appname));
   }
 
   buf[0] = '\0';
@@ -218,16 +192,17 @@ static int GetApplicationName(char* buf, int buf_size) {
 static int GetClientAddress(char* buf, int buf_size) {
   buf[0] = '\0';
 
-  PgBackendStatus* beentry = GetBackendStatus();
-  if (beentry == NULL) {
+  // MyProcPort->raddr is what pgstat_bestart copies into the beentry's
+  // st_clientaddr; it is immutable for the life of the session. NULL in
+  // background/aux processes, which have no client connection.
+  if (MyProcPort == NULL) {
     return 0;
   }
 
   char remote_host[NI_MAXHOST] = {0};
 
-  int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
-                               remote_host, sizeof(remote_host), NULL, 0,
-                               NI_NUMERICHOST | NI_NUMERICSERV);
+  int ret = pg_getnameinfo_all(&MyProcPort->raddr.addr, MyProcPort->raddr.salen, remote_host,
+                               sizeof(remote_host), NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV);
 
   if (ret != 0 || remote_host[0] == '\0') {
     return 0;
@@ -848,6 +823,10 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // by ExecutorEnd/ProcessUtility, so reconstructing normalized SQL required
 // fuzzy matching and extra backend-local state. Error events still carry the
 // message, SQLSTATE, and client/session metadata.
+// This runs inside errfinish (via PschEmitLogHook), which holds the recursion
+// guard and wraps us in PG_TRY: if anything here throws (e.g. the catalog
+// fallback in ResolveNames failing to allocate under OOM), the nested error is
+// bounded and swallowed by the hook instead of recursing.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
   InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
@@ -862,10 +841,7 @@ static void CaptureLogEvent(ErrorData* edata) {
 
   CopyClientContext(&event);
 
-  // Enqueue with recursion guard
-  disable_error_capture = true;
   PschEnqueueEvent(&event);
-  disable_error_capture = false;
 }
 
 // emit_log_hook - captures log messages at configured level and above
@@ -879,19 +855,44 @@ static void PschEmitLogHook(ErrorData* edata) {
     prev_emit_log_hook(edata);
   }
 
-  // Capture the (potentially transformed) event
-  if (ShouldCaptureLog(edata)) {
+  if (!ShouldCaptureLog(edata)) {
+    return;
+  }
+
+  // Hold the recursion guard across the whole capture. emit_log_hook runs
+  // inside errfinish, where a throw starts a new, nested error report that
+  // re-enters this hook BEFORE any longjmp: unguarded, an OOM error whose
+  // capture itself fails to allocate recurses until the errordata stack
+  // overflows into PANIC -> abort() -> database-wide crash recovery.
+  //
+  // The guard bounds that recursion at one level (the nested invocation
+  // returns at ShouldCaptureLog), and the PG_CATCH does two jobs: it restores
+  // the guard -- the nested error's longjmp would otherwise skip the clear
+  // below and permanently disable capture in this backend -- and it swallows
+  // the nested error so the original errfinish resumes and delivers the real
+  // report. The cost of a throw during capture is one lost telemetry event.
+  MemoryContext oldcxt = CurrentMemoryContext;
+  disable_error_capture = true;
+  PG_TRY();
+  {
     CaptureLogEvent(edata);
   }
-
-  // Reset recursion guard on ERROR+ (transaction will abort)
-  if (edata != NULL && edata->elevel >= ERROR) {
-    disable_error_capture = false;
+  PG_CATCH();
+  {
+    MemoryContextSwitchTo(oldcxt);
+    FlushErrorState();
   }
+  PG_END_TRY();
+  disable_error_capture = false;
 }
 
-void PschSuppressErrorCapture(bool suppress) {
+// Set or clear the error-capture guard, returning the previous value so
+// callers nest correctly (e.g. PschEnqueueEvent suppressing capture while
+// already inside the emit_log_hook capture, which holds the guard).
+bool PschSuppressErrorCapture(bool suppress) {
+  bool prev = disable_error_capture;
   disable_error_capture = suppress;
+  return prev;
 }
 
 void PschInstallHooks(void) {
