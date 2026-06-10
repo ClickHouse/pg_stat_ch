@@ -123,8 +123,8 @@ static void EnsureBackendCache(void) {
                                              datname != NULL ? datname : "<unknown>");
 
     // Client address (session-stable)
-    backend_state.client_addr_len = (uint8)(
-        GetClientAddress(backend_state.client_addr, sizeof(backend_state.client_addr)));
+    backend_state.client_addr_len =
+        (uint8)(GetClientAddress(backend_state.client_addr, sizeof(backend_state.client_addr)));
 
     // Username (may change via SET ROLE)
     CacheUsername(userid, true);
@@ -165,8 +165,7 @@ static PschCmdType ConvertCmdType(CmdType cmd) {
 }
 
 static int64 TimeDiffMicrosec(struct timeval end, struct timeval start) {
-  return ((int64)(end.tv_sec - start.tv_sec) * 1000000LL) +
-         (int64)(end.tv_usec - start.tv_usec);
+  return ((int64)(end.tv_sec - start.tv_sec) * 1000000LL) + (int64)(end.tv_usec - start.tv_usec);
 }
 
 // Unpack SQLSTATE code from PostgreSQL's packed format to string
@@ -225,9 +224,9 @@ static int GetClientAddress(char* buf, int buf_size) {
 
   char remote_host[NI_MAXHOST] = {0};
 
-  int ret = pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen,
-                               remote_host, sizeof(remote_host), NULL, 0,
-                               NI_NUMERICHOST | NI_NUMERICSERV);
+  int ret =
+      pg_getnameinfo_all(&beentry->st_clientaddr.addr, beentry->st_clientaddr.salen, remote_host,
+                         sizeof(remote_host), NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV);
 
   if (ret != 0 || remote_host[0] == '\0') {
     return 0;
@@ -324,8 +323,8 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level
 }
 
 static void CopyClientContext(PschEvent* event) {
-  event->application_name_len = (uint8)(
-      GetApplicationName(event->application_name, sizeof(event->application_name)));
+  event->application_name_len =
+      (uint8)(GetApplicationName(event->application_name, sizeof(event->application_name)));
 
   EnsureBackendCache();
   if (backend_state.initialized) {
@@ -371,8 +370,8 @@ static void ResolveNames(PschEvent* event) {
     username = GetUserNameFromId(event->userid, true);
   }
 
-  event->datname_len = PschCopyName(event->datname, sizeof(event->datname),
-                                    datname != NULL ? datname : "<unknown>");
+  event->datname_len =
+      PschCopyName(event->datname, sizeof(event->datname), datname != NULL ? datname : "<unknown>");
   event->username_len = PschCopyName(event->username, sizeof(event->username),
                                      username != NULL ? username : "<unknown>");
 }
@@ -384,14 +383,10 @@ static void CopyJitInstrumentation(PschEvent* event pg_attribute_unused(),
   if (query_desc->estate->es_jit != NULL) {
     JitInstrumentation* jit = &query_desc->estate->es_jit->instr;
     event->jit_functions = (int32)(jit->created_functions);
-    event->jit_generation_time_us =
-        (int32)(INSTR_TIME_GET_MICROSEC(jit->generation_counter));
-    event->jit_inlining_time_us =
-        (int32)(INSTR_TIME_GET_MICROSEC(jit->inlining_counter));
-    event->jit_optimization_time_us =
-        (int32)(INSTR_TIME_GET_MICROSEC(jit->optimization_counter));
-    event->jit_emission_time_us =
-        (int32)(INSTR_TIME_GET_MICROSEC(jit->emission_counter));
+    event->jit_generation_time_us = (int32)(INSTR_TIME_GET_MICROSEC(jit->generation_counter));
+    event->jit_inlining_time_us = (int32)(INSTR_TIME_GET_MICROSEC(jit->inlining_counter));
+    event->jit_optimization_time_us = (int32)(INSTR_TIME_GET_MICROSEC(jit->optimization_counter));
+    event->jit_emission_time_us = (int32)(INSTR_TIME_GET_MICROSEC(jit->emission_counter));
 #if PG_VERSION_NUM >= 170000
     event->jit_deform_time_us = (int32)(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
 #endif
@@ -404,10 +399,8 @@ static void CopyParallelWorkerInfo(PschEvent* event pg_attribute_unused(),
                                    QueryDesc* query_desc pg_attribute_unused()) {
 #if PG_VERSION_NUM >= 180000
   if (query_desc->estate != NULL) {
-    event->parallel_workers_planned =
-        (int16)(query_desc->estate->es_parallel_workers_to_launch);
-    event->parallel_workers_launched =
-        (int16)(query_desc->estate->es_parallel_workers_launched);
+    event->parallel_workers_planned = (int16)(query_desc->estate->es_parallel_workers_to_launch);
+    event->parallel_workers_launched = (int16)(query_desc->estate->es_parallel_workers_launched);
   }
 #endif
 }
@@ -856,8 +849,8 @@ static void CaptureLogEvent(ErrorData* edata) {
   event.err_elevel = (uint8)(edata->elevel);
 
   if (edata->message != NULL) {
-    event.err_message_len = (uint16)(
-        PschCopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
+    event.err_message_len =
+        (uint16)(PschCopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
   }
 
   CopyClientContext(&event);
