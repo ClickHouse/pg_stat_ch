@@ -46,7 +46,11 @@ See [docker/quickstart/README.md](docker/quickstart/README.md) for endpoints and
 
 <div align="center">
 
-<a href="images/dashboard.png"><img src="images/dashboard.png" alt="Dashboard showing query telemetry: expensive queries with percentiles, cache miss analysis, QPS over time, latency, shared buffer and WAL metrics" width="35%" /></a>
+<a href="images/query-insights-overview.png"><img src="images/query-insights-overview.png" alt="Query insights overview: queries per second, latency percentiles (p50/p95/p99), operations breakdown, rows returned, buffer hit ratio, and errors" width="90%" /></a>
+
+<a href="images/query-insights-slow-query-patterns.png"><img src="images/query-insights-slow-query-patterns.png" alt="Slow query patterns: per-pattern calls, errors, average/p95/max latency, total runtime, rows returned, and cache hit ratio" width="90%" /></a>
+
+<a href="images/query-insights-recent-queries.png"><img src="images/query-insights-recent-queries.png" alt="Recent queries: per-execution operation, query text, duration, rows, database, user, and blocks read" width="90%" /></a>
 
 </div>
 
