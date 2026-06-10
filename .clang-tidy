@@ -1,12 +1,15 @@
 ---
+# C codebase: google-* and modernize-* (C++-only check sets) are intentionally
+# absent; bugprone-* carries the leak/UB checks the C error paths rely on.
+# bugprone-easily-swappable-parameters is excluded: the (buf, len) and
+# (errbuf, errlen) parameter pairs used throughout the export API trip it on
+# nearly every function.
 Checks: >
   -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
   clang-analyzer-*,
   clang-diagnostic-*,
-  google-*,
-  -google-readability-todo,
-  modernize-*,
-  -modernize-use-trailing-return-type,
   readability-*,
   -readability-magic-numbers,
   -readability-identifier-length
@@ -15,7 +18,7 @@ WarningsAsErrors: >
   clang-analyzer-core.NullDereference,
   clang-analyzer-unix.*
 
-HeaderFilterRegex: 'include/pg_stat_ch/.*'
+HeaderFilterRegex: '(include/(pg_stat_ch|config)|src)/.*'
 
 CheckOptions:
   - key: readability-identifier-naming.ClassCase

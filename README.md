@@ -90,7 +90,7 @@ PostgreSQL 16, 17, and 18 are fully supported. See [docs/version-compatibility.m
 
 Prerequisites:
 
-- CMake 3.16+, C++17 compiler (GCC 9+, Clang 10+)
+- CMake 3.16+, C compiler with C17 support (GCC 9+, Clang 10+)
 - PostgreSQL 16+ development headers
 - [mise](https://mise.jdx.dev/) (recommended) or manual PostgreSQL installation
 

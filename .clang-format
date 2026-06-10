@@ -1,11 +1,11 @@
 ---
+# Language stays Cpp: clang-format has no separate C mode; Cpp mode formats C.
 Language: Cpp
 BasedOnStyle: Google
 ColumnLimit: 100
 IndentWidth: 2
 TabWidth: 2
 UseTab: Never
-AccessModifierOffset: -1
 AlignAfterOpenBracket: Align
 AlignConsecutiveMacros: true
 AlignTrailingComments: true
@@ -14,14 +14,10 @@ AllowAllParametersOfDeclarationOnNextLine: true
 AllowShortBlocksOnASingleLine: Empty
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortIfStatementsOnASingleLine: Never
-AllowShortLambdasOnASingleLine: Inline
 AllowShortLoopsOnASingleLine: false
-AlwaysBreakTemplateDeclarations: Yes
 BinPackArguments: true
 BinPackParameters: true
 BreakBeforeBraces: Attach
-BreakConstructorInitializers: BeforeColon
-BreakInheritanceList: BeforeColon
 DerivePointerAlignment: false
 PointerAlignment: Left
 IncludeBlocks: Preserve
@@ -42,14 +38,11 @@ IncludeCategories:
     Priority: 3
 SortIncludes: true
 SpaceAfterCStyleCast: false
-SpaceAfterTemplateKeyword: true
 SpaceBeforeAssignmentOperators: true
-SpaceBeforeCpp11BracedList: false
 SpaceBeforeParens: ControlStatements
 SpaceInEmptyParentheses: false
-SpacesInAngles: false
 SpacesInCStyleCastParentheses: false
 SpacesInContainerLiterals: true
 SpacesInParentheses: false
 SpacesInSquareBrackets: false
-Standard: c++17
+Standard: Latest

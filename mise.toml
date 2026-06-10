@@ -1,6 +1,6 @@
 [env]
-# Force C17 standard to avoid C23 'bool' keyword conflict when building older PostgreSQL versions
-CFLAGS = "-std=gnu17"
+# The C standard (gnu17, dodging the C23 'bool' clash with PG headers) is
+# pinned in CMakeLists.txt via C_STANDARD/C_EXTENSIONS — no CFLAGS needed.
 VCPKG_ROOT = "{{config_root}}/third_party/vcpkg"
 
 [tools]
@@ -36,11 +36,11 @@ run = "cp build/compile_commands.json ."
 description = "Copy compile_commands.json to project root"
 
 [tasks.format]
-run = "fd -e cc -e h . src include | xargs clang-format -i"
+run = "fd -e c -e h . src include | xargs clang-format -i"
 description = "Format code with clang-format"
 
 [tasks.lint]
-run = "fd -e cc . src | xargs clang-tidy"
+run = "fd -e c . src | xargs clang-tidy"
 description = "Run clang-tidy linting"
 
 [tasks.installcheck]

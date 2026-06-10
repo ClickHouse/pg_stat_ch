@@ -44,6 +44,8 @@ COPY pg_stat_ch.control ./
 # Vendored header-only clickhouse-c client (git submodule, must be checked out
 # on the host before `docker build`).
 COPY third_party/clickhouse-c/ third_party/clickhouse-c/
+# Vendored nanoarrow amalgamation (ordinary tree content, not a submodule).
+COPY third_party/nanoarrow/ third_party/nanoarrow/
 
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \

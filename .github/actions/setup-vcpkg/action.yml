@@ -20,7 +20,10 @@ runs:
         VCPKG_COMMIT: 56bb2411609227288b70117ead2c47585ba07713
       run: |
         if [ ! -d "$HOME/vcpkg" ]; then
-          # Full clone required — Arrow depends on Boost, which needs vcpkg git history
+          # Full clone: vcpkg-configuration.json pins a builtin-registry
+          # baseline, which vcpkg resolves through the repo's git history —
+          # a shallow clone breaks the versions database.  (The manifest is
+          # now just openssl/lz4/zstd; Arrow/Boost are long gone.)
           git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
           git -C "$HOME/vcpkg" checkout "$VCPKG_COMMIT"
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics

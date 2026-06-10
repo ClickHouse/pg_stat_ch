@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pg_stat_ch VERSION 0.1.0 LANGUAGES CXX C)
+project(pg_stat_ch VERSION 0.1.0 LANGUAGES C)
 
 if(WIN32)
   message(FATAL_ERROR "Windows is not supported")
@@ -20,105 +20,97 @@ message(STATUS "PostgreSQL ${PostgreSQLServer_VERSION} found")
 # Compiler warnings
 include(CompilerWarnings)
 
-# OpenSSL (required for clickhouse-c TLS transport)
+# OpenSSL (required for clickhouse-c TLS transport and the OTLP https path)
 find_package(OpenSSL REQUIRED)
 message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 
 # ---------------------------------------------------------------------------
 # Third-party dependencies (via vcpkg)
 # ---------------------------------------------------------------------------
-find_package(opentelemetry-cpp CONFIG REQUIRED)
-find_package(Arrow CONFIG REQUIRED)
 # clickhouse-c (vendored under third_party/) is header-only; its compression
-# codecs link against lz4 + zstd.
+# codecs link against lz4 + zstd.  zstd is also used directly for Arrow IPC
+# per-buffer body compression in the export path.
 find_package(lz4 CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 
-# Source layout: src/*.c is the C plugin layer; src/export/*.cc is the C++
-# exporter.  Keeping the PG ↔ extension boundary in pure C is what prevents
-# an uncaught C++ throw from unwinding across PG's longjmp frames.  Reject
-# anything that fell outside the two legitimate globs — C++ in the wrong
-# location, or any C++ extension we don't compile (.cxx/.cpp/.c++) that
-# would otherwise be silently dropped from the build.
-file(GLOB_RECURSE PG_STAT_CH_PLUGIN_SOURCES CONFIGURE_DEPENDS src/*.c)
-file(GLOB_RECURSE PG_STAT_CH_EXPORTER_SOURCES CONFIGURE_DEPENDS src/export/*.cc)
-
+# The extension is pure C.  PostgreSQL's error handling is longjmp-based, and
+# the production SIGABRT this rewrite removed came from C++ dependencies that
+# abort() under memory pressure (see OTEL_REWRITE_DESIGN.md).  Reject any C++
+# source — with LANGUAGES C it could not be compiled anyway, but the explicit
+# check turns "silently dropped from the build" into a configure-time error.
+#
 # CONFIGURE_DEPENDS: re-run the glob on every build, not just at first
-# configure.  Without it, a newly-added src/foo.cc would silently slip past
-# the stray check until someone manually reconfigured.
+# configure.  Without it, a newly-added source would slip past the build (and
+# the stray check) until someone manually reconfigured.
+file(GLOB_RECURSE PG_STAT_CH_SOURCES CONFIGURE_DEPENDS src/*.c)
 file(GLOB_RECURSE PG_STAT_CH_OFFENDING_SOURCES CONFIGURE_DEPENDS
   src/*.cc src/*.cxx src/*.cpp src/*.c++
 )
-list(FILTER PG_STAT_CH_OFFENDING_SOURCES
-  EXCLUDE REGEX "^${CMAKE_SOURCE_DIR}/src/export/.*\\.cc$")
 if(PG_STAT_CH_OFFENDING_SOURCES)
   message(FATAL_ERROR
-    "pg_stat_ch: C++ sources are allowed only as *.cc under src/export/.  "
-    "Port to C, move under src/export/, or rename to .cc.  Offending:\n"
+    "pg_stat_ch is pure C (project LANGUAGES C): C++ sources are not "
+    "compiled.  Port to C.  Offending:\n"
     "  ${PG_STAT_CH_OFFENDING_SOURCES}")
 endif()
 
-# Defense in depth on top of the C-only plugin lock above: when building the
-# exporter with Clang, forbid namespace-scope C++ variables that need a
-# non-trivial constructor or destructor.  -Wglobal-constructors catches both
-# halves at namespace scope: the load-time "std::thread above main" / "static
-# std::map<...> g_cache" hazard, and the exit-time "destructor runs after PG
-# has already torn down" hazard.
-#
-# Clang-only: GCC has no equivalent flag (the warning has been requested
-# upstream for years but never landed).  GCC builds rely on code review +
-# clang-tidy.  Our CI runs an additional Clang build job so regressions are
-# caught before they merge.
-#
-# -Wexit-time-destructors (the sibling warning) is intentionally NOT enabled
-# here.  At namespace scope, -Wglobal-constructors already covers what we
-# care about.  -Wexit-time-destructors additionally fires on function-local
-# statics — the two cached Arrow DataType shared_ptrs in arrow_batch.cc
-# would trip it today.  Not enabling it avoids those annotations for now;
-# easy to layer on later if a regression motivates it.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  set_source_files_properties(${PG_STAT_CH_EXPORTER_SOURCES}
-    PROPERTIES COMPILE_OPTIONS
-      "-Wglobal-constructors;-Werror=global-constructors")
-endif()
+# nanoarrow (vendored amalgamation, see third_party/nanoarrow/VERSION): array
+# building + IPC flatbuffer machinery for the C exporter.  Symbols are
+# namespaced (PgStatCh prefix) by the upstream bundler.  Compiled as ordinary
+# TUs; warnings suppressed because it is third-party code (headers are SYSTEM).
+# FLATCC_NO_ASSERT outside Debug: every failure path in nanoarrow/flatcc then
+# returns an error code (ENOMEM etc.) — no abort()/assert() reachable from the
+# export path, which is the property the exporter rewrite exists to guarantee.
+set(PG_STAT_CH_NANOARROW_SOURCES
+  third_party/nanoarrow/src/nanoarrow.c
+  third_party/nanoarrow/src/nanoarrow_ipc.c
+  third_party/nanoarrow/src/flatcc.c
+)
+set_source_files_properties(${PG_STAT_CH_NANOARROW_SOURCES} PROPERTIES
+  COMPILE_OPTIONS "-w"
+  COMPILE_DEFINITIONS "$<$<NOT:$<CONFIG:Debug>>:FLATCC_NO_ASSERT>"
+)
+# flatcc's emitter must allocate its pages from our fixed pool, not the system
+# heap, so steady-state Arrow export stays allocation-free (see
+# src/export/flatcc_emitter_alloc.h).  Force-include the override header before
+# flatcc_emitter.h's #ifndef FLATCC_EMITTER_ALLOC guard sees the defaults.
+set_source_files_properties(third_party/nanoarrow/src/flatcc.c PROPERTIES
+  COMPILE_OPTIONS "-w;-include;${CMAKE_SOURCE_DIR}/src/export/flatcc_emitter_alloc.h"
+  COMPILE_DEFINITIONS "$<$<NOT:$<CONFIG:Debug>>:FLATCC_NO_ASSERT>"
+)
 
 # Build shared library
 add_library(pg_stat_ch MODULE
-  ${PG_STAT_CH_PLUGIN_SOURCES}
-  ${PG_STAT_CH_EXPORTER_SOURCES}
+  ${PG_STAT_CH_SOURCES}
+  ${PG_STAT_CH_NANOARROW_SOURCES}
 )
 
-target_compile_features(pg_stat_ch PRIVATE cxx_std_17)
 target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
-# Force-include libintl.h before any source file so its declarations are parsed
-# before PostgreSQL's postgres.h defines gettext/ngettext as macros.  The include
-# guard then prevents re-inclusion when C++ <locale> pulls it in later (via Arrow).
-target_compile_options(pg_stat_ch PRIVATE -include libintl.h)
 target_include_directories(pg_stat_ch PRIVATE
   include
   src
 )
-# clickhouse-c is vendored third-party code: include it as SYSTEM so its
-# header-only bodies don't trip the strict warning flags / -Werror below.
+# clickhouse-c and nanoarrow are vendored third-party code: include them as
+# SYSTEM so their header-only bodies don't trip the strict warning flags /
+# -Werror below.
 target_include_directories(pg_stat_ch SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/clickhouse-c
+  ${CMAKE_SOURCE_DIR}/third_party/nanoarrow/include
 )
 target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
-  opentelemetry-cpp::api
-  opentelemetry-cpp::sdk
-  opentelemetry-cpp::otlp_grpc_metrics_exporter
-  opentelemetry-cpp::otlp_grpc_log_record_exporter
-  opentelemetry-cpp::metrics
-  opentelemetry-cpp::logs
-  Arrow::arrow_static
 )
 target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto lz4::lz4 zstd::libzstd)
 pg_stat_ch_set_warnings(pg_stat_ch)
 
+# gnu17, not c17: PostgreSQL headers rely on GNU extensions, and C23 (some
+# compilers' default) repurposes `bool` in a way that conflicts with older PG
+# headers.  Pinned here so builds outside mise (CI, Docker) don't depend on
+# env CFLAGS.
 set_target_properties(pg_stat_ch PROPERTIES
   PREFIX ""
   SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+  C_STANDARD 17
+  C_EXTENSIONS ON
 )
 if(APPLE)
   # PGXS uses -bundle_loader on Darwin (Makefile.port) instead of
@@ -138,4 +130,3 @@ install(TARGETS pg_stat_ch LIBRARY DESTINATION ${PostgreSQLServer_PKGLIB_DIR})
 install(FILES pg_stat_ch.control DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 file(GLOB SQL_FILES sql/pg_stat_ch--*.sql)
 install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
-

@@ -1,17 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "$comment": "vcpkg is deliberately kept for these three C libraries (decision in OTEL_REWRITE_DESIGN.md §7): release tarballs must stay statically linked and version-pinned, independent of distro OpenSSL/lz4/zstd ABI skew. Dropping vcpkg for system libs is a flagged follow-up decision.",
   "name": "pg-stat-ch",
   "version-string": "0.1.0",
   "dependencies": [
-    {
-      "name": "opentelemetry-cpp",
-      "default-features": false,
-      "features": ["otlp-grpc"]
-    },
-    {
-      "name": "arrow",
-      "default-features": false
-    },
     "lz4",
     "openssl",
     "zstd"

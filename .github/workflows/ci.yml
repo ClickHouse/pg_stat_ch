@@ -52,7 +52,7 @@ jobs:
             postgresql-server-dev-${{ matrix.pg_version }}
 
       - name: Install build dependencies
-        run: sudo apt-get install -y cmake ninja-build g++ libssl-dev pkg-config curl zip unzip tar
+        run: sudo apt-get install -y cmake ninja-build gcc libssl-dev pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg
         with:
@@ -69,8 +69,7 @@ jobs:
           cmake --preset default \
             -DPG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel
@@ -120,13 +119,12 @@ jobs:
       - name: Check formatting
         run: |
           sudo apt-get update && sudo apt-get install -y clang-format
-          find src include -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror
+          find src include -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
 
-  # Clang build: exercises -Werror=global-constructors on the C++ exporter
-  # (Clang-only flag).  GCC has no equivalent, so we run a separate Clang job
-  # to ensure the warning catches regressions before they merge.  One PG
-  # version / one arch is enough — this job exists to surface compile errors,
-  # not to duplicate test coverage.
+  # Clang build: second-compiler coverage.  GCC and Clang warn about
+  # different things under -Werror, so building with both keeps the tree
+  # clean for either toolchain.  One PG version / one arch is enough — this
+  # job exists to surface compile errors, not to duplicate test coverage.
   build-clang:
     name: Build (Clang, PG 18)
     runs-on: depot-ubuntu-22.04-16
@@ -161,8 +159,7 @@ jobs:
           cmake --preset default \
             -DPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
             -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++
+            -DCMAKE_C_COMPILER=clang
 
       - name: Build
         run: cmake --build build --parallel

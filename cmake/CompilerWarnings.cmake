@@ -1,5 +1,5 @@
 # CompilerWarnings.cmake
-# Common compiler warning flags for C++ targets
+# Common compiler warning flags for the project's C targets
 #
 # Provides:
 #   pg_stat_ch_set_warnings(target) - Apply warning flags to a target
@@ -16,6 +16,14 @@ function(pg_stat_ch_set_warnings target)
     -Wunused-parameter
     -Wunreachable-code
 
+    # C interface hygiene (PostgreSQL practice): every external function has
+    # a prototype, no K&R declarations/definitions, no stack-sized-by-input
+    # variable-length arrays.
+    -Wmissing-prototypes
+    -Wstrict-prototypes
+    -Wold-style-definition
+    -Wvla
+
     # Suppress noisy warnings
     -Wno-sign-compare
 
@@ -23,9 +31,6 @@ function(pg_stat_ch_set_warnings target)
     -fPIC
     -fvisibility=hidden
     -fno-omit-frame-pointer  # Enable frame pointers for perf profiling
-    # Note: We need exceptions and RTTI for the OpenTelemetry/Arrow exporters
-    # -fno-exceptions
-    # -fno-rtti
   )
 
   # Optional: treat warnings as errors in CI
