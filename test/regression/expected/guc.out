@@ -3,7 +3,6 @@ CREATE EXTENSION pg_stat_ch;
 SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLATE "C";
                   name                  
 ----------------------------------------
- pg_stat_ch.batch_max
  pg_stat_ch.clickhouse_database
  pg_stat_ch.clickhouse_host
  pg_stat_ch.clickhouse_password
@@ -14,25 +13,24 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.debug_arrow_dump_dir
  pg_stat_ch.debug_force_locked_overflow
  pg_stat_ch.enabled
+ pg_stat_ch.export_buffer_size
+ pg_stat_ch.export_timeout_ms
  pg_stat_ch.extra_attributes
  pg_stat_ch.flush_interval_ms
  pg_stat_ch.hostname
  pg_stat_ch.log_min_elevel
+ pg_stat_ch.memory_limit
  pg_stat_ch.min_duration_us
  pg_stat_ch.normalize_cache_max
  pg_stat_ch.otel_arrow_passthrough
+ pg_stat_ch.otel_ca_file
  pg_stat_ch.otel_endpoint
- pg_stat_ch.otel_log_batch_size
- pg_stat_ch.otel_log_delay_ms
- pg_stat_ch.otel_log_max_bytes
- pg_stat_ch.otel_log_queue_size
- pg_stat_ch.otel_max_block_bytes
- pg_stat_ch.otel_metric_interval_ms
+ pg_stat_ch.otel_headers
  pg_stat_ch.queue_capacity
  pg_stat_ch.sample_rate
  pg_stat_ch.string_area_size
  pg_stat_ch.use_otel
-(29 rows)
+(27 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
@@ -40,11 +38,32 @@ SHOW pg_stat_ch.enabled;
  on
 (1 row)
 
-SHOW pg_stat_ch.string_area_size;
- pg_stat_ch.string_area_size 
------------------------------
- 64MB
+SHOW pg_stat_ch.memory_limit;
+ pg_stat_ch.memory_limit 
+-------------------------
+ 160MB
 (1 row)
+
+-- Deprecated bridge GUCs are GUC_NO_SHOW_ALL: absent from the pg_settings
+-- list above, but still individually SHOWable until their removal release.
+SHOW pg_stat_ch.batch_max;
+ pg_stat_ch.batch_max 
+----------------------
+ -1
+(1 row)
+
+-- Memory budget surface: byte values vary with PG version and configuration,
+-- but the component set and source attribution are stable.
+SELECT component, source FROM pg_stat_ch_memory() ORDER BY component COLLATE "C";
+   component    |   source  
+----------------+------------
+ export_arena   | auto
+ export_dropped | counter
+ intern_table   | derived
+ ring_queue     | auto
+ string_area    | auto
+ total          | configured
+(6 rows)
 
 -- Test log_min_elevel GUC
 SHOW pg_stat_ch.log_min_elevel;
