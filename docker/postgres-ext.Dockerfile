@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     git \
     postgresql-server-dev-18 \
     libssl-dev \
+    libkrb5-dev \
     flex \
     bison \
     pkg-config \
