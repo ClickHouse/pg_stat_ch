@@ -14,12 +14,6 @@ extern "C" {
 // Calculate total shared memory size needed
 Size PschShmemSize(void);
 
-// Request shared memory allocation (called from _PG_init)
-void PschShmemRequest(void);
-
-// Initialize shared memory structures (called from shmem_startup_hook)
-void PschShmemStartup(void);
-
 // Install shmem hooks (called from _PG_init)
 void PschInstallShmemHooks(void);
 
@@ -31,8 +25,26 @@ bool PschEnqueueEvent(const PschEvent* event);
 // Returns the number of events successfully enqueued (rest are dropped via overflow).
 int PschEnqueueBatch(const PschEvent* events, int count);
 
-// Dequeue an event from the ring buffer (returns true if event was available)
-bool PschDequeueEvent(PschEvent* event);
+// Two-phase consume (single consumer: the bgworker).  See OTEL_REWRITE_DESIGN.md
+// §5a — peek/consume replaces the destructive dequeue so a failed export can
+// leave events queued for retry.
+//
+// PschPeekEvents copies up to `max` events from the tail into `buf`, resolving
+// DSA-backed strings into the copies' inline buffers WITHOUT freeing them and
+// WITHOUT advancing the tail.  Read-only with respect to the ring; safe to
+// call repeatedly (retry path) before a consume.  Returns the number copied.
+int PschPeekEvents(PschEvent* buf, int max);
+
+// PschConsumeEvents frees the DSA strings of the first `n` queued events and
+// advances the tail past them.  Must only follow a PschPeekEvents that
+// returned >= n.
+void PschConsumeEvents(int n);
+
+// Validate ring invariants (capacity power-of-2 and matching the resolved
+// budget; head-tail distance within capacity).  On corruption: LOG and reset
+// the indices, discarding queued events.  Called once at bgworker start to
+// compensate for the SIGABRT handler's _exit(1) skipping shmem reinit.
+void PschRingSanityCheck(void);
 
 // Get current queue statistics.
 // last_error_buf must point to a caller-owned buffer of last_error_buf_size bytes;
@@ -50,6 +62,14 @@ void PschRecordExportSuccess(void);
 
 // Record export failure (called by bgworker on export error)
 void PschRecordExportFailure(const char* error_msg);
+
+// Count n events destructively consumed after an export failure (poison-batch
+// valve or internal/OOM failure).  Distinct from the enqueue-overflow
+// `dropped` counter.
+void PschRecordExportDrop(int n);
+
+// Read the export-drop counter (consumed by pg_stat_ch_memory()/stats views).
+uint64 PschGetExportDropped(void);
 
 // Get the background worker PID (for signaling)
 pid_t PschGetBgworkerPid(void);

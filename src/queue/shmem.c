@@ -39,6 +39,7 @@
 #include "utils/timestamp.h"
 
 #include "config/guc.h"
+#include "config/memory_budget.h"
 #include "hooks/hooks.h"
 #include "queue/local_batch.h"
 #include "queue/psch_dsa.h"
@@ -66,9 +67,9 @@ static inline PschRingEntry* GetRingBuffer(void) {
 // - Telemetry is "best effort" - missing some events during spikes is acceptable
 // - The dropped counter lets operators detect and address capacity issues
 //
-// SIZING GUIDANCE: The queue should be sized to handle burst query loads plus some
-// headroom for bgworker export delays. Monitor pg_stat_ch_stats().queue_size and
-// .dropped to tune capacity. A good starting point is 1024-4096 events.
+// SIZING GUIDANCE: The ring is sized from pg_stat_ch.memory_limit (see
+// src/config/memory_budget.h). Monitor pg_stat_ch_stats().queue_size and
+// .dropped to tune the budget.
 //
 // DETECTING OVERFLOW: Check pg_stat_ch_stats().dropped > 0 or look for the WARNING
 // in PostgreSQL logs. The overflow_logged flag prevents log spam by warning only once
@@ -78,9 +79,10 @@ static void HandleOverflow(void) {
 
   // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
   if (pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
-    ereport(WARNING,
-            (errmsg("pg_stat_ch: queue overflow, events being dropped"),
-             errhint("Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
+    ereport(WARNING, (errmsg("pg_stat_ch: queue overflow, events being dropped"),
+                      errhint("Raise pg_stat_ch.memory_limit (requires restart), or reduce capture "
+                              "volume with pg_stat_ch.sample_rate / pg_stat_ch.min_duration_us "
+                              "(no restart).")));
   }
 }
 
@@ -129,8 +131,8 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
     // Clamp the input length to what we'd have stored anyway, so the intern
     // key doesn't include trailing bytes the consumer would have truncated.
     uint16 clamped_len = Min(event->query_len, (uint16)(PSCH_MAX_QUERY_LEN - 1));
-    slot->query_dsa = PschQueryInternAcquire(event->dbid, event->queryid,
-                                             event->query, clamped_len);
+    slot->query_dsa =
+        PschQueryInternAcquire(event->dbid, event->queryid, event->query, clamped_len);
     if (!DsaPointerIsValid(slot->query_dsa)) {
       slot->query_len = 0;
     } else {
@@ -150,25 +152,35 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   return true;
 }
 
-static void PschShmemShutdown(int code pg_attribute_unused(),
-                              Datum arg pg_attribute_unused()) {
+static void PschShmemShutdown(int code pg_attribute_unused(), Datum arg pg_attribute_unused()) {
   if (psch_shared_state != NULL) {
     elog(LOG,
          "pg_stat_ch: shutdown (enqueued=" UINT64_FORMAT ", dropped=" UINT64_FORMAT
-         ", exported=" UINT64_FORMAT ")",
+         ", exported=" UINT64_FORMAT ", export_dropped=" UINT64_FORMAT ")",
          pg_atomic_read_u64(&psch_shared_state->enqueued),
          pg_atomic_read_u64(&psch_shared_state->dropped),
-         pg_atomic_read_u64(&psch_shared_state->exported));
+         pg_atomic_read_u64(&psch_shared_state->exported),
+         pg_atomic_read_u64(&psch_shared_state->export_dropped));
   }
 }
 
 // Size of the contiguous shmem block that ShmemInitStruct("pg_stat_ch", ...)
 // allocates.  Layout: [PschSharedState] [PschRingEntry × capacity] [DSA area].
+//
+// All components are sized from the resolved memory budget (memory_budget.h),
+// not from raw GUC reads — the budget is the single authority that charges
+// ring + intern + DSA + export arena against pg_stat_ch.memory_limit.
 static Size PschSharedBlockSize(void) {
+  const PschMemoryBudget* budget = PschMemoryBudgetGet();
   Size ring_end =
-      add_size(sizeof(PschSharedState), mul_size(psch_queue_capacity, sizeof(PschRingEntry)));
+      add_size(sizeof(PschSharedState), mul_size(budget->ring_slots, sizeof(PschRingEntry)));
   Size dsa_offset = MAXALIGN(ring_end);
-  Size total = add_size(dsa_offset, PschDsaShmemSize());
+  // PschDsaInit() still sizes the in-place area from psch_string_area_size
+  // (written back by the budget).  Reserve the max of the two so the created
+  // area can never overrun the reservation, even if write-back rounds the MB
+  // value up.
+  Size dsa_size = Max((Size)budget->dsa_bytes, PschDsaShmemSize());
+  Size total = add_size(dsa_offset, dsa_size);
   return MAXALIGN(total);
 }
 
@@ -179,6 +191,15 @@ Size PschShmemSize(void) {
 }
 
 static void RequestSharedResources(void) {
+  // Resolve the budget and write the component values back to their GUCs
+  // BEFORE any size computation: PschQueryInternShmemSize() still reads
+  // psch_queue_capacity, which only matches budget->ring_slots after the
+  // write-back.  SetConfigOption is legal here — this runs in the postmaster
+  // (shmem_request_hook on PG15+, _PG_init below) before shmem creation, the
+  // wal_buffers/XLOGShmemSize idiom.
+  PschMemoryBudgetWriteBack();
+  PschMemoryBudgetLogStartup();
+
   RequestAddinShmemSpace(PschShmemSize());
   // 1 main queue lock + N partition locks for the query-text interner, all
   // in the single "pg_stat_ch" named tranche so we read them as a contiguous
@@ -198,12 +219,14 @@ static void PschShmemRequestHook(void) {
 // Initialize shared state fields on first-time setup.
 // Called with AddinShmemInitLock held.
 static void InitializeSharedState(void) {
+  const PschMemoryBudget* budget = PschMemoryBudgetGet();
+
   // The pg_stat_ch named tranche owns 1 main queue lock at index 0 and
   // PSCH_QUERY_INTERN_PARTITIONS partition locks at indices 1..N for the
   // query-text interner (see PschQueryInternShmemInit).
   LWLockPadded* lwlocks = GetNamedLWLockTranche("pg_stat_ch");
   psch_shared_state->lock = &lwlocks[0].lock;
-  psch_shared_state->capacity = psch_queue_capacity;
+  psch_shared_state->capacity = budget->ring_slots;
   pg_atomic_init_u64(&psch_shared_state->head, 0);
   pg_atomic_init_u64(&psch_shared_state->enqueued, 0);
   pg_atomic_init_u64(&psch_shared_state->dropped, 0);
@@ -212,6 +235,7 @@ static void InitializeSharedState(void) {
   pg_atomic_init_u64(&psch_shared_state->exported, 0);
 
   pg_atomic_init_u64(&psch_shared_state->send_failures, 0);
+  pg_atomic_init_u64(&psch_shared_state->export_dropped, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
   MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
@@ -219,17 +243,18 @@ static void InitializeSharedState(void) {
   pg_atomic_init_u64(&psch_shared_state->dsa_oom_count, 0);
 
   // Zero ring buffer (InvalidDsaPointer == 0, so dsa fields are implicitly invalid)
-  MemSet(GetRingBuffer(), 0, psch_queue_capacity * sizeof(PschRingEntry));
+  MemSet(GetRingBuffer(), 0, (Size)budget->ring_slots * sizeof(PschRingEntry));
 
   // Create DSA area for variable-length string storage.
   // See psch_dsa.h for the shared memory layout diagram.
-  char* dsa_place = (char*)psch_shared_state +
-                    MAXALIGN(sizeof(PschSharedState) + psch_queue_capacity * sizeof(PschRingEntry));
+  char* dsa_place =
+      (char*)psch_shared_state +
+      MAXALIGN(sizeof(PschSharedState) + (Size)budget->ring_slots * sizeof(PschRingEntry));
   PschDsaInit(psch_shared_state, dsa_place);
 
-  elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, ring=%zuKB, dsa=%zuMB, total=%zu)",
-       psch_queue_capacity, (psch_queue_capacity * sizeof(PschRingEntry)) / 1024,
-       PschDsaShmemSize() / (1024 * 1024), PschShmemSize());
+  elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%u, ring=%zuKB, dsa=%zuMB, total=%zu)",
+       budget->ring_slots, ((Size)budget->ring_slots * sizeof(PschRingEntry)) / 1024,
+       (Size)budget->dsa_bytes / (1024 * 1024), PschShmemSize());
 }
 
 static void PschShmemStartupHook(void) {
@@ -266,14 +291,6 @@ static void PschShmemStartupHook(void) {
 
   on_shmem_exit(PschShmemShutdown, 0);
 }
-
-void PschShmemRequest(void) {
-#if PG_VERSION_NUM < 150000
-  RequestSharedResources();
-#endif
-}
-
-void PschShmemStartup(void) {}
 
 void PschInstallShmemHooks(void) {
 #if PG_VERSION_NUM >= 150000
@@ -387,63 +404,189 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   return enqueued;
 }
 
-// Dequeue an event from the ring buffer (single-consumer, called by bgworker)
+// Read-only resolve of a per-event DSA string (err_message).  Mirrors
+// PschDsaResolveString but never frees: peek must leave the ring slot's
+// allocations intact so a failed export can retry the same events.
+static void DsaPeekString(dsa_pointer dp, uint16 src_len, char* dst_buf, uint16 max_len,
+                          uint16* out_len) {
+  dsa_area* dsa;
+  char* src;
+  uint16 len;
+
+  dst_buf[0] = '\0';
+  *out_len = 0;
+
+  if (!DsaPointerIsValid(dp)) {
+    return;
+  }
+  dsa = PschDsaGetArea();
+  if (dsa == NULL) {
+    return;
+  }
+  src = (char*)dsa_get_address(dsa, dp);
+  len = Min(src_len, (uint16)(max_len - 1));
+  memcpy(dst_buf, src, len);
+  dst_buf[len] = '\0';
+  *out_len = len;
+}
+
+// Two-phase consume, phase 1 (single-consumer, called by bgworker).
 //
-// LOCK-FREE DESIGN: This function runs lock-free because there's only one consumer
-// (the bgworker). We use atomic reads and memory barriers instead of locks. This
-// prevents producer contention from affecting the consumer's ability to drain the
-// queue. Pattern from PostgreSQL's shm_mq.c.
+// LOCK-FREE DESIGN: Runs lock-free because there's only one consumer (the
+// bgworker). Atomic reads + memory barriers instead of locks, pattern from
+// PostgreSQL's shm_mq.c: pg_read_barrier() after reading head ensures the
+// producer's slot writes are visible before we copy.
 //
-// DSA STRING RESOLUTION: The ring buffer stores PschRingEntry with dsa_pointer
-// references.  This function copies numeric fields into the output PschEvent,
-// resolves DSA strings into PschEvent's inline buffers, and frees the DSA memory.
-// After return the caller owns a self-contained PschEvent with inline strings.
+// The tail does NOT advance and no DSA memory is freed: producers cannot
+// reuse the peeked slots (they check head - tail against capacity), so the
+// copies stay valid and a failed export can peek the same events again.
+// Interned query objects stay referenced by the slots, so the read-only
+// resolve cannot race a free.
 //
-// MEMORY BARRIERS: Critical for correctness on weakly-ordered CPUs:
-// 1. pg_read_barrier() after reading head ensures we see the producer's writes
-// 2. pg_write_barrier() before updating tail ensures our copy completes first
-// Without these, we could read stale event data or signal completion too early.
-//
-// WRAPAROUND SAFETY: Using uint64 for head/tail means wraparound takes ~584 years
-// at 1M events/sec. Even after wraparound, (head - tail) arithmetic works correctly
-// because both wrap at the same point (2^64).
-bool PschDequeueEvent(PschEvent* event) {
-  if (psch_shared_state == NULL) {
-    return false;
+// WRAPAROUND SAFETY: uint64 head/tail wrap at the same point (2^64), so
+// (head - tail) arithmetic stays correct (~584 years at 1M events/sec).
+int PschPeekEvents(PschEvent* buf, int max) {
+  uint64 head;
+  uint64 tail;
+  uint64 avail;
+  uint32 mask;
+  int n;
+  int i;
+
+  if (psch_shared_state == NULL || buf == NULL || max <= 0) {
+    return 0;
   }
 
-  // Read head with acquire semantics - we must see producer's latest writes
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  // pg_read_barrier() is sufficient here (vs full pg_memory_barrier() in GetStats)
-  // because this is a read-only path - we're not writing anything that needs to be
-  // visible to producers before we complete the read.
+  head = pg_atomic_read_u64(&psch_shared_state->head);
   pg_read_barrier();
-  uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  tail = pg_atomic_read_u64(&psch_shared_state->tail);
 
-  if (head == tail) {
-    return false;  // Queue is empty
+  avail = head - tail;
+  if (avail == 0) {
+    return 0;
+  }
+  n = (avail < (uint64)max) ? (int)avail : max;
+  mask = psch_shared_state->capacity - 1;
+
+  for (i = 0; i < n; i++) {
+    PschRingEntry* slot = &GetRingBuffer()[(tail + (uint64)i) & mask];
+    PschEvent* event = &buf[i];
+
+    // Copy the fixed-field prefix, then resolve the DSA-backed strings into
+    // the event's inline buffers without freeing or releasing anything.
+    memcpy(event, slot, kFixedPrefixSize);
+    DsaPeekString(slot->err_message_dsa, slot->err_message_len, event->err_message,
+                  PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
+    PschQueryInternResolve(slot->query_dsa, event->query, PSCH_MAX_QUERY_LEN, &event->query_len);
   }
 
-  // Fast modulo via bitmask (requires power-of-2 capacity)
-  uint32 capacity = psch_shared_state->capacity;
-  uint32 mask = capacity - 1;
-  PschRingEntry* slot = &GetRingBuffer()[tail & mask];
+  return n;
+}
 
-  // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
-  //    client_addr, lengths — everything before the variable-length data).
-  memcpy(event, slot, kFixedPrefixSize);
+// Two-phase consume, phase 2: free the DSA strings of the first n queued
+// events and advance the tail past them.  Slot dsa_pointers are cleared as
+// they are freed so that a longjmp landing mid-loop cannot cause a double
+// free on a later retry (the not-yet-advanced tail would re-expose the
+// slots).  The write barrier ensures all frees complete before producers can
+// reuse the slots.
+void PschConsumeEvents(int n) {
+  uint64 head;
+  uint64 tail;
+  uint32 mask;
+  dsa_area* dsa;
+  int i;
 
-  // 2. Resolve err_message (per-event DSA) and query text (shared interner).
-  PschDsaResolveString(slot->err_message_dsa, slot->err_message_len, event->err_message,
-                       PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
-  PschQueryInternResolveAndRelease(slot->query_dsa, event->query, PSCH_MAX_QUERY_LEN,
-                                   &event->query_len);
+  if (psch_shared_state == NULL || n <= 0) {
+    return;
+  }
 
-  // CRITICAL: Write barrier ensures all reads and DSA frees complete before we
-  // update tail.  Producers cannot reuse this slot until tail advances past it.
+  head = pg_atomic_read_u64(&psch_shared_state->head);
+  pg_read_barrier();
+  tail = pg_atomic_read_u64(&psch_shared_state->tail);
+
+  if ((uint64)n > head - tail) {
+    elog(WARNING, "pg_stat_ch: consume of %d events exceeds " UINT64_FORMAT " queued; clamping", n,
+         head - tail);
+    n = (int)(head - tail);
+  }
+
+  dsa = PschDsaGetArea();
+  mask = psch_shared_state->capacity - 1;
+
+  for (i = 0; i < n; i++) {
+    PschRingEntry* slot = &GetRingBuffer()[(tail + (uint64)i) & mask];
+    dsa_pointer err_dsa = slot->err_message_dsa;
+    dsa_pointer query_dsa = slot->query_dsa;
+
+    // Clear the slot pointers BEFORE freeing.  dsa_free / the interner release
+    // can ereport(ERROR) on a damaged DSA, and PschExportBatch runs inside the
+    // drain loop's PG_TRY/PG_CATCH (bgworker.c): a longjmp out of a free leaves
+    // the tail un-advanced, so the slot would be re-resolved (use-after-free)
+    // and re-freed (double free) on the next cycle.  Clearing first means such
+    // a longjmp merely leaks the allocation — the documented safe policy
+    // (matching PschDsaResolveString) — instead of corrupting the DSA.
+    slot->err_message_dsa = InvalidDsaPointer;
+    slot->query_dsa = InvalidDsaPointer;
+
+    if (DsaPointerIsValid(err_dsa) && dsa != NULL) {
+      dsa_free(dsa, err_dsa);
+    }
+
+    // NULL output args make this a pure refcount release (see query_intern.h).
+    PschQueryInternResolveAndRelease(query_dsa, NULL, 0, NULL);
+  }
+
   pg_write_barrier();
-  pg_atomic_write_u64(&psch_shared_state->tail, tail + 1);
-  return true;
+  pg_atomic_write_u64(&psch_shared_state->tail, tail + (uint64)n);
+}
+
+// Validate ring invariants at bgworker start.  The SIGABRT backstop exits
+// with _exit(1), which skips shmem reinit — if the abort happened while ring
+// state was being mutated, the indices could be inconsistent.  Producers
+// mutate head only under the main lock, so holding it exclusively makes the
+// paired reset race-free; lock-free fast-path readers may observe one
+// spurious overflow during the reset, which is acceptable for a corrupt-only
+// worker-start path.
+void PschRingSanityCheck(void) {
+  const PschMemoryBudget* budget;
+  uint64 head;
+  uint64 tail;
+  uint32 capacity;
+  bool corrupt = false;
+
+  if (psch_shared_state == NULL) {
+    return;
+  }
+  budget = PschMemoryBudgetGet();
+
+  LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
+  capacity = psch_shared_state->capacity;
+  head = pg_atomic_read_u64(&psch_shared_state->head);
+  tail = pg_atomic_read_u64(&psch_shared_state->tail);
+
+  if (capacity == 0 || (capacity & (capacity - 1)) != 0 || capacity != budget->ring_slots) {
+    psch_shared_state->capacity = budget->ring_slots;
+    corrupt = true;
+  }
+  if (head - tail > (uint64)psch_shared_state->capacity) {
+    corrupt = true;
+  }
+
+  if (corrupt) {
+    // Discards queued events: their slot mapping / DSA pointers can no
+    // longer be trusted, so referenced DSA strings are leaked, not freed.
+    // Tail is reset before head: fast-path readers load head first, so a
+    // torn pair can never underflow (head - tail); at worst one producer
+    // sees a stale-full ring and overflow-drops a single event.
+    pg_atomic_write_u64(&psch_shared_state->tail, 0);
+    pg_write_barrier();
+    pg_atomic_write_u64(&psch_shared_state->head, 0);
+    elog(LOG,
+         "pg_stat_ch: ring state corrupt at worker start (capacity=%u head=" UINT64_FORMAT
+         " tail=" UINT64_FORMAT "); indices reset, queued events discarded",
+         capacity, head, tail);
+  }
+  LWLockRelease(psch_shared_state->lock);
 }
 
 // Get queue statistics (called by SQL function pg_stat_ch_stats())
@@ -516,6 +659,7 @@ void PschResetStats(void) {
   pg_atomic_write_u64(&psch_shared_state->dropped, 0);
   pg_atomic_write_u64(&psch_shared_state->exported, 0);
   pg_atomic_write_u64(&psch_shared_state->send_failures, 0);
+  pg_atomic_write_u64(&psch_shared_state->export_dropped, 0);
   pg_atomic_clear_flag(&psch_shared_state->overflow_logged);
   pg_atomic_write_u64(&psch_shared_state->dsa_oom_count, 0);
   psch_shared_state->last_success_ts = 0;
@@ -551,6 +695,23 @@ void PschRecordExportFailure(const char* error_msg) {
             sizeof(psch_shared_state->last_error_text));
   }
   LWLockRelease(psch_shared_state->lock);
+}
+
+// Count events destructively consumed after an export failure (poison-batch
+// valve, internal error, or exporter OOM).  Distinct from the enqueue-overflow
+// 'dropped' counter so operators can tell capture loss from export loss.
+void PschRecordExportDrop(int n) {
+  if (psch_shared_state == NULL || n <= 0) {
+    return;
+  }
+  pg_atomic_fetch_add_u64(&psch_shared_state->export_dropped, (uint64)n);
+}
+
+uint64 PschGetExportDropped(void) {
+  if (psch_shared_state == NULL) {
+    return 0;
+  }
+  return pg_atomic_read_u64(&psch_shared_state->export_dropped);
 }
 
 pid_t PschGetBgworkerPid(void) {

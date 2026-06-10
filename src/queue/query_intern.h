@@ -68,6 +68,14 @@ void PschQueryInternShmemInit(LWLockPadded* lwlock_base);
 // unavailable.
 dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, uint16 query_len);
 
+// Resolve `ref` into the caller's buffer WITHOUT touching the refcount.
+//
+// Read-only peek used by the two-phase ring consumer (PschPeekEvents): the
+// caller's ring slot still holds a reference, so the object cannot be freed
+// underneath the copy.  On any failure (invalid ref, DSA unavailable, magic
+// mismatch) the output is zeroed.
+void PschQueryInternResolve(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len);
+
 // Resolve `ref` into the caller's buffer and drop one reference.
 //
 // Copies up to `dst_size - 1` bytes of the interned query into `dst` and

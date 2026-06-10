@@ -94,9 +94,9 @@ void PschQueryInternShmemInit(LWLockPadded* lwlock_base) {
   // given key is derived from dynahash's own hashcode (get_hash_value) so the
   // external and internal partition agree, matching the LockTagHashCode /
   // LockHashPartitionLock pattern in src/backend/storage/lmgr/lock.c.
-  psch_query_intern_htab = ShmemInitHash(
-      "pg_stat_ch query intern", PschQueryInternMaxEntries(), PschQueryInternMaxEntries(), &info,
-      HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
+  psch_query_intern_htab =
+      ShmemInitHash("pg_stat_ch query intern", PschQueryInternMaxEntries(),
+                    PschQueryInternMaxEntries(), &info, HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 }
 
 static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const char* query,
@@ -332,6 +332,19 @@ static void ResolveInto(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out
   memcpy(dst, obj->query, copy_len);
   dst[copy_len] = '\0';
   *out_len = copy_len;
+}
+
+void PschQueryInternResolve(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len) {
+  // Zero outputs first for the same consistent-empty-result contract as
+  // PschQueryInternResolveAndRelease; the refcount is deliberately untouched.
+  if (out_len != NULL) {
+    *out_len = 0;
+  }
+  if (dst != NULL && dst_size > 0) {
+    dst[0] = '\0';
+  }
+
+  ResolveInto(ref, dst, dst_size, out_len);
 }
 
 void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size,

@@ -12,7 +12,7 @@
 // to hang indefinitely. The fix:
 //   1. Use procsignal_sigusr1_handler for SIGUSR1 (handles barriers)
 //   2. Use SIGUSR2 for extension-specific immediate flush requests
-//   3. Add socket timeouts to ClickHouse connections as a safety net
+//   3. Add socket timeouts to backend connections as a safety net
 //
 // Signal assignments:
 //   SIGHUP  -> SignalHandlerForConfigReload (reload postgresql.conf)
@@ -20,6 +20,7 @@
 //   SIGUSR1 -> procsignal_sigusr1_handler (PostgreSQL internal - barriers, etc.)
 //   SIGUSR2 -> HandleFlushSignal (extension-specific - immediate flush)
 //   SIGPIPE -> SIG_IGN (ignore broken pipe from network)
+//   SIGABRT -> HandleAbortSignal (bgworker-only restart instead of cluster crash)
 
 #include "postgres.h"
 
@@ -38,13 +39,53 @@
 #include "queue/shmem.h"
 
 #include <signal.h>
+#include <unistd.h>
 
 #include "config/guc.h"
 #include "export/stats_exporter.h"
 #include "worker/bgworker.h"
 
+// Upper bound on staged chunks drained per export cycle.  One PschExportBatch
+// call processes at most one staging chunk and returns 0 on failure or empty
+// queue, so under sustained load the loop would otherwise run until the ring
+// drains; 16 chunks bounds the time between WaitLatch returns so procsignal
+// barriers (DROP DATABASE), SIGTERM, and config reloads stay responsive.
+static const int kMaxChunksPerCycle = 16;
+
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
+
+// SIGABRT backstop.  The C++ terminate handler that used to convert stray
+// aborts into ereport(FATAL) is gone with the C++ runtime, but residual
+// abort() sources remain (libc heap-corruption checks, assert() inside
+// linked C libraries).  Exit-status semantics make this handler load-bearing:
+//
+//   * exit status 0 or 1  -> postmaster restarts ONLY this bgworker after
+//     bgw_restart_time (10 s; see PschRegisterBgworker below)
+//   * death by signal, or any other exit status -> postmaster assumes shared
+//     memory may be corrupt and crash-recovers the WHOLE cluster (every
+//     connection severed, WAL replayed) — the 2026-06-10 production incident.
+//
+// _exit(1) therefore converts an abort into a clean bgworker-only restart.
+// Only async-signal-safe work is allowed here: never ereport/elog (palloc
+// into ErrorContext from a signal handler corrupts memory), never proc_exit
+// (runs arbitrary callbacks).  The handler must not return either: abort()
+// re-raises SIGABRT with SIG_DFL if the handler returns, restoring the
+// cluster-crash path.  _exit skips the on_proc_exit chain, leaving a stale
+// bgworker_pid in shmem — PschSignalFlush's ESRCH compare-exchange recovery
+// (below) cleans that up on the next flush attempt.  SIGSEGV/SIGBUS are
+// deliberately left untouched: for those, shared memory really may be
+// corrupt, so full crash-recovery semantics are correct.
+static void HandleAbortSignal(SIGNAL_ARGS) {
+  static const char msg[] =
+      "pg_stat_ch: bgworker caught SIGABRT; exiting with status 1 for bgworker-only restart\n";
+  ssize_t rc;
+
+  (void)postgres_signal_arg;
+  rc = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+  (void)rc;
+  _exit(1);
+}
 
 // SIGUSR2 handler: wake the worker for immediate flush.
 // Note: SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
@@ -88,8 +129,7 @@ static void HandleConfigReload(void) {
 // Callback for bgworker process exit (registered via on_proc_exit).
 // Clear bgworker_pid before exporter teardown so a concurrent
 // pg_stat_ch_flush() cannot race a SIGUSR2 to a recycled PID.
-static void PschBgworkerShutdown(int code pg_attribute_unused(),
-                                 Datum arg pg_attribute_unused()) {
+static void PschBgworkerShutdown(int code pg_attribute_unused(), Datum arg pg_attribute_unused()) {
   PschSetBgworkerPid(0);
   PschExporterShutdown();
 }
@@ -107,14 +147,19 @@ static void ProcessPendingSignals(void) {
   HandleConfigReload();
 }
 
-// Drain the queue: loop exporting batches until a partial batch (< batch_max)
-// indicates the queue is nearly empty. Each batch gets its own PG_TRY/PG_CATCH
-// so an error on batch N+1 doesn't lose batches 1..N. Signals are processed
-// between batches to stay responsive to SIGTERM, barriers, and config reload.
+// Drain the queue, at most kMaxChunksPerCycle staged chunks per cycle.  Each
+// chunk gets its own PG_TRY/PG_CATCH so an error on chunk N+1 doesn't lose
+// chunks 1..N.  PschExportBatch returns 0 on failure or empty queue (the
+// chunk stays in the ring on requeueable failures), so 0 always breaks the
+// loop and lets CalculateSleepMs apply consecutive-failure backoff instead
+// of spinning.  Signals are processed between chunks to stay responsive to
+// SIGTERM, barriers, and config reload.
 static void ExportBatchWithRecovery(void) {
-  pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
+  int chunk;
 
-  for (;;) {
+  pgstat_report_activity(STATE_RUNNING, "exporting telemetry events");
+
+  for (chunk = 0; chunk < kMaxChunksPerCycle; chunk++) {
     // volatile: required because PG_TRY/PG_CATCH uses setjmp/longjmp.
     // Without it, the compiler may keep 'exported' in a register that
     // gets clobbered on longjmp, making the value undefined in PG_CATCH.
@@ -130,7 +175,7 @@ static void ExportBatchWithRecovery(void) {
     }
     PG_END_TRY();
 
-    if (exported < psch_batch_max) {
+    if (exported <= 0) {
       break;
     }
 
@@ -166,9 +211,10 @@ static int CalculateSleepMs(void) {
 
 // Run one export cycle: sleep, process signals, then drain queue if enabled.
 //
-// Note on blocking: If we're blocked in ClickHouse network I/O when a barrier
+// Note on blocking: If we're blocked in backend network I/O when a barrier
 // signal arrives, we can't process it until the I/O completes. The socket
-// timeouts configured in stats_exporter.cc (30 seconds) bound this delay.
+// deadlines configured by the export backends (pg_stat_ch.export_timeout)
+// bound this delay.
 static void RunExportCycle(uint32 wait_event) {
   int sleep_ms = CalculateSleepMs();
   (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
@@ -182,6 +228,12 @@ static void RunExportCycle(uint32 wait_event) {
 }
 
 void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
+  // Install the SIGABRT backstop before anything else: bgworkers start with
+  // all signals blocked, so installing it before
+  // BackgroundWorkerUnblockSignals leaves no window where an abort would
+  // crash-recover the whole cluster.
+  pqsignal(SIGABRT, HandleAbortSignal);
+
   SetupSignalHandlers();
   BackgroundWorkerUnblockSignals();
   BackgroundWorkerInitializeConnection("postgres", NULL, 0);
@@ -195,6 +247,10 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
   // Attach to DSA area eagerly so the first dequeue doesn't hit lazy init
   PschDsaAttach();
 
+  // The SIGABRT handler's _exit(1) skips shmem-corruption reinit; verify the
+  // ring invariants before trusting head/tail from a previous incarnation.
+  PschRingSanityCheck();
+
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
 
   // Register custom wait event for pg_stat_activity visibility
@@ -202,13 +258,14 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
     psch_wait_event_main = InitializeWaitEvent();
   }
 
-  // Initialize ClickHouse exporter and verify connectivity
-  pgstat_report_activity(STATE_RUNNING, "initializing ClickHouse exporter");
+  // Initialize the export backend and verify connectivity
+  pgstat_report_activity(STATE_RUNNING, "initializing telemetry exporter");
   if (PschExporterInit()) {
-    elog(LOG, "pg_stat_ch: ClickHouse connectivity verified on startup");
+    elog(LOG, "pg_stat_ch: exporter connectivity verified on startup");
   } else {
     elog(WARNING,
-         "pg_stat_ch: failed to connect to ClickHouse on startup, will retry on first export");
+         "pg_stat_ch: failed to connect to telemetry backend on startup, "
+         "will retry on first export");
   }
   pgstat_report_activity(STATE_IDLE, NULL);
 
@@ -226,8 +283,9 @@ void PschSignalFlush(void) {
   if (bgworker_pid == 0) {
     ereport(WARNING, (errmsg("pg_stat_ch: background worker not running")));
   } else if (kill(bgworker_pid, SIGUSR2) != 0) {
-    // Stale pid: worker died without running on_proc_exit. Clear shmem so we
-    // don't keep signaling a recycled pid; postmaster restart will repopulate.
+    // Stale pid: worker died without running on_proc_exit (kill -9, OOM
+    // killer, or the SIGABRT handler's _exit(1)). Clear shmem so we don't
+    // keep signaling a recycled pid; postmaster restart will repopulate.
     // Only clear when shmem still holds the stale pid we observed.
     if (errno == ESRCH) {
       uint32 expected = (uint32)bgworker_pid;

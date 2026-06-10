@@ -85,6 +85,9 @@ typedef struct PschSharedState {
 
   // --- Exporter stats (written by bgworker, read by stats function) --------
   pg_atomic_uint64 send_failures;
+  // Events destructively consumed after export failure (poison-batch valve /
+  // internal error) — distinct from `dropped`, which counts enqueue overflow.
+  pg_atomic_uint64 export_dropped;
   TimestampTz last_success_ts;
   TimestampTz last_error_ts;
   char last_error_text[256];
