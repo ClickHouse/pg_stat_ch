@@ -46,7 +46,7 @@ jobs:
             postgresql-${{ matrix.pg }} \
             postgresql-server-dev-${{ matrix.pg }} \
             cmake ninja-build g++ \
-            binutils libssl-dev \
+            binutils libssl-dev libkrb5-dev \
             pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg
