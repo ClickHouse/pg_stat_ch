@@ -87,7 +87,7 @@ subtest 'immediate flush' => sub {
 
 # Test 4: Metric labels populated
 # Tags (db, username) appear as Prometheus labels on histogram metrics.
-# The OTel exporter maps TagString columns to both log attributes and metric tags.
+# The OTel exporter maps StatLCString columns to both log attributes and metric tags.
 subtest 'metric labels populated' => sub {
     $node->safe_psql('postgres', 'CREATE TABLE test_otel_labels(id int)');
     $node->safe_psql('postgres', "INSERT INTO test_otel_labels VALUES (1), (2), (3)");

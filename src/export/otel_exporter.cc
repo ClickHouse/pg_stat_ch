@@ -152,43 +152,38 @@ class OTelExporter : public StatsExporter {
   bool CommitBatch() final;
 
   // -- Column factories (all write directly to the arena-allocated LogRecord) --
+  //
+  // OTel logs are flat attribute bags, so the LC/HC distinction collapses on
+  // this side — both StatLC* and StatHC* of the same wire type produce
+  // identical log attributes. The intent declared at the interface layer
+  // matters for downstream metric processors (LC -> eligible as dimension;
+  // HC -> log-attribute-only) but those decisions live in the collector
+  // config, not here.
 
-  shared_ptr<Column<string>> TagString(string_view name) final { return MakeStringCol(name); }
-
-  shared_ptr<Column<int16_t>> MetricInt16(string_view name) final {
-    return MakeIntCol<int16_t>(name);
-  }
-  shared_ptr<Column<int32_t>> MetricInt32(string_view name) final {
-    return MakeIntCol<int32_t>(name);
-  }
-  shared_ptr<Column<int64_t>> MetricInt64(string_view name) final {
-    return MakeIntCol<int64_t>(name);
-  }
-  shared_ptr<Column<uint8_t>> MetricUInt8(string_view name) final {
+  // Low-cardinality columns
+  shared_ptr<Column<string>> StatLCString(string_view name) final { return MakeStringCol(name); }
+  shared_ptr<Column<uint8_t>> StatLCUInt8(string_view name) final {
     return MakeIntCol<uint8_t>(name);
   }
-  shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) final {
-    return MakeIntCol<uint64_t>(name);
-  }
-  shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
+  shared_ptr<Column<int16_t>> StatLCInt16(string_view name) final {
     return MakeIntCol<int16_t>(name);
   }
-  shared_ptr<Column<int32_t>> RecordInt32(string_view name) final {
+  shared_ptr<Column<int32_t>> StatLCInt32(string_view name) final {
     return MakeIntCol<int32_t>(name);
   }
-  shared_ptr<Column<int64_t>> RecordInt64(string_view name) final {
+
+  // High-cardinality columns
+  shared_ptr<Column<string_view>> StatHCString(string_view name) final { return MakeSvCol(name); }
+  shared_ptr<Column<int64_t>> StatHCInt64(string_view name) final {
     return MakeIntCol<int64_t>(name);
   }
-  shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) final {
-    return MakeIntCol<uint8_t>(name);
-  }
-  shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) final {
+  shared_ptr<Column<uint64_t>> StatHCUInt64(string_view name) final {
     return MakeIntCol<uint64_t>(name);
   }
-  shared_ptr<Column<int64_t>> RecordDateTime(string_view name) final {
+
+  shared_ptr<Column<int64_t>> StatTimestamp(string_view name) final {
     return MakeDateTimeCol(name);
   }
-  shared_ptr<Column<string_view>> RecordString(string_view name) final { return MakeSvCol(name); }
 
   // Semantic columns
   shared_ptr<Column<string>> DbNameColumn() final { return MakeStringCol("db.name"); }

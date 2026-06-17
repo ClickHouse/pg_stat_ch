@@ -157,54 +157,48 @@ class ClickHouseExporter : public StatsExporter {
       MemoryContextDelete(conn_cxt_);
   }
 
-  // Server casts String to LowCardinality(String) on INSERT
-  shared_ptr<Column<string>> TagString(string_view name) final {
+  // On the CH-native side, the LC/HC distinction is a hint: the server-side
+  // LowCardinality(<Type>) wrap (declared in the schema) is what actually
+  // applies dictionary encoding on write. clickhouse-c speaks plain typed
+  // columns either way, so StatLC* and StatHC* of the same C++ type produce
+  // identical wire bytes here. The new Arrow exporter is where the LC/HC
+  // distinction materially changes the wire shape (DictBuilder vs plain).
+
+  // Low-cardinality columns
+  shared_ptr<Column<string>> StatLCString(string_view name) final {
     return MakeCol<StringCol<string>>(name);
   }
-  shared_ptr<Column<int16_t>> MetricInt16(string_view name) final {
-    return MakeCol<FixedCol<int16_t>>(name, "Int16");
-  }
-  shared_ptr<Column<int32_t>> MetricInt32(string_view name) final {
-    return MakeCol<FixedCol<int32_t>>(name, "Int32");
-  }
-  shared_ptr<Column<int64_t>> MetricInt64(string_view name) final {
-    return MakeCol<FixedCol<int64_t>>(name, "Int64");
-  }
-  shared_ptr<Column<uint8_t>> MetricUInt8(string_view name) final {
+  shared_ptr<Column<uint8_t>> StatLCUInt8(string_view name) final {
     return MakeCol<FixedCol<uint8_t>>(name, "UInt8");
   }
-  shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) final {
+  shared_ptr<Column<int16_t>> StatLCInt16(string_view name) final {
+    return MakeCol<FixedCol<int16_t>>(name, "Int16");
+  }
+  shared_ptr<Column<int32_t>> StatLCInt32(string_view name) final {
+    return MakeCol<FixedCol<int32_t>>(name, "Int32");
+  }
+
+  // High-cardinality columns
+  shared_ptr<Column<string_view>> StatHCString(string_view name) final {
+    return MakeCol<StringCol<string_view>>(name);
+  }
+  shared_ptr<Column<int64_t>> StatHCInt64(string_view name) final {
+    return MakeCol<FixedCol<int64_t>>(name, "Int64");
+  }
+  shared_ptr<Column<uint64_t>> StatHCUInt64(string_view name) final {
     return MakeCol<FixedCol<uint64_t>>(name, "UInt64");
   }
 
-  shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
-    return MakeCol<FixedCol<int16_t>>(name, "Int16");
-  }
-  shared_ptr<Column<int32_t>> RecordInt32(string_view name) final {
-    return MakeCol<FixedCol<int32_t>>(name, "Int32");
-  }
-  shared_ptr<Column<int64_t>> RecordInt64(string_view name) final {
-    return MakeCol<FixedCol<int64_t>>(name, "Int64");
-  }
-  shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) final {
-    return MakeCol<FixedCol<uint8_t>>(name, "UInt8");
-  }
-  shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) final {
-    return MakeCol<FixedCol<uint64_t>>(name, "UInt64");
-  }
-  shared_ptr<Column<int64_t>> RecordDateTime(string_view name) final {
+  shared_ptr<Column<int64_t>> StatTimestamp(string_view name) final {
     return MakeCol<FixedCol<int64_t>>(name, "DateTime64(6)");
-  }
-  shared_ptr<Column<string_view>> RecordString(string_view name) final {
-    return MakeCol<StringCol<string_view>>(name);
   }
 
   // Semantic columns
-  shared_ptr<Column<string>> DbNameColumn() final { return TagString("db_name"); }
-  shared_ptr<Column<string>> DbUserColumn() final { return TagString("db_user"); }
-  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return MetricUInt64("duration_us"); }
-  shared_ptr<Column<string>> DbOperationColumn() final { return TagString("db_operation"); }
-  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return RecordString("query_text"); }
+  shared_ptr<Column<string>> DbNameColumn() final { return StatLCString("db_name"); }
+  shared_ptr<Column<string>> DbUserColumn() final { return StatLCString("db_user"); }
+  shared_ptr<Column<uint64_t>> DbDurationColumn() final { return StatHCUInt64("duration_us"); }
+  shared_ptr<Column<string>> DbOperationColumn() final { return StatLCString("db_operation"); }
+  shared_ptr<Column<string_view>> DbQueryTextColumn() final { return StatHCString("query_text"); }
 
   void BeginBatch() final {
     for (auto& col : columns_)

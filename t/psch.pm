@@ -290,7 +290,7 @@ sub psch_get_otel_histogram_total {
 }
 
 # Return true if any Prometheus metric line for $metric_base contains a label
-# with the given key=value pair. Useful for verifying TagString columns.
+# with the given key=value pair. Useful for verifying StatLCString columns.
 #
 # Example: psch_otel_metric_has_label("pg_stat_ch_duration_us", "db", "postgres")
 sub psch_otel_metric_has_label {
