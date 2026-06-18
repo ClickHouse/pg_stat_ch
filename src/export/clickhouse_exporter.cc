@@ -176,9 +176,6 @@ class ClickHouseExporter : public StatsExporter {
   shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) final {
     return MakeCol<FixedCol<uint64_t>>(name, "UInt64");
   }
-  shared_ptr<Column<string_view>> MetricFixedString(int len, string_view name) final {
-    return MakeCol<FixedStringCol>(name, len);
-  }
 
   shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
     return MakeCol<FixedCol<int16_t>>(name, "Int16");
@@ -262,34 +259,6 @@ class ClickHouseExporter : public StatsExporter {
     const std::string name_;
     std::vector<char> bytes_;
     std::vector<uint64_t> offsets_;
-  };
-
-  class FixedStringCol : public Column<string_view> {
-   public:
-    FixedStringCol(ClickHouseExporter* exp, string_view name, int n)
-        : exp_(exp),
-          name_(name),
-          width_(static_cast<size_t>(n)),
-          type_name_("FixedString(" + std::to_string(n) + ")") {}
-    void Append(const string_view& s) final {
-      const size_t start = data_.size();
-      data_.resize(start + width_, '\0');
-      std::memcpy(data_.data() + start, s.data(), std::min(s.size(), width_));
-      ++rows_;
-    }
-    void Crunch() final { exp_->AppendFixed(name_, type_name_.c_str(), data_.data(), rows_); }
-    void Clear() final {
-      data_.clear();
-      rows_ = 0;
-    }
-
-   private:
-    ClickHouseExporter* const exp_;
-    const std::string name_;
-    const size_t width_;
-    const std::string type_name_;
-    std::vector<char> data_;
-    size_t rows_ = 0;
   };
 
   template <typename ColT, typename... Args>
