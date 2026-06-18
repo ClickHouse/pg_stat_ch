@@ -233,57 +233,57 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
   exporter->BeginBatch();
 
-  auto col_ts = exporter->RecordDateTime("ts");
+  auto col_ts = exporter->StatTimestamp("ts");
   auto col_duration_us = exporter->DbDurationColumn();
   auto col_db_name = exporter->DbNameColumn();
   auto col_db_user = exporter->DbUserColumn();
-  auto col_pid = exporter->RecordInt32("pid");
-  auto col_query_id = exporter->RecordInt64("query_id");
+  auto col_pid = exporter->StatLCInt32("pid");
+  auto col_query_id = exporter->StatHCInt64("query_id");
   auto col_db_operation = exporter->DbOperationColumn();
-  auto col_rows = exporter->MetricUInt64("rows");
+  auto col_rows = exporter->StatHCUInt64("rows");
   auto col_query_text = exporter->DbQueryTextColumn();
 
-  auto col_shared_blks_hit = exporter->MetricInt64("shared_blks_hit");
-  auto col_shared_blks_read = exporter->MetricInt64("shared_blks_read");
-  auto col_shared_blks_dirtied = exporter->RecordInt64("shared_blks_dirtied");
-  auto col_shared_blks_written = exporter->RecordInt64("shared_blks_written");
-  auto col_local_blks_hit = exporter->RecordInt64("local_blks_hit");
-  auto col_local_blks_read = exporter->RecordInt64("local_blks_read");
-  auto col_local_blks_dirtied = exporter->RecordInt64("local_blks_dirtied");
-  auto col_local_blks_written = exporter->RecordInt64("local_blks_written");
-  auto col_temp_blks_read = exporter->RecordInt64("temp_blks_read");
-  auto col_temp_blks_written = exporter->RecordInt64("temp_blks_written");
+  auto col_shared_blks_hit = exporter->StatHCInt64("shared_blks_hit");
+  auto col_shared_blks_read = exporter->StatHCInt64("shared_blks_read");
+  auto col_shared_blks_dirtied = exporter->StatHCInt64("shared_blks_dirtied");
+  auto col_shared_blks_written = exporter->StatHCInt64("shared_blks_written");
+  auto col_local_blks_hit = exporter->StatHCInt64("local_blks_hit");
+  auto col_local_blks_read = exporter->StatHCInt64("local_blks_read");
+  auto col_local_blks_dirtied = exporter->StatHCInt64("local_blks_dirtied");
+  auto col_local_blks_written = exporter->StatHCInt64("local_blks_written");
+  auto col_temp_blks_read = exporter->StatHCInt64("temp_blks_read");
+  auto col_temp_blks_written = exporter->StatHCInt64("temp_blks_written");
 
-  auto col_shared_blk_read_time_us = exporter->RecordInt64("shared_blk_read_time_us");
-  auto col_shared_blk_write_time_us = exporter->RecordInt64("shared_blk_write_time_us");
-  auto col_local_blk_read_time_us = exporter->RecordInt64("local_blk_read_time_us");
-  auto col_local_blk_write_time_us = exporter->RecordInt64("local_blk_write_time_us");
-  auto col_temp_blk_read_time_us = exporter->RecordInt64("temp_blk_read_time_us");
-  auto col_temp_blk_write_time_us = exporter->RecordInt64("temp_blk_write_time_us");
+  auto col_shared_blk_read_time_us = exporter->StatHCInt64("shared_blk_read_time_us");
+  auto col_shared_blk_write_time_us = exporter->StatHCInt64("shared_blk_write_time_us");
+  auto col_local_blk_read_time_us = exporter->StatHCInt64("local_blk_read_time_us");
+  auto col_local_blk_write_time_us = exporter->StatHCInt64("local_blk_write_time_us");
+  auto col_temp_blk_read_time_us = exporter->StatHCInt64("temp_blk_read_time_us");
+  auto col_temp_blk_write_time_us = exporter->StatHCInt64("temp_blk_write_time_us");
 
-  auto col_wal_records = exporter->RecordInt64("wal_records");
-  auto col_wal_fpi = exporter->RecordInt64("wal_fpi");
-  auto col_wal_bytes = exporter->RecordUInt64("wal_bytes");
+  auto col_wal_records = exporter->StatHCInt64("wal_records");
+  auto col_wal_fpi = exporter->StatHCInt64("wal_fpi");
+  auto col_wal_bytes = exporter->StatHCUInt64("wal_bytes");
 
-  auto col_cpu_user_time_us = exporter->RecordInt64("cpu_user_time_us");
-  auto col_cpu_sys_time_us = exporter->RecordInt64("cpu_sys_time_us");
+  auto col_cpu_user_time_us = exporter->StatHCInt64("cpu_user_time_us");
+  auto col_cpu_sys_time_us = exporter->StatHCInt64("cpu_sys_time_us");
 
-  auto col_jit_functions = exporter->RecordInt32("jit_functions");
-  auto col_jit_generation_time_us = exporter->RecordInt32("jit_generation_time_us");
-  auto col_jit_deform_time_us = exporter->RecordInt32("jit_deform_time_us");
-  auto col_jit_inlining_time_us = exporter->RecordInt32("jit_inlining_time_us");
-  auto col_jit_optimization_time_us = exporter->RecordInt32("jit_optimization_time_us");
-  auto col_jit_emission_time_us = exporter->RecordInt32("jit_emission_time_us");
+  auto col_jit_functions = exporter->StatLCInt32("jit_functions");
+  auto col_jit_generation_time_us = exporter->StatLCInt32("jit_generation_time_us");
+  auto col_jit_deform_time_us = exporter->StatLCInt32("jit_deform_time_us");
+  auto col_jit_inlining_time_us = exporter->StatLCInt32("jit_inlining_time_us");
+  auto col_jit_optimization_time_us = exporter->StatLCInt32("jit_optimization_time_us");
+  auto col_jit_emission_time_us = exporter->StatLCInt32("jit_emission_time_us");
 
-  auto col_parallel_workers_planned = exporter->RecordInt16("parallel_workers_planned");
-  auto col_parallel_workers_launched = exporter->RecordInt16("parallel_workers_launched");
+  auto col_parallel_workers_planned = exporter->StatLCInt16("parallel_workers_planned");
+  auto col_parallel_workers_launched = exporter->StatLCInt16("parallel_workers_launched");
 
-  auto col_err_sqlstate = exporter->TagString("err_sqlstate");
-  auto col_err_elevel = exporter->RecordUInt8("err_elevel");
-  auto col_err_message = exporter->RecordString("err_message");
+  auto col_err_sqlstate = exporter->StatLCString("err_sqlstate");
+  auto col_err_elevel = exporter->StatLCUInt8("err_elevel");
+  auto col_err_message = exporter->StatHCString("err_message");
 
-  auto col_app = exporter->RecordString("app");
-  auto col_client_addr = exporter->RecordString("client_addr");
+  auto col_app = exporter->StatLCString("app");
+  auto col_client_addr = exporter->StatHCString("client_addr");
 
   for (const auto& ev : events) {
     exporter->BeginRow();

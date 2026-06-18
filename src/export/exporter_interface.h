@@ -28,24 +28,44 @@ class StatsExporter {
   };
 
  public:
-  // Tags: Columns that serve as narrowing criteria for metrics.
-  virtual shared_ptr<Column<string>> TagString(string_view name) = 0;
+  // ===========================================================================
+  // Cardinality-typed columns.
+  //
+  // Stat<LC|HC><Type>(name) declares both the wire type and the *cardinality
+  // intent* of the column. Each backend honors that intent appropriately:
+  //
+  //   ClickHouse: LC -> may be stored as LowCardinality(<Type>); HC -> plain.
+  //               Schema-declared encoding wins on write; the LC hint helps
+  //               the producer pick the cheapest column representation.
+  //   Arrow IPC:  LC -> DictBuilder (dictionary-encoded array); HC -> plain
+  //               typed builder. Required for batch-rate efficiency on
+  //               low-cardinality dimensions.
+  //   OTel:       LC -> eligible as a histogram dimension or metric label;
+  //               HC -> log attribute only, *never* a metric dimension
+  //               (cardinality explosion).
+  //
+  // Cardinality is a property of the data, not just the type width. err_elevel
+  // (UInt8) is LC because values repeat (~5 distinct codes). query_id (Int64)
+  // is HC because every distinct query produces a distinct value. The author
+  // declares intent; the backend implements it.
+  // ===========================================================================
 
-  // Metrics: Columns that are generally bucketed into histograms.
-  virtual shared_ptr<Column<int16_t>> MetricInt16(string_view name) = 0;
-  virtual shared_ptr<Column<int32_t>> MetricInt32(string_view name) = 0;
-  virtual shared_ptr<Column<int64_t>> MetricInt64(string_view name) = 0;
-  virtual shared_ptr<Column<uint8_t>> MetricUInt8(string_view name) = 0;
-  virtual shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) = 0;
+  // Low-cardinality columns: dimensions you'd group/filter by.
+  virtual shared_ptr<Column<string>> StatLCString(string_view name) = 0;
+  virtual shared_ptr<Column<uint8_t>> StatLCUInt8(string_view name) = 0;
+  virtual shared_ptr<Column<int16_t>> StatLCInt16(string_view name) = 0;
+  virtual shared_ptr<Column<int32_t>> StatLCInt32(string_view name) = 0;
 
-  // Records: Data columns you wouldn't want to filter by.
-  virtual shared_ptr<Column<int16_t>> RecordInt16(string_view name) = 0;
-  virtual shared_ptr<Column<int32_t>> RecordInt32(string_view name) = 0;
-  virtual shared_ptr<Column<int64_t>> RecordInt64(string_view name) = 0;
-  virtual shared_ptr<Column<uint8_t>> RecordUInt8(string_view name) = 0;
-  virtual shared_ptr<Column<uint64_t>> RecordUInt64(string_view name) = 0;
-  virtual shared_ptr<Column<int64_t>> RecordDateTime(string_view name) = 0;
-  virtual shared_ptr<Column<string_view>> RecordString(string_view name) = 0;
+  // High-cardinality columns: values you observe, not dimensions you group by.
+  virtual shared_ptr<Column<string_view>> StatHCString(string_view name) = 0;
+  virtual shared_ptr<Column<int64_t>> StatHCInt64(string_view name) = 0;
+  virtual shared_ptr<Column<uint64_t>> StatHCUInt64(string_view name) = 0;
+
+  // Domain-specific. Caller appends a Unix-epoch microsecond timestamp.
+  // (PG-epoch values must be offset by kPostgresEpochOffsetUs before append;
+  // CH DateTime64(6) and OTel time_unix_nano both interpret the wire value
+  // as Unix-epoch.)
+  virtual shared_ptr<Column<int64_t>> StatTimestamp(string_view name) = 0;
 
   // ===========================================================================
   // Semantic columns: name, unit, and instrument type may vary by backend.
@@ -54,17 +74,17 @@ class StatsExporter {
   // instrument). Pure virtuals enforce explicit handling in every exporter.
   // ===========================================================================
 
-  // Database name. CH: TagString "db_name"; OTel semconv: "db.name" tag.
+  // Database name. CH: StatLCString "db_name"; OTel semconv: "db.name" tag.
   virtual shared_ptr<Column<string>> DbNameColumn() = 0;
-  // Authenticated user. CH: TagString "db_user"; OTel semconv: "db.user" tag.
+  // Authenticated user. CH: StatLCString "db_user"; OTel semconv: "db.user" tag.
   virtual shared_ptr<Column<string>> DbUserColumn() = 0;
-  // Query duration. Caller appends microseconds. CH: MetricUInt64 "duration_us";
+  // Query duration. Caller appends microseconds. CH: StatHCUInt64 "duration_us";
   // OTel: converts to seconds, records as Histogram<double> "db.client.operation.duration".
   virtual shared_ptr<Column<uint64_t>> DbDurationColumn() = 0;
-  // SQL command type. CH: TagString "db_operation"; OTel: TagString "db.operation.name"
+  // SQL command type. CH: StatLCString "db_operation"; OTel: StatLCString "db.operation.name"
   // (used as a dimension on the duration histogram).
   virtual shared_ptr<Column<string>> DbOperationColumn() = 0;
-  // Query text. CH: RecordString "query_text"; OTel semconv: "db.query.text".
+  // Query text. CH: StatHCString "query_text"; OTel semconv: "db.query.text".
   virtual shared_ptr<Column<string_view>> DbQueryTextColumn() = 0;
 
   virtual void BeginBatch() = 0;
@@ -95,8 +115,8 @@ void RecordExporterFailure(const char* message);
 // Expected usage:
 // void ProcessBatch(StatsExporter *exporter) {
 //   exporter->BeginBatch(); // no op or ClickHouse column reset
-//   auto col_user = exporter->TagString("db_user");
-//   auto col_rows = exporter->MetricUInt64("rows");
+//   auto col_user = exporter->StatLCString("db_user");
+//   auto col_rows = exporter->StatHCUInt64("rows");
 //
 //   for (const auto &ev : events) {
 //     exporter->BeginRow(); // no-op or initialize tag map
