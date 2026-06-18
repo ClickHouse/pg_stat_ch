@@ -170,10 +170,6 @@ class OTelExporter : public StatsExporter {
   shared_ptr<Column<uint64_t>> MetricUInt64(string_view name) final {
     return MakeIntCol<uint64_t>(name);
   }
-  shared_ptr<Column<string_view>> MetricFixedString(int /*len*/, string_view name) final {
-    return MakeSvCol(name);
-  }
-
   shared_ptr<Column<int16_t>> RecordInt16(string_view name) final {
     return MakeIntCol<int16_t>(name);
   }
