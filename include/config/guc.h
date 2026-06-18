@@ -33,6 +33,7 @@ extern int psch_min_duration_us;
 extern int psch_normalize_cache_max;
 extern double psch_sample_rate;
 extern bool psch_otel_arrow_passthrough;
+extern bool psch_use_unified_arrow_exporter;
 extern int psch_otel_max_block_bytes;
 extern char* psch_extra_attributes;
 extern char* psch_debug_arrow_dump_dir;

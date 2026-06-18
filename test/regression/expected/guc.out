@@ -32,7 +32,8 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.sample_rate
  pg_stat_ch.string_area_size
  pg_stat_ch.use_otel
-(29 rows)
+ pg_stat_ch.use_unified_arrow_exporter
+(30 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
