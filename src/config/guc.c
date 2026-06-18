@@ -364,10 +364,13 @@ void PschInitGuc(void) {
       "builds Arrow IPC via the typed StatsExporter column interface, writing the "
       "events_raw schema (typed integer ids, no sprintf decimal-string encoding). "
       "When off, the legacy arrow_batch.cc path runs and produces the query_logs_arrow "
-      "wire shape. Default off; flip on to opt a producer into the new exporter.",
+      "wire shape. Default off; flip on to opt a producer into the new exporter. "
+      "PGC_POSTMASTER: the bgworker picks the exporter implementation at init time, "
+      "so a runtime change would mismatch the per-cycle dispatcher (Arrow batches "
+      "would silently drop, since OTelArrowExporter does not implement SendArrowBatch).",
       &psch_use_unified_arrow_exporter,
       false,
-      PGC_SIGHUP,
+      PGC_POSTMASTER,
       0,
       NULL, NULL, NULL);
 
