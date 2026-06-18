@@ -202,99 +202,127 @@ class OTelArrowExporter : public StatsExporter {
   bool IsConnected() const final { return inner_->IsConnected(); }
   int NumConsecutiveFailures() const final { return inner_->NumConsecutiveFailures(); }
   void ResetFailures() final { inner_->ResetFailures(); }
-  // Report rows from THIS batch, not the inner exporter's cumulative count.
-  // BeginBatch resets row_count_; the inner's exported_count_ accumulates
-  // across batches because we never call inner_->BeginBatch() (the inner's
-  // per-record LogRecord state machine is unused on this path).
-  // PschExportBatch reads NumExported() once per successful CommitBatch and
-  // fetch_adds it into shared stats, so a cumulative value here would cause
-  // quadratic over-reporting.
-  int NumExported() const final { return row_count_; }
+  // Report rows from THIS batch (sum across mid-batch flushes + the final
+  // flush), not the inner exporter's cumulative count.
+  // BeginBatch resets exported_in_batch_; each successful Flush adds the
+  // chunk's row count. The inner's exported_count_ accumulates across
+  // batches because we never call inner_->BeginBatch() (the inner's per-record
+  // LogRecord state machine is unused on this path). PschExportBatch reads
+  // NumExported() once per successful CommitBatch and fetch_adds it into
+  // shared stats, so a cumulative value here would cause quadratic
+  // over-reporting.
+  int NumExported() const final { return exported_in_batch_; }
 
  private:
   // -- Column<T> wrappers ---------------------------------------------------
   // Nested so they can inherit from StatsExporter::Column<T> (protected in
   // the base; visible to derived classes and their nested types). Each one
-  // Append-forwards to a single typed builder; Crunch() is unused on this
-  // path — builders are finished together in CommitBatch when we have all
-  // slots in hand.
+  // Append-forwards to a single typed builder and bumps the exporter's
+  // bytes_estimate_ for mid-batch flush bookkeeping. Crunch() is unused on
+  // this path — builders are finished together in Flush() (invoked
+  // mid-batch when bytes_estimate_ crosses max_block_bytes_, and once at
+  // CommitBatch for the residual chunk).
+
+  // Variable-length columns over-estimate offset overhead at 4 bytes/value
+  // (32-bit offsets), ignoring the dictionary's shared backing store. For LC
+  // columns this overshoots when values repeat — fine; bytes_estimate_ is a
+  // budget threshold, not a wire-size predictor, and over-counting just
+  // means flushing slightly earlier than strictly necessary.
+  static constexpr size_t kVarLenOffsetBytes = 4;
 
   template <typename T, typename BuilderT>
   class ArrowNumColumn : public Column<T> {
    public:
-    explicit ArrowNumColumn(BuilderT* builder) : builder_(builder) {}
+    ArrowNumColumn(BuilderT* builder, size_t* bytes) : builder_(builder), bytes_(bytes) {}
     void Append(const T& v) final {
       const arrow::Status s = builder_->Append(static_cast<typename BuilderT::value_type>(v));
       if (!s.ok()) {
         LogArrowFailure("Arrow numeric append", s);
+        return;
       }
+      *bytes_ += sizeof(typename BuilderT::value_type);
     }
     void Crunch() final {}
 
    private:
     BuilderT* const builder_;
+    size_t* const bytes_;
   };
 
   class ArrowDictStrColumn : public Column<std::string> {
    public:
-    explicit ArrowDictStrColumn(DictBuilder* builder) : builder_(builder) {}
+    ArrowDictStrColumn(DictBuilder* builder, size_t* bytes) : builder_(builder), bytes_(bytes) {}
     void Append(const std::string& v) final {
       const arrow::Status s = builder_->Append(v.data(), static_cast<int32_t>(v.size()));
       if (!s.ok()) {
         LogArrowFailure("Arrow dict str append", s);
+        return;
       }
+      *bytes_ += v.size() + kVarLenOffsetBytes;
     }
     void Crunch() final {}
 
    private:
     DictBuilder* const builder_;
+    size_t* const bytes_;
   };
 
   class ArrowDictSvColumn : public Column<std::string_view> {
    public:
-    explicit ArrowDictSvColumn(DictBuilder* builder) : builder_(builder) {}
+    ArrowDictSvColumn(DictBuilder* builder, size_t* bytes) : builder_(builder), bytes_(bytes) {}
     void Append(const std::string_view& v) final {
       const arrow::Status s = builder_->Append(v.data(), static_cast<int32_t>(v.size()));
       if (!s.ok()) {
         LogArrowFailure("Arrow dict sv append", s);
+        return;
       }
+      *bytes_ += v.size() + kVarLenOffsetBytes;
     }
     void Crunch() final {}
 
    private:
     DictBuilder* const builder_;
+    size_t* const bytes_;
   };
 
   class ArrowUtf8SvColumn : public Column<std::string_view> {
    public:
-    explicit ArrowUtf8SvColumn(arrow::StringBuilder* builder) : builder_(builder) {}
+    ArrowUtf8SvColumn(arrow::StringBuilder* builder, size_t* bytes)
+        : builder_(builder), bytes_(bytes) {}
     void Append(const std::string_view& v) final {
       const arrow::Status s = builder_->Append(v.data(), static_cast<int32_t>(v.size()));
       if (!s.ok()) {
         LogArrowFailure("Arrow utf8 sv append", s);
+        return;
       }
+      *bytes_ += v.size() + kVarLenOffsetBytes;
     }
     void Crunch() final {}
 
    private:
     arrow::StringBuilder* const builder_;
+    size_t* const bytes_;
   };
 
   class ArrowTimestampColumn : public Column<int64_t> {
    public:
-    explicit ArrowTimestampColumn(arrow::TimestampBuilder* builder) : builder_(builder) {}
+    ArrowTimestampColumn(arrow::TimestampBuilder* builder, size_t* bytes)
+        : builder_(builder), bytes_(bytes) {}
     // Caller passes Unix microseconds; the column is MICRO-precision, so
     // append directly with no conversion.
     void Append(const int64_t& v) final {
       const arrow::Status s = builder_->Append(v);
       if (!s.ok()) {
         LogArrowFailure("Arrow timestamp append", s);
+        return;
       }
+      *bytes_ += sizeof(int64_t);
     }
     void Crunch() final {}
 
    private:
     arrow::TimestampBuilder* const builder_;
+    size_t* const bytes_;
   };
 
   // Schema-side helpers: create a builder, register a slot, return a wrapper.
@@ -304,28 +332,28 @@ class OTelArrowExporter : public StatsExporter {
     auto* raw = builder.get();
     slots_.push_back(
         {std::string(name), arrow::field(std::string(name), std::move(dtype)), std::move(builder)});
-    return std::make_shared<ArrowNumColumn<T, BuilderT>>(raw);
+    return std::make_shared<ArrowNumColumn<T, BuilderT>>(raw, &bytes_estimate_);
   }
   shared_ptr<Column<string>> MakeDictStr(string_view name) {
     auto builder = std::make_shared<DictBuilder>();
     auto* raw = builder.get();
     slots_.push_back(
         {std::string(name), arrow::field(std::string(name), DictUtf8Type()), std::move(builder)});
-    return std::make_shared<ArrowDictStrColumn>(raw);
+    return std::make_shared<ArrowDictStrColumn>(raw, &bytes_estimate_);
   }
   shared_ptr<Column<string_view>> MakeDictSv(string_view name) {
     auto builder = std::make_shared<DictBuilder>();
     auto* raw = builder.get();
     slots_.push_back(
         {std::string(name), arrow::field(std::string(name), DictUtf8Type()), std::move(builder)});
-    return std::make_shared<ArrowDictSvColumn>(raw);
+    return std::make_shared<ArrowDictSvColumn>(raw, &bytes_estimate_);
   }
   shared_ptr<Column<string_view>> MakeUtf8Sv(string_view name) {
     auto builder = std::make_shared<arrow::StringBuilder>();
     auto* raw = builder.get();
     slots_.push_back(
         {std::string(name), arrow::field(std::string(name), arrow::utf8()), std::move(builder)});
-    return std::make_shared<ArrowUtf8SvColumn>(raw);
+    return std::make_shared<ArrowUtf8SvColumn>(raw, &bytes_estimate_);
   }
   shared_ptr<Column<int64_t>> MakeTimestamp(string_view name) {
     auto builder =
@@ -333,8 +361,14 @@ class OTelArrowExporter : public StatsExporter {
     auto* raw = builder.get();
     slots_.push_back(
         {std::string(name), arrow::field(std::string(name), TimestampType()), std::move(builder)});
-    return std::make_shared<ArrowTimestampColumn>(raw);
+    return std::make_shared<ArrowTimestampColumn>(raw, &bytes_estimate_);
   }
+
+  // Builds the IPC stream from the current builder state, ships it via the
+  // inner exporter, and resets per-flush counters. After successful
+  // ArrayBuilder::Finish each builder is reset to empty (Arrow contract), so
+  // mid-batch chunks reuse the same slot vector and column wrappers transparently.
+  bool Flush();
 
   // ----------------------------------------------------------------
   // Columns the events_raw schema declares that the StatsExporter caller
@@ -357,7 +391,20 @@ class OTelArrowExporter : public StatsExporter {
 
   std::unique_ptr<StatsExporter> inner_;
   std::vector<ArrowSlot> slots_;
+  // Rows accumulated in the current chunk (resets after each Flush). The
+  // total rows exported across all chunks in the active batch live in
+  // exported_in_batch_ below.
   int row_count_ = 0;
+  int exported_in_batch_ = 0;
+  // Conservative running estimate of how many bytes the current chunk would
+  // produce. Bumped by each column wrapper's Append; sampled at row boundary
+  // to decide whether to flush mid-batch.
+  size_t bytes_estimate_ = 0;
+  size_t max_block_bytes_ = 0;
+  // Sticky: any Flush failure inside the batch poisons CommitBatch so the
+  // dispatcher doesn't see partial rows charged twice or a half-shipped batch
+  // counted as success.
+  bool batch_failed_ = false;
 
   // Synthesized columns (populated implicitly in BeginRow).
   shared_ptr<Column<string_view>> inst_ubid_;
@@ -420,10 +467,28 @@ void OTelArrowExporter::RegisterEnvelopeColumns() {
 void OTelArrowExporter::BeginBatch() {
   slots_.clear();
   row_count_ = 0;
+  exported_in_batch_ = 0;
+  bytes_estimate_ = 0;
+  batch_failed_ = false;
+  // Match ExportEventsAsArrowInternal's floor so a misconfigured tiny GUC
+  // value can't degrade into a per-row flush loop.
+  max_block_bytes_ = std::max<size_t>(65536, static_cast<size_t>(psch_otel_max_block_bytes));
   RegisterEnvelopeColumns();
 }
 
 void OTelArrowExporter::BeginRow() {
+  if (batch_failed_) {
+    return;
+  }
+  // Mid-batch flush at the row boundary: only safe between rows (column
+  // builders are row-aligned), and only meaningful once at least one row is
+  // already accumulated.
+  if (row_count_ > 0 && bytes_estimate_ >= max_block_bytes_) {
+    if (!Flush()) {
+      batch_failed_ = true;
+      return;
+    }
+  }
   ++row_count_;
   // Synthesized columns fire here so the call site doesn't need to know
   // about them.
@@ -439,21 +504,16 @@ void OTelArrowExporter::BeginRow() {
 }
 
 bool OTelArrowExporter::CommitBatch() {
+  if (batch_failed_) {
+    return false;
+  }
   if (slots_.empty() || row_count_ == 0) {
     return true;
   }
+  return Flush();
+}
 
-  // TODO(memory-budget): the legacy ExportEventsAsArrowInternal flushes
-  // mid-batch when the Arrow builder's estimated bytes exceed
-  // psch_otel_max_block_bytes (default 3 MiB). This exporter ships the
-  // whole batch in one IPC, so a backlog up to psch_batch_max (default
-  // 200000) can produce an oversized payload that exceeds gRPC's 4 MiB
-  // wire cap or otelcol's 20 MiB HTTP body cap. Acceptable for the
-  // GUC-default-off shadow rollout, but the budget check needs to land
-  // before the GUC default flips. Plumbing it through requires either
-  // invalidating caller-held column shared_ptrs at the flush boundary
-  // or threading a per-row size hook through the StatsExporter interface.
-
+bool OTelArrowExporter::Flush() {
   std::vector<std::shared_ptr<arrow::Field>> fields;
   fields.reserve(slots_.size());
   std::vector<std::shared_ptr<arrow::Array>> arrays;
@@ -463,7 +523,10 @@ bool OTelArrowExporter::CommitBatch() {
     fields.push_back(slot.field);
     std::shared_ptr<arrow::Array> array;
     // arrow::ArrayBuilder::Finish is virtual; DictBuilder's override returns
-    // a DictionaryArray downcast to Array. No RTTI needed.
+    // a DictionaryArray downcast to Array. The call also resets the builder
+    // back to an empty state, so the next chunk in this same batch can
+    // reuse it without re-registering slots or invalidating the column
+    // shared_ptrs the dispatcher is still holding.
     const arrow::Status status = slot.builder->Finish(&array);
     if (!status.ok()) {
       LogArrowFailure(("Arrow finish " + slot.name).c_str(), status);
@@ -514,7 +577,15 @@ bool OTelArrowExporter::CommitBatch() {
   const auto buf_len = static_cast<size_t>(buf->size());
 
   MaybeDumpArrowBatch(buf->data(), buf_len);
-  return inner_->SendArrowBatch(buf->data(), buf_len, row_count_);
+  if (!inner_->SendArrowBatch(buf->data(), buf_len, row_count_)) {
+    return false;
+  }
+  // Builders are already reset by Finish above; clear our row-side state so
+  // continued appends from the dispatcher start fresh.
+  exported_in_batch_ += row_count_;
+  row_count_ = 0;
+  bytes_estimate_ = 0;
+  return true;
 }
 
 }  // namespace
