@@ -61,7 +61,10 @@ class StatsExporter {
   virtual shared_ptr<Column<int64_t>> StatHCInt64(string_view name) = 0;
   virtual shared_ptr<Column<uint64_t>> StatHCUInt64(string_view name) = 0;
 
-  // Domain-specific. Caller appends a Postgres-epoch microsecond timestamp.
+  // Domain-specific. Caller appends a Unix-epoch microsecond timestamp.
+  // (PG-epoch values must be offset by kPostgresEpochOffsetUs before append;
+  // CH DateTime64(6) and OTel time_unix_nano both interpret the wire value
+  // as Unix-epoch.)
   virtual shared_ptr<Column<int64_t>> StatTimestamp(string_view name) = 0;
 
   // ===========================================================================
