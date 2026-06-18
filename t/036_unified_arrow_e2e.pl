@@ -124,7 +124,13 @@ my $insert_url =
 my $total_posted = 0;
 for my $f (@ipc_files) {
     my $err_file = "$f.err";
-    my $rc = system("curl -sS -X POST -H 'Content-Type: application/octet-stream' " .
+    # --fail-with-body makes HTTP 4xx/5xx responses from CH surface as a
+    # non-zero curl exit code (default curl returns 0 on any completed
+    # HTTP transfer regardless of status). The subsequent SELECT count()
+    # assertion would catch ingestion failure too, but failing here gives
+    # a sharper error message at the point the bug actually happened.
+    my $rc = system("curl -sS --fail-with-body -X POST " .
+                    "-H 'Content-Type: application/octet-stream' " .
                     "--data-binary \@$f '$insert_url' 2>$err_file >/dev/null");
     my $stderr = -s $err_file ? do {
         open my $fh, '<', $err_file; local $/; <$fh>

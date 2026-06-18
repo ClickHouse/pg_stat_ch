@@ -54,6 +54,11 @@ constexpr int64_t kPostgresEpochOffsetUs = 946684800000000LL;
 // IPC batch to disk before shipping. Used by t/026_arrow_dump and the new
 // end-to-end test to assert on Arrow output without standing up an OTel
 // collector.
+//
+// Intentionally a near-duplicate of stats_exporter.cc:MaybeDumpArrowBatch.
+// Both copies die when arrow_batch.cc is retired after the
+// use_unified_arrow_exporter cutover; extracting a shared helper now would
+// create a header just to delete it later.
 void MaybeDumpArrowBatch(const uint8_t* data, size_t len) {
   if (data == nullptr || len == 0 || psch_debug_arrow_dump_dir == nullptr ||
       *psch_debug_arrow_dump_dir == '\0') {
@@ -112,8 +117,8 @@ struct ArrowSlot {
   std::shared_ptr<arrow::ArrayBuilder> builder;
 };
 
-// Parse "key1:val1;key2:val2" into a flat list. Last write wins on duplicate
-// keys. Empty input -> empty list.
+// Parse "key1:val1;key2:val2" into a flat list. First match wins on
+// duplicate keys (Get linear-scans from the front). Empty input -> empty list.
 class ExtraAttrs {
  public:
   explicit ExtraAttrs(const char* raw) {
@@ -197,7 +202,14 @@ class OTelArrowExporter : public StatsExporter {
   bool IsConnected() const final { return inner_->IsConnected(); }
   int NumConsecutiveFailures() const final { return inner_->NumConsecutiveFailures(); }
   void ResetFailures() final { inner_->ResetFailures(); }
-  int NumExported() const final { return inner_->NumExported(); }
+  // Report rows from THIS batch, not the inner exporter's cumulative count.
+  // BeginBatch resets row_count_; the inner's exported_count_ accumulates
+  // across batches because we never call inner_->BeginBatch() (the inner's
+  // per-record LogRecord state machine is unused on this path).
+  // PschExportBatch reads NumExported() once per successful CommitBatch and
+  // fetch_adds it into shared stats, so a cumulative value here would cause
+  // quadratic over-reporting.
+  int NumExported() const final { return row_count_; }
 
  private:
   // -- Column<T> wrappers ---------------------------------------------------
@@ -430,6 +442,17 @@ bool OTelArrowExporter::CommitBatch() {
   if (slots_.empty() || row_count_ == 0) {
     return true;
   }
+
+  // TODO(memory-budget): the legacy ExportEventsAsArrowInternal flushes
+  // mid-batch when the Arrow builder's estimated bytes exceed
+  // psch_otel_max_block_bytes (default 3 MiB). This exporter ships the
+  // whole batch in one IPC, so a backlog up to psch_batch_max (default
+  // 200000) can produce an oversized payload that exceeds gRPC's 4 MiB
+  // wire cap or otelcol's 20 MiB HTTP body cap. Acceptable for the
+  // GUC-default-off shadow rollout, but the budget check needs to land
+  // before the GUC default flips. Plumbing it through requires either
+  // invalidating caller-held column shared_ptrs at the flush boundary
+  // or threading a per-row size hook through the StatsExporter interface.
 
   std::vector<std::shared_ptr<arrow::Field>> fields;
   fields.reserve(slots_.size());
