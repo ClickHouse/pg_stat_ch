@@ -1,0 +1,23 @@
+# Standalone collector profile for t/037_arrow_routing.pl. Kept separate
+# from docker-compose.otel.yml (which serves t/024_otel_export.pl) so the
+# two tests can run concurrently — different ports + container names.
+#
+# Output JSONL files land in ./otel-routing/output/, bind-mounted into the
+# container at /output. The test cleans this directory before each run.
+
+services:
+  routing-otelcol:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    container_name: psch-routing-otelcol
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-routing/collector-config.yaml:/etc/otelcol-contrib/config.yaml
+      - ./otel-routing/output:/output
+    ports:
+      - "14317:4317"   # gRPC OTLP receiver (host:14317 so it doesn't clash with otel-test's 4317)
+      - "23133:13133"  # Health check HTTP endpoint
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
