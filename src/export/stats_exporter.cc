@@ -163,7 +163,11 @@ int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExpor
 
     const auto ipc_len = static_cast<size_t>(result.ipc_buffer->size());
     MaybeDumpArrowBatch(result.ipc_buffer->data(), ipc_len);
-    if (!exporter->SendArrowBatch(result.ipc_buffer->data(), ipc_len, result.num_rows)) {
+    // Legacy ArrowBatchBuilder path writes the query_logs_arrow column set;
+    // the central OTel collector's routingconnector matches "arrow_ipc" to
+    // dispatch to the legacy datagres-arrow-exporter target table.
+    if (!exporter->SendArrowBatch(result.ipc_buffer->data(), ipc_len, result.num_rows,
+                                  "arrow_ipc")) {
       return false;
     }
 

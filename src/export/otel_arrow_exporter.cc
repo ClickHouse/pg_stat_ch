@@ -577,7 +577,12 @@ bool OTelArrowExporter::Flush() {
   const auto buf_len = static_cast<size_t>(buf->size());
 
   MaybeDumpArrowBatch(buf->data(), buf_len);
-  if (!inner_->SendArrowBatch(buf->data(), buf_len, row_count_)) {
+  // "arrow_events_raw" is the producer-side discriminator the central OTel
+  // collector's routingconnector matches on to fan to the events_raw
+  // receiver target (distinct from the legacy "arrow_ipc" path, which
+  // continues to land at query_logs_arrow). Coordinated with collector
+  // values in clickgres-platform/services/datagres-otelcol.
+  if (!inner_->SendArrowBatch(buf->data(), buf_len, row_count_, "arrow_events_raw")) {
     return false;
   }
   // Builders are already reset by Finish above; clear our row-side state so

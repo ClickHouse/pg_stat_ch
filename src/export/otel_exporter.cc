@@ -199,7 +199,8 @@ class OTelExporter : public StatsExporter {
   int NumConsecutiveFailures() const final { return consecutive_failures_; }
   void ResetFailures() final { consecutive_failures_ = 0; }
   int NumExported() const final { return exported_count_; }
-  bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) final;
+  bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows,
+                      string_view block_format) final;
 
  private:
   // -- Lightweight column types (no SDK, no Crunch, direct proto writes) -----
@@ -366,15 +367,20 @@ class OTelExporter : public StatsExporter {
     return false;
   }
 
-  static void PopulateResource(resource_pb::Resource* resource, bool arrow_ipc = false) {
+  // block_format is the discriminator the central OTel collector's
+  // routingconnector matches on to fan batches between the legacy
+  // query_logs_arrow receiver path and the new events_raw receiver path.
+  // Empty string means "do not emit the attribute" (column-emission/OTLP
+  // logs path, no Arrow body).
+  static void PopulateResource(resource_pb::Resource* resource, string_view block_format = "") {
     auto add = [&](string_view key, string_view val) {
       SetString(resource->add_attributes(), key, val);
     };
     add("service.name", "pg_stat_ch");
     add("service.version", PG_STAT_CH_VERSION);
     add("host.name", GetAHostname("postgres-primary"));
-    if (arrow_ipc) {
-      add("pg_stat_ch.block_format", "arrow_ipc");
+    if (!block_format.empty()) {
+      add("pg_stat_ch.block_format", block_format);
     }
   }
 
@@ -453,7 +459,8 @@ bool OTelExporter::CommitBatch() {
   }
 }
 
-bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) {
+bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows,
+                                  string_view block_format) {
   if (stub_ == nullptr || ipc_data == nullptr || ipc_len == 0 || num_rows <= 0) {
     return false;
   }
@@ -467,7 +474,7 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     auto* request =
         google::protobuf::Arena::Create<collector_logs::ExportLogsServiceRequest>(arena.get());
     auto* resource_logs = request->add_resource_logs();
-    PopulateResource(resource_logs->mutable_resource(), /*arrow_ipc=*/true);
+    PopulateResource(resource_logs->mutable_resource(), block_format);
     auto* scope_logs = resource_logs->add_scope_logs();
     scope_logs->mutable_scope()->set_name("pg_stat_ch");
     scope_logs->mutable_scope()->set_version(PG_STAT_CH_VERSION);
@@ -480,7 +487,7 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     record->set_time_unix_nano(now_ns);
     record->set_observed_time_unix_nano(now_ns);
     record->mutable_body()->set_bytes_value(reinterpret_cast<const char*>(ipc_data), ipc_len);
-    SetString(AddAttr(record), "pg_stat_ch.block_format", "arrow_ipc");
+    SetString(AddAttr(record), "pg_stat_ch.block_format", block_format);
     SetInt(AddAttr(record), "pg_stat_ch.block_rows", num_rows);
 
     auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
