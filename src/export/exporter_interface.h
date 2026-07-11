@@ -14,14 +14,8 @@ class StatsExporter {
   template <typename T>
   using shared_ptr = std::shared_ptr<T>;
 
-  class BasicColumn {
-   public:
-    virtual bool Crunch() = 0;  // Implementation-defined processing helper. True on success.
-    virtual void Clear() {}
-    virtual ~BasicColumn() = default;
-  };
   template <typename T>
-  class Column : public BasicColumn {
+  class Column {
    public:
     virtual void Append(const T& t) = 0;
     virtual ~Column() = default;

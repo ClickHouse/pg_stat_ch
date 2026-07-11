@@ -215,8 +215,17 @@ class ClickHouseExporter : public StatsExporter {
   int NumExported() const final { return exported_count_; }
 
  private:
+  // Buffers rows on Append, then Crunch materializes them into the chc block builder at commit;
+  // Clear resets buffers between batches.
+  class ChColumn {
+   public:
+    virtual bool Crunch() = 0;  // Flush buffered rows into block builder. True on success.
+    virtual void Clear() = 0;
+    virtual ~ChColumn() = default;
+  };
+
   template <typename T>
-  class FixedCol : public Column<T> {
+  class FixedCol : public Column<T>, public ChColumn {
    public:
     FixedCol(ClickHouseExporter* exp, string_view name, const char* type_name)
         : exp_(exp), name_(name), type_name_(type_name) {}
@@ -232,7 +241,7 @@ class ClickHouseExporter : public StatsExporter {
   };
 
   template <typename T>
-  class StringCol : public Column<T> {
+  class StringCol : public Column<T>, public ChColumn {
    public:
     StringCol(ClickHouseExporter* exp, string_view name) : exp_(exp), name_(name) {}
     void Append(const T& s) final {
@@ -319,7 +328,7 @@ class ClickHouseExporter : public StatsExporter {
   chc_err build_err_{};
 
   std::map<std::string, chc_type*, std::less<>> types_;
-  std::vector<shared_ptr<BasicColumn>> columns_;
+  std::vector<shared_ptr<ChColumn>> columns_;
   std::map<std::string, size_t, std::less<>> col_index_;  // name -> index in columns_
   std::vector<std::string> col_names_;
   int consecutive_failures_ = 0;
