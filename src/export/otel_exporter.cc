@@ -215,7 +215,7 @@ class OTelExporter : public StatsExporter {
       SetInt(AddAttr(exp_->current_record_), name_, static_cast<int64_t>(v));
       exp_->chunk_bytes_ += EstimateScalarAttrBytes(name_);
     }
-    void Crunch() final {}
+    bool Crunch() final { return true; }
 
    private:
     OTelExporter* exp_;
@@ -232,7 +232,7 @@ class OTelExporter : public StatsExporter {
       SetString(AddAttr(exp_->current_record_), name_, v);
       exp_->chunk_bytes_ += EstimateStringAttrBytes(name_, v);
     }
-    void Crunch() final {}
+    bool Crunch() final { return true; }
 
    private:
     OTelExporter* exp_;
@@ -249,7 +249,7 @@ class OTelExporter : public StatsExporter {
       SetString(AddAttr(exp_->current_record_), name_, v);
       exp_->chunk_bytes_ += EstimateStringAttrBytes(name_, v);
     }
-    void Crunch() final {}
+    bool Crunch() final { return true; }
 
    private:
     OTelExporter* exp_;
@@ -267,7 +267,7 @@ class OTelExporter : public StatsExporter {
       SetInt(AddAttr(exp_->current_record_), name_, v);
       exp_->chunk_bytes_ += EstimateScalarAttrBytes(name_) + sizeof(uint64_t);
     }
-    void Crunch() final {}
+    bool Crunch() final { return true; }
 
    private:
     OTelExporter* exp_;
@@ -287,7 +287,7 @@ class OTelExporter : public StatsExporter {
       exp_->chunk_bytes_ += EstimateScalarAttrBytes("db.client.operation.duration") +
                             EstimateScalarAttrBytes("duration_us");
     }
-    void Crunch() final {}
+    bool Crunch() final { return true; }
 
    private:
     OTelExporter* exp_;

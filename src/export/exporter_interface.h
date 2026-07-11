@@ -16,7 +16,7 @@ class StatsExporter {
 
   class BasicColumn {
    public:
-    virtual void Crunch() = 0;  // Implementation-defined processing helper.
+    virtual bool Crunch() = 0;  // Implementation-defined processing helper. True on success.
     virtual void Clear() {}
     virtual ~BasicColumn() = default;
   };

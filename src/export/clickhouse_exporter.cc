@@ -221,7 +221,7 @@ class ClickHouseExporter : public StatsExporter {
     FixedCol(ClickHouseExporter* exp, string_view name, const char* type_name)
         : exp_(exp), name_(name), type_name_(type_name) {}
     void Append(const T& v) final { data_.push_back(v); }
-    void Crunch() final { exp_->AppendFixed(name_, type_name_, data_.data(), data_.size()); }
+    bool Crunch() final { return exp_->AppendFixed(name_, type_name_, data_.data(), data_.size()); }
     void Clear() final { data_.clear(); }
 
    private:
@@ -239,9 +239,9 @@ class ClickHouseExporter : public StatsExporter {
       bytes_.insert(bytes_.end(), s.data(), s.data() + s.size());
       offsets_.push_back(bytes_.size());
     }
-    void Crunch() final {
-      exp_->AppendString(name_, offsets_.data(), reinterpret_cast<const uint8_t*>(bytes_.data()),
-                         offsets_.size());
+    bool Crunch() final {
+      return exp_->AppendString(name_, offsets_.data(),
+                                reinterpret_cast<const uint8_t*>(bytes_.data()), offsets_.size());
     }
     void Clear() final {
       bytes_.clear();
@@ -285,8 +285,8 @@ class ClickHouseExporter : public StatsExporter {
 
   const chc_type* ResolveType(const char* type_name);
 
-  void AppendFixed(string_view name, const char* type_name, const void* data, size_t n_rows);
-  void AppendString(string_view name, const uint64_t* offsets, const uint8_t* data, size_t n_rows);
+  bool AppendFixed(string_view name, const char* type_name, const void* data, size_t n_rows);
+  bool AppendString(string_view name, const uint64_t* offsets, const uint8_t* data, size_t n_rows);
 
   bool RecordFailure(const char* context, const char* message, bool close_conn);
   bool EnsureMemoryContexts();
@@ -413,22 +413,19 @@ const chc_type* ClickHouseExporter::ResolveType(const char* type_name) {
   return t;
 }
 
-void ClickHouseExporter::AppendFixed(string_view name, const char* type_name, const void* data,
+bool ClickHouseExporter::AppendFixed(string_view name, const char* type_name, const void* data,
                                      size_t n_rows) {
-  if (build_err_.code != CHC_OK)
-    return;
   const chc_type* t = ResolveType(type_name);
   if (t == nullptr)
-    return;
-  chc_block_builder_append_fixed(bb_, name.data(), name.size(), t, data, n_rows, &build_err_);
+    return false;
+  return chc_block_builder_append_fixed(bb_, name.data(), name.size(), t, data, n_rows,
+                                        &build_err_) == CHC_OK;
 }
 
-void ClickHouseExporter::AppendString(string_view name, const uint64_t* offsets,
+bool ClickHouseExporter::AppendString(string_view name, const uint64_t* offsets,
                                       const uint8_t* data, size_t n_rows) {
-  if (build_err_.code != CHC_OK)
-    return;
-  chc_block_builder_append_string(bb_, name.data(), name.size(), offsets, data, n_rows,
-                                  &build_err_);
+  return chc_block_builder_append_string(bb_, name.data(), name.size(), offsets, data, n_rows,
+                                         &build_err_) == CHC_OK;
 }
 
 std::string ClickHouseExporter::BuildInsertQuery() const {
@@ -537,11 +534,11 @@ bool ClickHouseExporter::CommitBatch() {
     }
 
     build_err_ = {};
-    for (const auto& col : columns_)
-      col->Crunch();
-    if (build_err_.code != CHC_OK) {
-      return RecordFailure("failed to build ClickHouse block",
-                           build_err_.msg[0] ? build_err_.msg : "block build failed", false);
+    for (const auto& col : columns_) {
+      if (!col->Crunch()) {
+        return RecordFailure("failed to build ClickHouse block",
+                             build_err_.msg[0] ? build_err_.msg : "block build failed", false);
+      }
     }
 
     elog(DEBUG1, "pg_stat_ch: Inserting Block to ClickHouse");
