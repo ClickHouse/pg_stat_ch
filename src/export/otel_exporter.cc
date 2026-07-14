@@ -341,8 +341,8 @@ class OTelExporter : public StatsExporter {
 
     auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
     collector_logs::ExportLogsServiceResponse response;
-    auto status = otlp::OtlpGrpcClient::DelegateExport(
-        stub_.get(), std::move(context), std::move(arena_), std::move(*request_), &response);
+    auto status = otlp::OtlpGrpcClient::DelegateExport(stub_.get(), std::move(context),
+                                                       std::move(arena_), request_, &response);
 
     request_ = nullptr;
     scope_logs_ = nullptr;
@@ -480,8 +480,8 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
 
     auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
     collector_logs::ExportLogsServiceResponse response;
-    auto status = otlp::OtlpGrpcClient::DelegateExport(
-        stub_.get(), std::move(context), std::move(arena), std::move(*request), &response);
+    auto status = otlp::OtlpGrpcClient::DelegateExport(stub_.get(), std::move(context),
+                                                       std::move(arena), request, &response);
 
     if (status.ok()) {
       exported_count_ += num_rows;
