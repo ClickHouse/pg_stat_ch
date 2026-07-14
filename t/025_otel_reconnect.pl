@@ -84,7 +84,7 @@ subtest 'failure and recovery' => sub {
     }
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
-    # Wait for export to resume; the OTel gRPC channel reconnects automatically
+    # Wait for export to resume; curl re-establishes the connection on the next request
     sleep(5);
 
     my $stats_up = psch_get_stats($node);

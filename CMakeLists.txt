@@ -107,8 +107,7 @@ target_link_libraries(pg_stat_ch PRIVATE
   PostgreSQLServer::PostgreSQLServer
   opentelemetry-cpp::api
   opentelemetry-cpp::sdk
-  opentelemetry-cpp::otlp_grpc_metrics_exporter
-  opentelemetry-cpp::otlp_grpc_log_record_exporter
+  opentelemetry-cpp::otlp_http_log_record_exporter
   opentelemetry-cpp::metrics
   opentelemetry-cpp::logs
   Arrow::arrow_static
