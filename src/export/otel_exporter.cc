@@ -21,6 +21,7 @@
 #include <google/protobuf/arena.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -110,6 +111,9 @@ constexpr size_t kRequestOverheadBytes = 512;
 constexpr size_t kLogRecordOverheadBytes = 128;
 constexpr size_t kAttrOverheadBytes = 24;
 
+// Cap concurrent chunk uploads, each in-flight body holds up to max_chunk_bytes
+constexpr size_t kMaxInflightChunks = 8;
+
 size_t EstimateStringAttrBytes(string_view key, string_view value) {
   return kAttrOverheadBytes + key.size() + value.size();
 }
@@ -126,6 +130,9 @@ class OTelExporter : public StatsExporter {
   void BeginBatch() final {
     exported_count_ = 0;
     batch_failed_ = false;
+    async_ok_records_ = 0;
+    async_failed_chunks_ = 0;
+    async_failure_result_ = -1;
     ResetChunk();
   }
 
@@ -133,11 +140,13 @@ class OTelExporter : public StatsExporter {
     if (batch_failed_) {
       return;
     }
+    if (async_failed_chunks_.load() > 0) {
+      // In-flight chunk failed, stop building; CommitBatch reports failure
+      batch_failed_ = true;
+      return;
+    }
     if (ChunkFull()) {
-      if (!FlushChunk()) {
-        batch_failed_ = true;
-        return;
-      }
+      FlushChunk();
       ResetChunk();
     }
     current_record_ = scope_logs_->add_log_records();
@@ -335,30 +344,35 @@ class OTelExporter : public StatsExporter {
     scope_logs_->mutable_scope()->set_version(PG_STAT_CH_VERSION);
   }
 
-  bool FlushChunk() {
+  // Enqueue chunk upload; Export serializes into POST body before returning,
+  // so arena frees immediately. Blocks only when kMaxInflightChunks uploads
+  // already run. Result lands via callback on curl's thread; callback touches
+  // atomics only, Postgres logging happens in CommitBatch
+  void FlushChunk() {
     if (client_ == nullptr || chunk_count_ == 0) {
-      return true;
+      return;
     }
 
-    // Synchronous, blocks until response or http_opts_.timeout
-    auto result = client_->Export(*request_);
+    const size_t records = chunk_count_;
+    client_->Export(
+        *request_,
+        [this, records](opentelemetry::sdk::common::ExportResult result) {
+          if (result == opentelemetry::sdk::common::ExportResult::kSuccess) {
+            async_ok_records_ += records;
+          } else {
+            async_failure_result_ = static_cast<int>(result);
+            ++async_failed_chunks_;
+          }
+          return true;
+        },
+        kMaxInflightChunks);
 
     request_ = nullptr;
     scope_logs_ = nullptr;
     current_record_ = nullptr;
     arena_.reset();
-
-    if (result == opentelemetry::sdk::common::ExportResult::kSuccess) {
-      exported_count_ += static_cast<int>(chunk_count_);
-      chunk_count_ = 0;
-      chunk_bytes_ = 0;
-      return true;
-    }
-
-    LogExporterWarning("OTLP export failed", ExportResultToString(result));
-    RecordExporterFailure(ExportResultToString(result));
-    consecutive_failures_++;
-    return false;
+    chunk_count_ = 0;
+    chunk_bytes_ = 0;
   }
 
   static void PopulateResource(resource_pb::Resource* resource, bool arrow_ipc = false) {
@@ -390,6 +404,11 @@ class OTelExporter : public StatsExporter {
 
   // HTTP client state
   otlp::OtlpHttpLogRecordExporterOptions http_opts_;
+  // Chunk upload results, written by curl-thread callbacks, drained by
+  // CommitBatch; declared before client_ so they outlive session callbacks
+  std::atomic<size_t> async_ok_records_{0};
+  std::atomic<int> async_failed_chunks_{0};
+  std::atomic<int> async_failure_result_{-1};
   std::unique_ptr<otlp::OtlpHttpClient> client_;
   size_t max_chunk_records_ = 1;
   size_t max_chunk_bytes_ = kMinBytesPerRecord;
@@ -430,21 +449,37 @@ bool OTelExporter::EstablishNewConnection() {
 }
 
 bool OTelExporter::CommitBatch() {
-  if (batch_failed_) {
-    return false;
-  }
-
   if (client_ == nullptr) {
     ResetFailures();
     return true;
   }
 
   try {
-    bool ok = FlushChunk();
-    if (ok) {
-      ResetFailures();
+    if (!batch_failed_) {
+      FlushChunk();
     }
-    return ok;
+    // Settle all in-flight chunks so success/failure stays per batch
+    const bool flushed = client_->ForceFlush(
+        std::chrono::duration_cast<std::chrono::microseconds>(http_opts_.timeout) +
+        std::chrono::seconds(1));
+    exported_count_ += static_cast<int>(async_ok_records_.exchange(0));
+    const int failed_chunks = async_failed_chunks_.exchange(0);
+    const int failure_result = async_failure_result_.exchange(-1);
+
+    if (flushed && failed_chunks == 0) {
+      ResetFailures();
+      return true;
+    }
+
+    const char* reason =
+        failed_chunks > 0
+            ? ExportResultToString(
+                  static_cast<opentelemetry::sdk::common::ExportResult>(failure_result))
+            : "flush timeout";
+    LogExporterWarning("OTLP export failed", reason);
+    RecordExporterFailure(reason);
+    consecutive_failures_++;
+    return false;
   } catch (const std::exception& e) {
     LogExporterWarning("export exception", e.what());
     RecordExporterFailure(e.what());
