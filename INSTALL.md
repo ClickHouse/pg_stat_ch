@@ -1,6 +1,6 @@
 # Installing pg_stat_ch
 
-The extension is self-contained with all dependencies (including clickhouse-c) statically linked. No additional shared libraries are required at runtime.
+All dependencies are statically linked except OpenSSL, which resolves to system `libssl.so.3`/`libcrypto.so.3` at runtime (OpenSSL 3.x, present on any SSL-enabled PostgreSQL host).
 
 1. Copy files to PostgreSQL directories:
    ```bash

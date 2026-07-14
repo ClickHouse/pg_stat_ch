@@ -14,10 +14,10 @@ runs:
       shell: bash
       env:
         # Pin to the same commit as the vcpkg submodule and the Dockerfile
-        # (vcpkg tag 2026.04.27).  Without this checkout the action lands on
+        # (vcpkg tag 2026.06.24).  Without this checkout the action lands on
         # master HEAD, which drifts port-version ABI hashes and silently
         # invalidates the binary archive cache between CI runs.
-        VCPKG_COMMIT: 56bb2411609227288b70117ead2c47585ba07713
+        VCPKG_COMMIT: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
       run: |
         if [ ! -d "$HOME/vcpkg" ]; then
           # Full clone required — Arrow depends on Boost, which needs vcpkg git history

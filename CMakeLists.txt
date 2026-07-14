@@ -114,6 +114,13 @@ target_link_libraries(pg_stat_ch PRIVATE
   Arrow::arrow_static
 )
 target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto lz4::lz4 zstd::libzstd)
+# Hide static-archive symbols from dynamic export: PG dlopens RTLD_GLOBAL, so
+# exported dep symbols (grpc, Arrow, protobuf — ~45k) interpose across backend
+# and other extensions.  dlsym entry points live in our own objects and stay
+# exported (Pg_magic_func, _PG_init, pg_finfo_*, SQL funcs, PschBgworkerMain)
+if(NOT APPLE)
+  target_link_options(pg_stat_ch PRIVATE LINKER:--exclude-libs,ALL)
+endif()
 pg_stat_ch_set_warnings(pg_stat_ch)
 
 set_target_properties(pg_stat_ch PROPERTIES
