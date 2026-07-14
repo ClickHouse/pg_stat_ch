@@ -38,6 +38,9 @@
 #include "queue/shmem.h"
 
 #include <signal.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 
 #include "config/guc.h"
 #include "export/stats_exporter.h"
@@ -182,6 +185,11 @@ static void RunExportCycle(uint32 wait_event) {
 }
 
 void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
+#ifdef __GLIBC__
+  // Set before gRPC/Arrow spawn threads, greatly reduces virtual memory usage.
+  // 4 is minimum grpc pool size.
+  mallopt(M_ARENA_MAX, 4);
+#endif
   SetupSignalHandlers();
   BackgroundWorkerUnblockSignals();
   BackgroundWorkerInitializeConnection("postgres", NULL, 0);
