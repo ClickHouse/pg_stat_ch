@@ -186,9 +186,10 @@ static void RunExportCycle(uint32 wait_event) {
 
 void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
 #ifdef __GLIBC__
-  // Set before gRPC/Arrow spawn threads, greatly reduces virtual memory usage.
-  // 4 is minimum grpc pool size.
-  mallopt(M_ARENA_MAX, 4);
+  // Set before any gRPC/Arrow threads are created; cap glibc malloc arenas to reduce virtual memory usage.
+  if (mallopt(M_ARENA_MAX, 4) == 0) {
+    elog(DEBUG1, "pg_stat_ch: mallopt(M_ARENA_MAX, 4) failed");
+  }
 #endif
   SetupSignalHandlers();
   BackgroundWorkerUnblockSignals();
