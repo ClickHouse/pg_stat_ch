@@ -7,19 +7,18 @@
 // Arena allocation eliminates per-object malloc/free (the largest cost in the
 // SDK path) and makes batch destruction O(1) via Arena::Reset().
 
-#include <opentelemetry/exporters/otlp/otlp_grpc_client.h>
-#include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_options.h>
-#include <opentelemetry/proto/collector/logs/v1/logs_service.grpc.pb.h>
+#include <opentelemetry/exporters/otlp/otlp_http_client.h>
+#include <opentelemetry/exporters/otlp/otlp_http_log_record_exporter_options.h>
 #include <opentelemetry/proto/collector/logs/v1/logs_service.pb.h>
 #include <opentelemetry/proto/common/v1/common.pb.h>
 #include <opentelemetry/proto/logs/v1/logs.pb.h>
 #include <opentelemetry/proto/resource/v1/resource.pb.h>
+#include <opentelemetry/sdk/common/exporter_utils.h>
 
 #include "config/guc.h"
 #include "export/exporter_interface.h"
 
 #include <google/protobuf/arena.h>
-#include <grpcpp/grpcpp.h>
 
 #include <algorithm>
 #include <chrono>
@@ -59,34 +58,31 @@ namespace {
 using string = std::string;
 using string_view = std::string_view;
 
-// Create a gRPC channel with compression and keepalive settings optimized
-// for high-throughput telemetry export from a long-lived bgworker.
-std::shared_ptr<grpc::Channel> MakeOptimizedChannel(
-    const otlp::OtlpGrpcLogRecordExporterOptions& opts) {
-  grpc::ChannelArguments args;
+// OtlpHttpClientOptions has no default constructor, copy every field from exporter options
+otlp::OtlpHttpClientOptions MakeClientOptions(const otlp::OtlpHttpLogRecordExporterOptions& o) {
+  return otlp::OtlpHttpClientOptions(
+      o.url, o.ssl_insecure_skip_verify, o.ssl_ca_cert_path, o.ssl_ca_cert_string,
+      o.ssl_client_key_path, o.ssl_client_key_string, o.ssl_client_cert_path,
+      o.ssl_client_cert_string, o.ssl_min_tls, o.ssl_max_tls, o.ssl_cipher, o.ssl_cipher_suite,
+      o.content_type, o.json_bytes_mapping, o.compression, o.use_json_name, o.console_debug,
+      o.timeout, o.http_headers, o.retry_policy_max_attempts, o.retry_policy_initial_backoff,
+      o.retry_policy_max_backoff, o.retry_policy_backoff_multiplier,
+      std::shared_ptr<opentelemetry::sdk::common::ThreadInstrumentation>(nullptr));
+}
 
-  // gzip — telemetry payloads with repeated attribute keys compress very well.
-  args.SetCompressionAlgorithm(GRPC_COMPRESS_GZIP);
-
-  // Keepalive: the bgworker holds a persistent channel.  Without keepalive
-  // pings, idle periods cause silent TCP drops and surprise RPC failures.
-  args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 30000);
-  args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 10000);
-  args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
-  args.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
-
-  std::shared_ptr<grpc::ChannelCredentials> credentials;
-  if (opts.use_ssl_credentials) {
-    grpc::SslCredentialsOptions ssl_opts;
-    if (!opts.ssl_credentials_cacert_as_string.empty()) {
-      ssl_opts.pem_root_certs = opts.ssl_credentials_cacert_as_string;
-    }
-    credentials = grpc::SslCredentials(ssl_opts);
-  } else {
-    credentials = grpc::InsecureChannelCredentials();
+const char* ExportResultToString(opentelemetry::sdk::common::ExportResult result) {
+  using opentelemetry::sdk::common::ExportResult;
+  switch (result) {
+    case ExportResult::kSuccess:
+      return "success";
+    case ExportResult::kFailure:
+      return "failure";
+    case ExportResult::kFailureFull:
+      return "collector full";
+    case ExportResult::kFailureInvalidArgument:
+      return "invalid argument";
   }
-
-  return grpc::CreateCustomChannel(opts.endpoint, credentials, args);
+  return "unknown";
 }
 
 common_pb::KeyValue* AddAttr(logs_pb::LogRecord* rec) {
@@ -108,7 +104,7 @@ void SetDouble(common_pb::KeyValue* kv, string_view key, double val) {
   kv->mutable_value()->set_double_value(val);
 }
 
-// Conservative sizing constants to stay under the gRPC message budget.
+// Conservative sizing constants to stay under collector request-body limits.
 constexpr size_t kMinBytesPerRecord = 1200;
 constexpr size_t kRequestOverheadBytes = 512;
 constexpr size_t kLogRecordOverheadBytes = 128;
@@ -195,7 +191,7 @@ class OTelExporter : public StatsExporter {
   shared_ptr<Column<string_view>> DbQueryTextColumn() final { return MakeSvCol("db.query.text"); }
 
   bool EstablishNewConnection() final;
-  bool IsConnected() const final { return stub_ != nullptr; }
+  bool IsConnected() const final { return client_ != nullptr; }
   int NumConsecutiveFailures() const final { return consecutive_failures_; }
   void ResetFailures() final { consecutive_failures_ = 0; }
   int NumExported() const final { return exported_count_; }
@@ -340,28 +336,27 @@ class OTelExporter : public StatsExporter {
   }
 
   bool FlushChunk() {
-    if (stub_ == nullptr || chunk_count_ == 0) {
+    if (client_ == nullptr || chunk_count_ == 0) {
       return true;
     }
 
-    auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
-    collector_logs::ExportLogsServiceResponse response;
-    auto status = otlp::OtlpGrpcClient::DelegateExport(
-        stub_.get(), std::move(context), std::move(arena_), std::move(*request_), &response);
+    // Synchronous, blocks until response or http_opts_.timeout
+    auto result = client_->Export(*request_);
 
     request_ = nullptr;
     scope_logs_ = nullptr;
     current_record_ = nullptr;
+    arena_.reset();
 
-    if (status.ok()) {
+    if (result == opentelemetry::sdk::common::ExportResult::kSuccess) {
       exported_count_ += static_cast<int>(chunk_count_);
       chunk_count_ = 0;
       chunk_bytes_ = 0;
       return true;
     }
 
-    LogExporterWarning("gRPC export failed", status.error_message().c_str());
-    RecordExporterFailure(status.error_message().c_str());
+    LogExporterWarning("OTLP export failed", ExportResultToString(result));
+    RecordExporterFailure(ExportResultToString(result));
     consecutive_failures_++;
     return false;
   }
@@ -379,20 +374,23 @@ class OTelExporter : public StatsExporter {
   }
 
   void ConfigureLogExport(const string& endpoint) {
-    grpc_opts_ = otlp::OtlpGrpcLogRecordExporterOptions();
+    // Default constructor reads OTEL_EXPORTER_OTLP_* env vars; GUC wins
+    http_opts_ = otlp::OtlpHttpLogRecordExporterOptions();
     if (!endpoint.empty()) {
-      grpc_opts_.endpoint = endpoint;
+      http_opts_.url = endpoint;
     }
-    grpc_opts_.timeout = std::chrono::milliseconds(psch_otel_log_delay_ms);
+    http_opts_.timeout = std::chrono::milliseconds(psch_otel_log_delay_ms);
+    // bgworker owns retry backoff, disable client retry
+    http_opts_.retry_policy_max_attempts = 0;
 
     max_chunk_bytes_ = std::max<size_t>(kMinBytesPerRecord, psch_otel_log_max_bytes);
     max_chunk_records_ = std::max<size_t>(
         1, std::min<size_t>(psch_otel_log_batch_size, max_chunk_bytes_ / kMinBytesPerRecord));
   }
 
-  // gRPC state
-  otlp::OtlpGrpcLogRecordExporterOptions grpc_opts_;
-  std::unique_ptr<collector_logs::LogsService::StubInterface> stub_;
+  // HTTP client state
+  otlp::OtlpHttpLogRecordExporterOptions http_opts_;
+  std::unique_ptr<otlp::OtlpHttpClient> client_;
   size_t max_chunk_records_ = 1;
   size_t max_chunk_bytes_ = kMinBytesPerRecord;
   int consecutive_failures_ = 0;
@@ -414,17 +412,19 @@ bool OTelExporter::EstablishNewConnection() {
         (psch_otel_endpoint != nullptr && *psch_otel_endpoint != '\0') ? psch_otel_endpoint : "";
 
     ConfigureLogExport(endpoint);
-    auto channel = MakeOptimizedChannel(grpc_opts_);
-    if (channel == nullptr) {
-      LogExporterWarning("OTel init failed", "invalid or empty OTLP endpoint");
-      stub_.reset();
+    // Catch grpc-era host:port values early; OTLP/HTTP needs a full URL
+    if (http_opts_.url.find("://") == string::npos) {
+      LogExporterWarning("OTel init failed",
+                         "otel_endpoint must be an http:// or https:// URL, e.g. "
+                         "http://localhost:4318/v1/logs");
+      client_.reset();
       return false;
     }
-    stub_ = collector_logs::LogsService::NewStub(channel);
+    client_ = std::make_unique<otlp::OtlpHttpClient>(MakeClientOptions(http_opts_));
     return true;
   } catch (const std::exception& e) {
     LogExporterWarning("OTel init failed", e.what());
-    stub_.reset();
+    client_.reset();
     return false;
   }
 }
@@ -434,7 +434,7 @@ bool OTelExporter::CommitBatch() {
     return false;
   }
 
-  if (stub_ == nullptr) {
+  if (client_ == nullptr) {
     ResetFailures();
     return true;
   }
@@ -454,7 +454,7 @@ bool OTelExporter::CommitBatch() {
 }
 
 bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) {
-  if (stub_ == nullptr || ipc_data == nullptr || ipc_len == 0 || num_rows <= 0) {
+  if (client_ == nullptr || ipc_data == nullptr || ipc_len == 0 || num_rows <= 0) {
     return false;
   }
 
@@ -483,19 +483,16 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     SetString(AddAttr(record), "pg_stat_ch.block_format", "arrow_ipc");
     SetInt(AddAttr(record), "pg_stat_ch.block_rows", num_rows);
 
-    auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
-    collector_logs::ExportLogsServiceResponse response;
-    auto status = otlp::OtlpGrpcClient::DelegateExport(
-        stub_.get(), std::move(context), std::move(arena), std::move(*request), &response);
+    auto result = client_->Export(*request);
 
-    if (status.ok()) {
+    if (result == opentelemetry::sdk::common::ExportResult::kSuccess) {
       exported_count_ += num_rows;
       consecutive_failures_ = 0;
       return true;
     }
 
-    LogExporterWarning("Arrow batch gRPC failed", status.error_message().c_str());
-    RecordExporterFailure(status.error_message().c_str());
+    LogExporterWarning("Arrow batch export failed", ExportResultToString(result));
+    RecordExporterFailure(ExportResultToString(result));
     consecutive_failures_++;
     return false;
   } catch (const std::exception& e) {

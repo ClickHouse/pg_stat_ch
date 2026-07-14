@@ -528,7 +528,7 @@ int PschGetConsecutiveFailures(void) {
   }
 }
 
-// Exception barrier: the OTel exporter's destructors (gRPC stub teardown,
+// Exception barrier: the OTel exporter's destructors (HTTP client teardown,
 // protobuf arena release) can throw. Catching here prevents the throw from
 // crossing the on_proc_exit chain.
 void PschExporterShutdown(void) {

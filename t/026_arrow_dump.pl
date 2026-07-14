@@ -27,7 +27,7 @@ my $dump_dir = tempdir('psch_arrow_XXXX', TMPDIR => 1, CLEANUP => 1);
 
 # Initialize node with Arrow passthrough + dump enabled.
 # use_otel=on + otel_arrow_passthrough=on enables the Arrow export path.
-# The otel_endpoint points at a non-existent collector — gRPC send will fail,
+# The otel_endpoint points at a non-existent collector — HTTP send will fail,
 # but MaybeDumpArrowBatch() fires BEFORE the send, so IPC files still land.
 my $node = PostgreSQL::Test::Cluster->new('arrow_dump');
 $node->init();
@@ -38,7 +38,7 @@ pg_stat_ch.queue_capacity = 65536
 pg_stat_ch.flush_interval_ms = 100
 pg_stat_ch.batch_max = 100
 pg_stat_ch.use_otel = on
-pg_stat_ch.otel_endpoint = 'localhost:14317'
+pg_stat_ch.otel_endpoint = 'http://localhost:14318/v1/logs'
 pg_stat_ch.otel_arrow_passthrough = on
 pg_stat_ch.debug_arrow_dump_dir = '$dump_dir'
 pg_stat_ch.hostname = 'test-arrow-host'

@@ -6,7 +6,7 @@ services:
     volumes:
       - ./otel/collector-config.yaml:/etc/otelcol-contrib/config.yaml
     ports:
-      - "4317:4317"    # gRPC OTLP receiver (matches psch_otel_endpoint default)
+      - "4318:4318"    # HTTP OTLP receiver (matches psch_otel_endpoint default)
       - "9091:9090"    # Prometheus metrics exporter (host:9091 → container:9090)
       - "13133:13133"  # Health check HTTP endpoint
     healthcheck:

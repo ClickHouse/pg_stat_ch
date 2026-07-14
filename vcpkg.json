@@ -6,7 +6,7 @@
     {
       "name": "opentelemetry-cpp",
       "default-features": false,
-      "features": ["otlp-grpc"]
+      "features": ["otlp-http"]
     },
     {
       "name": "arrow",

@@ -27,7 +27,7 @@ int psch_batch_max = 200000;
 int psch_log_min_elevel = WARNING;
 int psch_otel_log_queue_size = 65536;
 int psch_otel_log_batch_size = 8192;
-int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 MiB
+int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: stay under collector body limits
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
 bool psch_debug_force_locked_overflow = false;
@@ -175,10 +175,10 @@ void PschInitGuc(void) {
 
   DefineCustomStringVariable(
       "pg_stat_ch.otel_endpoint",
-      "OpenTelemetry gRPC endpoint (host:port).",
+      "OpenTelemetry OTLP/HTTP logs URL.",
       NULL,
       &psch_otel_endpoint,
-      "localhost:4317",
+      "http://localhost:4318/v1/logs",
       PGC_POSTMASTER,
       0,
       NULL, NULL, NULL);
@@ -254,7 +254,7 @@ void PschInitGuc(void) {
       "pg_stat_ch.otel_log_batch_size",
       "Maximum records per OTLP log export call.",
       "Caps how many log records the direct OTLP exporter puts into a single "
-      "gRPC ExportLogs request.",
+      "ExportLogs request.",
       &psch_otel_log_batch_size,
       8192,               // bootValue
       1, 131072,          // min, max
@@ -266,7 +266,7 @@ void PschInitGuc(void) {
       "pg_stat_ch.otel_log_max_bytes",
       "Soft byte budget for a single OTLP log export call.",
       "The direct OTLP exporter chunks log records to stay under this per-request "
-      "budget. The gRPC default is 4 MiB; the default leaves a safety margin.",
+      "budget. Collector receivers cap request bodies; the default leaves a safety margin.",
       &psch_otel_log_max_bytes,
       3 * 1024 * 1024,        // bootValue: 3 MiB
       65536, 64 * 1024 * 1024,  // min: 64 KiB, max: 64 MiB
@@ -277,7 +277,7 @@ void PschInitGuc(void) {
   DefineCustomIntVariable(
       "pg_stat_ch.otel_log_delay_ms",
       "Deadline in milliseconds for a single OTLP log export call.",
-      "The direct OTLP exporter uses this as the per-request gRPC timeout so "
+      "The direct OTLP exporter uses this as the per-request HTTP timeout so "
       "the bgworker cannot block indefinitely on a slow collector.",
       &psch_otel_log_delay_ms,
       100,                // bootValue
@@ -361,7 +361,7 @@ void PschInitGuc(void) {
       "Maximum Arrow batch size in bytes per OTLP request.",
       "Controls the soft byte budget (estimated, pre-compression) for a single "
       "Arrow IPC batch before it is flushed. ZSTD compression typically shrinks "
-      "the payload 20-30x, so this budget can safely exceed the gRPC wire limit.",
+      "the payload 20-30x, so the on-wire request stays far smaller.",
       &psch_otel_max_block_bytes,
       3 * 1024 * 1024,           // bootValue: 3 MiB
       65536, 16 * 1024 * 1024,  // min: 64 KiB, max: 16 MiB
@@ -382,7 +382,7 @@ void PschInitGuc(void) {
 
   DefineCustomStringVariable(
       "pg_stat_ch.debug_arrow_dump_dir",
-      "Directory for dumping raw Arrow IPC payloads before gRPC send.",
+      "Directory for dumping raw Arrow IPC payloads before OTLP send.",
       "When non-empty, each Arrow IPC payload is written to this directory before "
       "being sent through OTLP. Intended for test validation and debugging only.",
       &psch_debug_arrow_dump_dir,

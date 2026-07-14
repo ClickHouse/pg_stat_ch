@@ -248,7 +248,7 @@ sub psch_init_node_with_otel {
     my $flush_interval_ms = $opts{flush_interval_ms} // 100;   # Fast flush for tests
     my $batch_max         = $opts{batch_max}         // 1000;
     my $enabled           = $opts{enabled}           // 'on';
-    my $otel_endpoint     = $opts{otel_endpoint}     // 'localhost:4317';
+    my $otel_endpoint     = $opts{otel_endpoint}     // 'http://localhost:4318/v1/logs';
     my $hostname          = $opts{hostname}          // 'test-host';
 
     my $node = PostgreSQL::Test::Cluster->new($name);
