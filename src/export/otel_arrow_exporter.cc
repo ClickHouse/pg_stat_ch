@@ -218,10 +218,10 @@ class OTelArrowExporter : public StatsExporter {
   // Nested so they can inherit from StatsExporter::Column<T> (protected in
   // the base; visible to derived classes and their nested types). Each one
   // Append-forwards to a single typed builder and bumps the exporter's
-  // bytes_estimate_ for mid-batch flush bookkeeping. Crunch() is unused on
-  // this path — builders are finished together in Flush() (invoked
-  // mid-batch when bytes_estimate_ crosses max_block_bytes_, and once at
-  // CommitBatch for the residual chunk).
+  // bytes_estimate_ for mid-batch flush bookkeeping. Builder finish is
+  // handled centrally in Flush() (invoked mid-batch when bytes_estimate_
+  // crosses max_block_bytes_, and once at CommitBatch for the residual
+  // chunk) — column wrappers only own Append.
 
   // Variable-length columns over-estimate offset overhead at 4 bytes/value
   // (32-bit offsets), ignoring the dictionary's shared backing store. For LC
@@ -242,7 +242,6 @@ class OTelArrowExporter : public StatsExporter {
       }
       *bytes_ += sizeof(typename BuilderT::value_type);
     }
-    void Crunch() final {}
 
    private:
     BuilderT* const builder_;
@@ -260,7 +259,6 @@ class OTelArrowExporter : public StatsExporter {
       }
       *bytes_ += v.size() + kVarLenOffsetBytes;
     }
-    void Crunch() final {}
 
    private:
     DictBuilder* const builder_;
@@ -278,7 +276,6 @@ class OTelArrowExporter : public StatsExporter {
       }
       *bytes_ += v.size() + kVarLenOffsetBytes;
     }
-    void Crunch() final {}
 
    private:
     DictBuilder* const builder_;
@@ -297,7 +294,6 @@ class OTelArrowExporter : public StatsExporter {
       }
       *bytes_ += v.size() + kVarLenOffsetBytes;
     }
-    void Crunch() final {}
 
    private:
     arrow::StringBuilder* const builder_;
@@ -318,7 +314,6 @@ class OTelArrowExporter : public StatsExporter {
       }
       *bytes_ += sizeof(int64_t);
     }
-    void Crunch() final {}
 
    private:
     arrow::TimestampBuilder* const builder_;
