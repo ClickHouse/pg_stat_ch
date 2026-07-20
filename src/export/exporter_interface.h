@@ -90,10 +90,20 @@ class StatsExporter {
   virtual int NumConsecutiveFailures() const = 0;
   virtual void ResetFailures() = 0;
   virtual int NumExported() const = 0;
-  virtual bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows) {
+  // block_format is the discriminator emitted as the
+  // pg_stat_ch.block_format resource + log-record attribute on the OTLP
+  // request. The central OTel collector's routingconnector matches on
+  // it to fan to the right downstream receiver (e.g. legacy
+  // query_logs_arrow vs new events_raw). Callers pass an explicit value
+  // because Google Style forbids default arguments on virtual methods
+  // (the default is dispatched on the static type, not the dynamic one,
+  // which is a footgun for overriders).
+  virtual bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows,
+                              string_view block_format) {
     (void)ipc_data;
     (void)ipc_len;
     (void)num_rows;
+    (void)block_format;
     return false;
   }
 

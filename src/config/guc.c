@@ -35,6 +35,7 @@ int psch_min_duration_us = 0;
 int psch_normalize_cache_max = 32768;
 double psch_sample_rate = 1.0;
 bool psch_otel_arrow_passthrough = false;
+bool psch_use_unified_arrow_exporter = false;
 int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB (max: 16 MiB)
 char* psch_extra_attributes = NULL;
 char* psch_debug_arrow_dump_dir = NULL;
@@ -353,6 +354,23 @@ void PschInitGuc(void) {
       &psch_otel_arrow_passthrough,
       false,
       PGC_SIGHUP,
+      0,
+      NULL, NULL, NULL);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.use_unified_arrow_exporter",
+      "Use the StatsExporter-implementing Arrow exporter instead of arrow_batch.cc.",
+      "When enabled together with use_otel and otel_arrow_passthrough, the bgworker "
+      "builds Arrow IPC via the typed StatsExporter column interface, writing the "
+      "events_raw schema (typed integer ids, no sprintf decimal-string encoding). "
+      "When off, the legacy arrow_batch.cc path runs and produces the query_logs_arrow "
+      "wire shape. Default off; flip on to opt a producer into the new exporter. "
+      "PGC_POSTMASTER: the bgworker picks the exporter implementation at init time, "
+      "so a runtime change would mismatch the per-cycle dispatcher (Arrow batches "
+      "would silently drop, since OTelArrowExporter does not implement SendArrowBatch).",
+      &psch_use_unified_arrow_exporter,
+      false,
+      PGC_POSTMASTER,
       0,
       NULL, NULL, NULL);
 

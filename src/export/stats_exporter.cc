@@ -17,6 +17,7 @@ extern "C" {
 #include "export/arrow_batch.h"
 #include "export/clickhouse_exporter.h"
 #include "export/exporter_interface.h"
+#include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
 #include "export/stats_exporter.h"
 #include "queue/event.h"
@@ -162,7 +163,11 @@ int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExpor
 
     const auto ipc_len = static_cast<size_t>(result.ipc_buffer->size());
     MaybeDumpArrowBatch(result.ipc_buffer->data(), ipc_len);
-    if (!exporter->SendArrowBatch(result.ipc_buffer->data(), ipc_len, result.num_rows)) {
+    // Legacy ArrowBatchBuilder path writes the query_logs_arrow column set;
+    // the central OTel collector's routingconnector matches "arrow_ipc" to
+    // dispatch to the legacy datagres-arrow-exporter target table.
+    if (!exporter->SendArrowBatch(result.ipc_buffer->data(), ipc_len, result.num_rows,
+                                  "arrow_ipc")) {
       return false;
     }
 
@@ -410,7 +415,11 @@ bool PschExporterInit(void) {
   std::set_terminate(PschTerminateHandler);
 
   try {
-    if (psch_use_otel) {
+    if (psch_use_otel && psch_otel_arrow_passthrough && psch_use_unified_arrow_exporter) {
+      // New unified path: typed Arrow column wrappers driving the
+      // StatsExporter interface end-to-end, writing the events_raw schema.
+      g_exporter.exporter = MakeUnifiedArrowExporter();
+    } else if (psch_use_otel) {
       g_exporter.exporter = MakeOpenTelemetryExporter();
     } else {
       g_exporter.exporter = MakeClickHouseExporter();
@@ -450,8 +459,15 @@ int PschExportBatch(void) {
       return 0;
     }
 
-    if (psch_use_otel && psch_otel_arrow_passthrough) {
-      elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events as Arrow IPC", events.size());
+    // Legacy Arrow path bypasses the StatsExporter column interface entirely
+    // — ArrowBatchBuilder owns its own column shape, the exporter is reached
+    // only for SendArrowBatch (transport).  The new unified exporter goes
+    // through the interface like CH-native and OTel column-emission do, so
+    // when its GUC is on we skip the bypass and fall through to
+    // ExportEventStats.
+    if (psch_use_otel && psch_otel_arrow_passthrough && !psch_use_unified_arrow_exporter) {
+      elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events as Arrow IPC (legacy)",
+           events.size());
       return ExportEventsAsArrow(events, exporter);
     }
 
