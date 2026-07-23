@@ -88,8 +88,18 @@ subtest 'reconnect over TLS' => sub {
 
     $node->safe_psql('postgres', 'SELECT 200');
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+    # 90s, not 30s: the exporter's reconnect backoff (stats_exporter.cc,
+    # PschGetRetryDelayMs) is exponential — base 1s, doubling per
+    # consecutive failure, capped at 60s. Failed flush attempts start
+    # accumulating the moment CH goes down (well before docker restart's
+    # container comes back), and the cumulative wait before the Nth retry
+    # is the sum of all prior delays: 1, 3, 7, 15, 31, 63, 123s... A CH
+    # restart slow enough to rack up 5-6 failures (very plausible under a
+    # loaded CI runner) pushes the bgworker's next attempt past the 30s
+    # mark even though CH itself came back much sooner. 90s comfortably
+    # covers the 63s (6-failure) cumulative-backoff case plus round-trip.
     my $after = psch_wait_for_clickhouse_query(
-        'SELECT count() FROM pg_stat_ch.events_raw', sub { $_[0] >= 1 }, 30);
+        'SELECT count() FROM pg_stat_ch.events_raw', sub { $_[0] >= 1 }, 90);
     cmp_ok($after, '>=', 1, "export resumed over TLS after reconnect (got $after)");
 };
 
