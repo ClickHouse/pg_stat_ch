@@ -25,6 +25,9 @@ our @EXPORT = qw(
     psch_init_node_with_otel
     psch_get_otel_histogram_total
     psch_otel_metric_has_label
+    psch_routing_collector_available
+    psch_start_routing_collector
+    psch_stop_routing_collector
 );
 
 # Initialize a PostgreSQL node with pg_stat_ch loaded
@@ -236,6 +239,48 @@ sub psch_start_otelcol {
 sub psch_stop_otelcol {
     my $project_dir = $ENV{PROJECT_DIR} // '.';
     my $compose_file = "$project_dir/docker/docker-compose.otel.yml";
+
+    system("docker compose -f $compose_file down -v");
+}
+
+# ============================================================================
+# Routing-collector helpers (t/037_arrow_routing.pl)
+# ============================================================================
+# Separate from psch_*_otelcol because the routing test runs a distinct
+# collector deployment (different ports, different config, file sinks
+# instead of Prometheus). Both collectors can coexist if tests overlap.
+
+sub psch_routing_collector_available {
+    return 0 unless system("docker ps >/dev/null 2>&1") == 0;
+    my $result = `curl -sf 'http://localhost:23133/' 2>/dev/null`;
+    return $result =~ /Server available/;
+}
+
+sub psch_start_routing_collector {
+    my $project_dir = $ENV{PROJECT_DIR} // '.';
+    my $compose_file = "$project_dir/docker/docker-compose.arrow-route.yml";
+    my $output_dir = "$project_dir/docker/otel-routing/output";
+
+    # Wipe the output directory so we don't read stale JSONL from a prior
+    # run. The directory itself is gitignored (with .gitignore preserved).
+    for my $f (glob("$output_dir/*.jsonl")) {
+        unlink $f;
+    }
+
+    system("docker compose -f $compose_file up -d") == 0
+        or die "Failed to start routing collector container";
+
+    for my $i (1..30) {
+        my $result = `curl -sf 'http://localhost:23133/' 2>/dev/null`;
+        return 1 if $result =~ /Server available/;
+        sleep(1);
+    }
+    die "Routing collector container failed to become healthy";
+}
+
+sub psch_stop_routing_collector {
+    my $project_dir = $ENV{PROJECT_DIR} // '.';
+    my $compose_file = "$project_dir/docker/docker-compose.arrow-route.yml";
 
     system("docker compose -f $compose_file down -v");
 }

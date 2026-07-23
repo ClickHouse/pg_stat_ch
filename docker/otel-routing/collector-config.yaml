@@ -1,0 +1,69 @@
+# Minimum-faithful OTel collector config for the producer-to-collector
+# routing test (t/037_arrow_routing.pl).
+#
+# Mirrors the SHAPE of the prod datagres-otelcol pipeline (routing connector
+# fanning Arrow batches between the legacy query_logs_arrow target and the new
+# events_raw target based on the pg_stat_ch.block_format resource attribute)
+# but with stdout/file sinks instead of real receivers. The test asserts that
+# routing decisions match the producer-side marker emission contract — it does
+# NOT validate any downstream wire format. That's covered by:
+#   - t/036_unified_arrow_e2e.pl (producer Arrow IPC -> direct curl into CH)
+#   - clickgres-platform's receiver-faithful e2e test (producer -> real
+#     datagres-arrow-exporter -> CH events_raw)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+connectors:
+  routing:
+    # Default pipeline catches anything that doesn't match a routing rule.
+    # In the test we treat hits on the default pipeline as routing failures
+    # (the producer should always emit one of the two known marker values).
+    default_pipelines: [logs/default]
+    error_mode: ignore
+    table:
+      - context: resource
+        statement: route() where attributes["pg_stat_ch.block_format"] == "arrow_events_raw"
+        pipelines: [logs/events_raw]
+      - context: resource
+        statement: route() where attributes["pg_stat_ch.block_format"] == "arrow_ipc"
+        pipelines: [logs/legacy]
+
+exporters:
+  # JSONL sinks — one file per route. Tests parse these directly to assert
+  # that batches landed on the expected pipeline.
+  file/legacy:
+    path: /output/legacy.jsonl
+  file/events_raw:
+    path: /output/events_raw.jsonl
+  file/default:
+    path: /output/default.jsonl
+  # Keep one stdout sink for easier debugging when a test fails locally.
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    # Ingress: receive OTLP gRPC and hand off to the routing connector.
+    logs/in:
+      receivers: [otlp]
+      exporters: [routing]
+    # Routed legs. Each pipeline takes its input from the connector and
+    # writes to a dedicated file plus the shared debug stdout.
+    logs/legacy:
+      receivers: [routing]
+      exporters: [file/legacy, debug]
+    logs/events_raw:
+      receivers: [routing]
+      exporters: [file/events_raw, debug]
+    logs/default:
+      receivers: [routing]
+      exporters: [file/default, debug]
