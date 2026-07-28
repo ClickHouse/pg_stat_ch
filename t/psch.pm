@@ -275,7 +275,17 @@ sub psch_start_routing_collector {
         return 1 if $result =~ /Server available/;
         sleep(1);
     }
-    die "Routing collector container failed to become healthy";
+
+    # Diagnostic dump before dying: this failure has been silent and
+    # reproducible in CI (not a flake) with no clue why, since the only
+    # prior signal was "container failed to become healthy" and nothing
+    # else. Capture container status + logs so the next occurrence is
+    # actually debuggable from the CI log alone.
+    my $ps  = `docker compose -f $compose_file ps 2>&1`;
+    my $logs = `docker compose -f $compose_file logs 2>&1`;
+    die "Routing collector container failed to become healthy\n" .
+        "--- docker compose ps ---\n$ps" .
+        "--- docker compose logs ---\n$logs";
 }
 
 sub psch_stop_routing_collector {

@@ -16,8 +16,11 @@ services:
     ports:
       - "14317:4317"   # gRPC OTLP receiver (host:14317 so it doesn't clash with otel-test's 4317)
       - "23133:13133"  # Health check HTTP endpoint
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    # No Docker-level healthcheck: otel/opentelemetry-collector-contrib is a
+    # distroless image with no wget/curl/shell, so a CMD-based healthcheck
+    # can never succeed and would always report "unhealthy" regardless of
+    # actual readiness — misleading in `docker compose ps`, and a landmine
+    # for anyone who later adds `--wait` to the start command (would hang
+    # forever). Readiness is checked from the host via a real HTTP request
+    # in psch_start_routing_collector (t/psch.pm), independent of Docker's
+    # own healthcheck machinery.
