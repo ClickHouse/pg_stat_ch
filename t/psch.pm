@@ -268,6 +268,19 @@ sub psch_start_routing_collector {
         unlink $f;
     }
 
+    # otel/opentelemetry-collector-contrib runs as UID 10001 by default. On
+    # a fresh checkout the bind-mounted output dir is owned by whatever
+    # user checked the repo out (e.g. the CI runner account) with default
+    # 0755 permissions — UID 10001 falls into "other", which gets r-x but
+    # not w, so the container can't even create the .jsonl files (fails
+    # with "permission denied" and crashes before ever serving its health
+    # endpoint). chmod here rather than committing directory permissions:
+    # self-healing every run, and doesn't depend on guessing the CI
+    # runner's UID. The directory holds only scratch test output (gitignored,
+    # recreated every run), so world-writable carries no real risk.
+    chmod 0777, $output_dir
+        or die "Failed to chmod routing collector output dir ($output_dir): $!";
+
     system("docker compose -f $compose_file up -d") == 0
         or die "Failed to start routing collector container";
 
