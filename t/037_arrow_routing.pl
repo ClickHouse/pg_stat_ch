@@ -20,7 +20,9 @@
 # in clickgres-platform and are covered by a separate test there.
 #
 # Flow:
-#   1. Spin up the routing collector via docker compose (otel-routing profile).
+#   1. Spin up the routing collector via docker compose
+#      (docker-compose.arrow-route.yml — a dedicated compose file, not a
+#      compose "profile").
 #   2. Start a node configured to ship to it, two arms:
 #        arm 1: unified GUC off + otel_arrow_passthrough on (legacy
 #               ArrowBatchBuilder path)
@@ -177,6 +179,14 @@ sub wait_for_growth {
     ok(defined $legacy_after,
        'arm 1 (arrow_ipc): legacy.jsonl received bytes after producer flush');
 
+    # Give a hypothetical misrouted write to the OTHER sinks a chance to
+    # land before asserting isolation. Without this, a genuine routing bug
+    # that writes to events_raw/default slightly after legacy.jsonl could
+    # race the snapshot below and produce a false pass. Only wait on the
+    # other two files — legacy already confirmed growth above.
+    ok(wait_for_quiet(1.0, 5, "$output_dir/events_raw.jsonl", "$output_dir/default.jsonl"),
+       'arm 1: other sinks quiesced before isolation check');
+
     my $events_raw_after = current_size("$output_dir/events_raw.jsonl");
     is($events_raw_after, $events_raw_before,
        'arm 1 (arrow_ipc): events_raw.jsonl did NOT grow (routing kept it isolated)');
@@ -195,9 +205,13 @@ sub wait_for_growth {
 # ----------------------------------------------------------------------------
 {
     # Let arm 1's trailing collector writes settle before snapshotting this
-    # arm's baselines (see wait_for_quiet).
-    wait_for_quiet(1.5, 15,
-                   map { "$output_dir/$_.jsonl" } qw(legacy events_raw default));
+    # arm's baselines (see wait_for_quiet). Asserted, not just called: if
+    # settling times out, the baselines below are unreliable and any
+    # isolation check built on them is meaningless — better to fail loudly
+    # here than produce a confusing downstream flake.
+    ok(wait_for_quiet(1.5, 15,
+                      map { "$output_dir/$_.jsonl" } qw(legacy events_raw default)),
+       'output files settled before arm 2 baselines');
 
     my $legacy_before     = current_size("$output_dir/legacy.jsonl");
     my $events_raw_before = current_size("$output_dir/events_raw.jsonl");
@@ -220,6 +234,11 @@ sub wait_for_growth {
     ok(defined $events_raw_after,
        'arm 2 (arrow_events_raw): events_raw.jsonl received bytes after producer flush');
 
+    # See arm 1: give a hypothetical misrouted write to the other sinks a
+    # chance to land before asserting isolation.
+    ok(wait_for_quiet(1.0, 5, "$output_dir/legacy.jsonl", "$output_dir/default.jsonl"),
+       'arm 2: other sinks quiesced before isolation check');
+
     my $legacy_after = current_size("$output_dir/legacy.jsonl");
     is($legacy_after, $legacy_before,
        'arm 2 (arrow_events_raw): legacy.jsonl did NOT grow (routing kept it isolated)');
@@ -236,17 +255,28 @@ sub wait_for_growth {
     # Only meaningful if the file actually grew; on timeout the ok() above
     # already failed and there is no tail to inspect.
   SKIP: {
-        skip 'events_raw.jsonl never grew; no tail to spot-check', 2
+        skip 'events_raw.jsonl never grew; no tail to spot-check', 3
             unless defined $events_raw_after;
-        open my $fh, '<', "$output_dir/events_raw.jsonl"
-            or die "open events_raw.jsonl: $!";
-        seek($fh, $events_raw_before, 0);
-        my $tail = do { local $/; <$fh> };
-        close $fh;
-        like($tail, qr/arrow_events_raw/,
-             'arm 2: marker value "arrow_events_raw" appears in the routed JSONL');
-        unlike($tail, qr/arrow_ipc/,
-               'arm 2: legacy marker "arrow_ipc" does NOT appear in events_raw arm');
+
+        # A transient reopen failure here (permissions blip, filesystem
+        # hiccup) should record a failed assertion, not abort the whole
+        # script — the file's existence was already confirmed by the
+        # growth check above, so getting here means something changed
+        # between then and now, which is itself worth surfacing as a
+        # failure rather than a fatal die.
+        my $opened = open my $fh, '<', "$output_dir/events_raw.jsonl";
+      SKIP2: {
+            ok($opened, 'arm 2: reopened events_raw.jsonl to spot-check marker');
+            skip "could not reopen events_raw.jsonl: $!", 2 unless $opened;
+
+            seek($fh, $events_raw_before, 0);
+            my $tail = do { local $/; <$fh> };
+            close $fh;
+            like($tail, qr/arrow_events_raw/,
+                 'arm 2: marker value "arrow_events_raw" appears in the routed JSONL');
+            unlike($tail, qr/arrow_ipc/,
+                   'arm 2: legacy marker "arrow_ipc" does NOT appear in events_raw arm');
+        }
     }
 
     $node->stop();
