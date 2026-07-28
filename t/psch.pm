@@ -281,11 +281,17 @@ sub psch_start_routing_collector {
     # prior signal was "container failed to become healthy" and nothing
     # else. Capture container status + logs so the next occurrence is
     # actually debuggable from the CI log alone.
+    #
+    # Emitted via warn (STDERR), NOT folded into the die message: the die
+    # message becomes the reason string for the caller's `plan skip_all`,
+    # and TAP's protocol doesn't tolerate embedded newlines there —
+    # Test::More silently drops everything past the first line, which is
+    # exactly what ate the first attempt at this diagnostic.
     my $ps  = `docker compose -f $compose_file ps 2>&1`;
     my $logs = `docker compose -f $compose_file logs 2>&1`;
-    die "Routing collector container failed to become healthy\n" .
-        "--- docker compose ps ---\n$ps" .
-        "--- docker compose logs ---\n$logs";
+    warn "--- docker compose ps ($compose_file) ---\n$ps" .
+         "--- docker compose logs ($compose_file) ---\n$logs";
+    die "Routing collector container failed to become healthy";
 }
 
 sub psch_stop_routing_collector {
