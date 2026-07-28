@@ -5,6 +5,7 @@ use strict;
 use warnings;
 use Exporter 'import';
 use PostgreSQL::Test::Cluster;
+use Test::More ();
 use Time::HiRes qw(sleep time);
 
 our @EXPORT = qw(
@@ -282,15 +283,22 @@ sub psch_start_routing_collector {
     # else. Capture container status + logs so the next occurrence is
     # actually debuggable from the CI log alone.
     #
-    # Emitted via warn (STDERR), NOT folded into the die message: the die
-    # message becomes the reason string for the caller's `plan skip_all`,
-    # and TAP's protocol doesn't tolerate embedded newlines there —
-    # Test::More silently drops everything past the first line, which is
-    # exactly what ate the first attempt at this diagnostic.
+    # Two things ruled out before landing on Test::More::diag:
+    #  1. Folding this into the die message doesn't work: the die message
+    #     becomes the reason string for the caller's `plan skip_all`, and
+    #     TAP doesn't tolerate embedded newlines there — Test::More
+    #     silently drops everything past the first line.
+    #  2. Plain `warn` (STDERR) doesn't show either: prove -v evidently
+    #     doesn't surface a subtest's STDERR for one that ends in SKIP
+    #     rather than FAIL. Confirmed empirically — a prior commit tried
+    #     both and produced zero trace of the dump in two separate CI runs.
+    # diag() writes through Test::Builder's own output handle, which
+    # `prove -v` (verbose mode, already in use here) documents showing
+    # regardless of the subtest's pass/fail/skip outcome.
     my $ps  = `docker compose -f $compose_file ps 2>&1`;
     my $logs = `docker compose -f $compose_file logs 2>&1`;
-    warn "--- docker compose ps ($compose_file) ---\n$ps" .
-         "--- docker compose logs ($compose_file) ---\n$logs";
+    Test::More::diag("--- docker compose ps ($compose_file) ---\n$ps" .
+                      "--- docker compose logs ($compose_file) ---\n$logs");
     die "Routing collector container failed to become healthy";
 }
 
