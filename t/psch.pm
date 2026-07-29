@@ -5,6 +5,7 @@ use strict;
 use warnings;
 use Exporter 'import';
 use PostgreSQL::Test::Cluster;
+use Test::More ();
 use Time::HiRes qw(sleep time);
 
 our @EXPORT = qw(
@@ -25,6 +26,9 @@ our @EXPORT = qw(
     psch_init_node_with_otel
     psch_get_otel_histogram_total
     psch_otel_metric_has_label
+    psch_routing_collector_available
+    psch_start_routing_collector
+    psch_stop_routing_collector
 );
 
 # Initialize a PostgreSQL node with pg_stat_ch loaded
@@ -236,6 +240,84 @@ sub psch_start_otelcol {
 sub psch_stop_otelcol {
     my $project_dir = $ENV{PROJECT_DIR} // '.';
     my $compose_file = "$project_dir/docker/docker-compose.otel.yml";
+
+    system("docker compose -f $compose_file down -v");
+}
+
+# ============================================================================
+# Routing-collector helpers (t/037_arrow_routing.pl)
+# ============================================================================
+# Separate from psch_*_otelcol because the routing test runs a distinct
+# collector deployment (different ports, different config, file sinks
+# instead of Prometheus). Both collectors can coexist if tests overlap.
+
+sub psch_routing_collector_available {
+    return 0 unless system("docker ps >/dev/null 2>&1") == 0;
+    my $result = `curl -sf 'http://localhost:23133/' 2>/dev/null`;
+    return $result =~ /Server available/;
+}
+
+sub psch_start_routing_collector {
+    my $project_dir = $ENV{PROJECT_DIR} // '.';
+    my $compose_file = "$project_dir/docker/docker-compose.arrow-route.yml";
+    my $output_dir = "$project_dir/docker/otel-routing/output";
+
+    # Wipe the output directory so we don't read stale JSONL from a prior
+    # run. The directory itself is gitignored (with .gitignore preserved).
+    for my $f (glob("$output_dir/*.jsonl")) {
+        unlink $f;
+    }
+
+    # otel/opentelemetry-collector-contrib runs as UID 10001 by default. On
+    # a fresh checkout the bind-mounted output dir is owned by whatever
+    # user checked the repo out (e.g. the CI runner account) with default
+    # 0755 permissions — UID 10001 falls into "other", which gets r-x but
+    # not w, so the container can't even create the .jsonl files (fails
+    # with "permission denied" and crashes before ever serving its health
+    # endpoint). chmod here rather than committing directory permissions:
+    # self-healing every run, and doesn't depend on guessing the CI
+    # runner's UID. The directory holds only scratch test output (gitignored,
+    # recreated every run), so world-writable carries no real risk.
+    chmod 0777, $output_dir
+        or die "Failed to chmod routing collector output dir ($output_dir): $!";
+
+    system("docker compose -f $compose_file up -d") == 0
+        or die "Failed to start routing collector container";
+
+    for my $i (1..30) {
+        my $result = `curl -sf 'http://localhost:23133/' 2>/dev/null`;
+        return 1 if $result =~ /Server available/;
+        sleep(1);
+    }
+
+    # Diagnostic dump before dying: this failure has been silent and
+    # reproducible in CI (not a flake) with no clue why, since the only
+    # prior signal was "container failed to become healthy" and nothing
+    # else. Capture container status + logs so the next occurrence is
+    # actually debuggable from the CI log alone.
+    #
+    # Two things ruled out before landing on Test::More::diag:
+    #  1. Folding this into the die message doesn't work: the die message
+    #     becomes the reason string for the caller's `plan skip_all`, and
+    #     TAP doesn't tolerate embedded newlines there — Test::More
+    #     silently drops everything past the first line.
+    #  2. Plain `warn` (STDERR) doesn't show either: prove -v evidently
+    #     doesn't surface a subtest's STDERR for one that ends in SKIP
+    #     rather than FAIL. Confirmed empirically — a prior commit tried
+    #     both and produced zero trace of the dump in two separate CI runs.
+    # diag() writes through Test::Builder's own output handle, which
+    # `prove -v` (verbose mode, already in use here) documents showing
+    # regardless of the subtest's pass/fail/skip outcome.
+    my $ps  = `docker compose -f $compose_file ps 2>&1`;
+    my $logs = `docker compose -f $compose_file logs 2>&1`;
+    Test::More::diag("--- docker compose ps ($compose_file) ---\n$ps" .
+                      "--- docker compose logs ($compose_file) ---\n$logs");
+    die "Routing collector container failed to become healthy";
+}
+
+sub psch_stop_routing_collector {
+    my $project_dir = $ENV{PROJECT_DIR} // '.';
+    my $compose_file = "$project_dir/docker/docker-compose.arrow-route.yml";
 
     system("docker compose -f $compose_file down -v");
 }
