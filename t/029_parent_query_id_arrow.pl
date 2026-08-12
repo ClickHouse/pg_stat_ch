@@ -1,17 +1,18 @@
 #!/usr/bin/env perl
-# Parent query id linkage, verified through the OTel/Arrow export path
-# (the production export pathway).  No ClickHouse or OTel collector is
-# needed: pg_stat_ch.debug_arrow_dump_dir captures each Arrow IPC batch
-# to disk before the gRPC send (which we deliberately point at a
+# Parent query id linkage, verified through the unified Arrow exporter
+# (pg_stat_ch.use_unified_arrow_exporter — the events_raw-targeting Arrow
+# path; see src/export/otel_arrow_exporter.cc).  No ClickHouse or OTel
+# collector is needed: pg_stat_ch.debug_arrow_dump_dir captures each Arrow
+# IPC batch to disk before the gRPC send (which we deliberately point at a
 # non-existent collector so it fails harmlessly).  See t/026_arrow_dump.pl
 # for the same trick.
 #
 # What this test guards:
-#   1. The Arrow IPC schema actually contains parent_query_id.  An earlier
-#      version of #95 added the field to PschEvent and the
-#      ClickHouse-native exporter but missed arrow_batch.cc.  That gap
-#      escaped because the only existing parent_query_id test
-#      (t/028, ClickHouse-native) didn't exercise the Arrow path.
+#   1. The Arrow IPC schema actually contains parent_query_id.  The column
+#      is wired through the generic StatsExporter interface
+#      (stats_exporter.cc), which both the ClickHouse-native exporter and
+#      this unified Arrow exporter share — a regression here would mean
+#      the interface plumbing broke for every exporter, not just one.
 #   2. Top-level queries report parent_query_id = 0.
 #   3. Nested SPI queries report parent_query_id matching the outer's
 #      query_id.
@@ -54,6 +55,7 @@ pg_stat_ch.batch_max = 100
 pg_stat_ch.use_otel = on
 pg_stat_ch.otel_endpoint = 'localhost:14317'
 pg_stat_ch.otel_arrow_passthrough = on
+pg_stat_ch.use_unified_arrow_exporter = on
 pg_stat_ch.debug_arrow_dump_dir = '$dump_dir'
 pg_stat_ch.hostname = 'test-pqid-arrow-host'
 });
@@ -146,10 +148,11 @@ print(f"schema_has_parent_query_id={'1' if schema_has_pqid else '0'}")
 def has(text):
     return [r for r in rows if text in (r.get("query_text") or "")]
 
-# Arrow dict-encodes query_id and parent_query_id as decimal *strings*;
-# "0" means top-level / no parent.  Compare against strings, not ints.
+# query_id and parent_query_id are plain Arrow int64 columns on this path
+# (StatHCInt64, unlike the legacy arrow_batch.cc builder's dict-encoded
+# decimal strings). 0 (or unset/null) means top-level / no parent.
 def is_zero(v):
-    return v is None or v == "" or v == "0"
+    return v is None or v == 0
 
 # Test 1: top-level
 top = has("pqid_top_marker")
@@ -206,7 +209,7 @@ diag("pyarrow stdout:\n$raw") if $ENV{TEST_VERBOSE};
 
 # Regression check: the schema itself must include parent_query_id.
 is($r{schema_has_parent_query_id}, '1',
-   'arrow_batch.cc schema includes parent_query_id column');
+   'unified Arrow exporter schema includes parent_query_id column');
 
 subtest 'top-level parent_query_id is 0' => sub {
     cmp_ok($r{top_rows}, '>=', 1, 'top-level marker rows landed');

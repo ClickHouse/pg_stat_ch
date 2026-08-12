@@ -56,7 +56,7 @@ subtest 'top-level parent_query_id is 0' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
     my $matches = psch_wait_for_clickhouse_query(
-        "SELECT count() FROM pg_stat_ch.events_raw WHERE query LIKE '%pqid_top_marker%'",
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query_text LIKE '%pqid_top_marker%'",
         sub { $_[0] >= 2 },
         10,
     );
@@ -64,7 +64,7 @@ subtest 'top-level parent_query_id is 0' => sub {
 
     my $nonzero_parents = psch_query_clickhouse(
         "SELECT count() FROM pg_stat_ch.events_raw "
-        . "WHERE query LIKE '%pqid_top_marker%' AND parent_query_id != 0"
+        . "WHERE query_text LIKE '%pqid_top_marker%' AND parent_query_id != 0"
     );
     is($nonzero_parents, '0', 'top-level queries report parent_query_id = 0');
 };
@@ -95,7 +95,7 @@ subtest 'nested SPI parent_query_id links to outer' => sub {
     # Wait for both rows.
     psch_wait_for_clickhouse_query(
         "SELECT count() FROM pg_stat_ch.events_raw "
-        . "WHERE query LIKE '%pqid_outer_caller%' OR query LIKE '%pqid_inner_marker%'",
+        . "WHERE query_text LIKE '%pqid_outer_caller%' OR query_text LIKE '%pqid_inner_marker%'",
         sub { $_[0] >= 2 },
         10,
     );
@@ -105,20 +105,20 @@ subtest 'nested SPI parent_query_id links to outer' => sub {
         SELECT count() FROM pg_stat_ch.events_raw inner_q
         JOIN pg_stat_ch.events_raw outer_q
           ON inner_q.parent_query_id = outer_q.query_id
-        WHERE inner_q.query LIKE '%pqid_inner_marker%'
-          AND outer_q.query LIKE '%pqid_outer_caller%'
+        WHERE inner_q.query_text LIKE '%pqid_inner_marker%'
+          AND outer_q.query_text LIKE '%pqid_outer_caller%'
     });
     cmp_ok($linked, '>=', 1, 'nested SPI parent_query_id matches outer query_id');
 
     my $orphan = psch_query_clickhouse(
         "SELECT count() FROM pg_stat_ch.events_raw "
-        . "WHERE query LIKE '%pqid_inner_marker%' AND parent_query_id = 0"
+        . "WHERE query_text LIKE '%pqid_inner_marker%' AND parent_query_id = 0"
     );
     is($orphan, '0', 'nested SPI query is not reported as top-level');
 
     my $outer_self = psch_query_clickhouse(
         "SELECT count() FROM pg_stat_ch.events_raw "
-        . "WHERE query LIKE '%pqid_outer_caller%' AND parent_query_id != 0"
+        . "WHERE query_text LIKE '%pqid_outer_caller%' AND parent_query_id != 0"
     );
     is($outer_self, '0', 'outer call still reports parent_query_id = 0');
 };
@@ -155,11 +155,11 @@ subtest 'log event inside nested SPI links queryid -> outer' => sub {
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
     # The log event itself carries no query text (CaptureLogEvent leaves
-    # query empty) — identify it via cmd_type=UNKNOWN + err_sqlstate=01001
+    # query empty) — identify it via db_operation=UNKNOWN + err_sqlstate=01001
     # (our RAISE WARNING's custom code).
     psch_wait_for_clickhouse_query(
         "SELECT count() FROM pg_stat_ch.events_raw "
-        . "WHERE cmd_type = 'UNKNOWN' AND err_sqlstate = '01001'",
+        . "WHERE db_operation = 'UNKNOWN' AND err_sqlstate = '01001'",
         sub { $_[0] >= 1 },
         10,
     );
@@ -169,9 +169,9 @@ subtest 'log event inside nested SPI links queryid -> outer' => sub {
         SELECT count() FROM pg_stat_ch.events_raw warn_q
         JOIN pg_stat_ch.events_raw outer_q
           ON warn_q.parent_query_id = outer_q.query_id
-        WHERE warn_q.cmd_type = 'UNKNOWN'
+        WHERE warn_q.db_operation = 'UNKNOWN'
           AND warn_q.err_sqlstate = '01001'
-          AND outer_q.query LIKE '%pqid_warn_outer%'
+          AND outer_q.query_text LIKE '%pqid_warn_outer%'
     });
     cmp_ok($warn_to_outer, '>=', 1,
         'warning log event: parent_query_id = outer caller');
@@ -182,9 +182,9 @@ subtest 'log event inside nested SPI links queryid -> outer' => sub {
         SELECT count() FROM pg_stat_ch.events_raw warn_q
         JOIN pg_stat_ch.events_raw inner_q
           ON warn_q.query_id = inner_q.query_id
-        WHERE warn_q.cmd_type = 'UNKNOWN'
+        WHERE warn_q.db_operation = 'UNKNOWN'
           AND warn_q.err_sqlstate = '01001'
-          AND inner_q.query LIKE '%pqid_emit_warn%'
+          AND inner_q.query_text LIKE '%pqid_emit_warn%'
     });
     cmp_ok($warn_to_inner, '>=', 1,
         'warning log event: query_id = inner SPI statement (the running query)');
@@ -193,7 +193,7 @@ subtest 'log event inside nested SPI links queryid -> outer' => sub {
     # is its caller.
     my $self_parent = psch_query_clickhouse(
         "SELECT count() FROM pg_stat_ch.events_raw "
-        . "WHERE cmd_type = 'UNKNOWN' AND err_sqlstate = '01001' "
+        . "WHERE db_operation = 'UNKNOWN' AND err_sqlstate = '01001' "
         . "  AND query_id = parent_query_id AND query_id != 0"
     );
     is($self_parent, '0',
