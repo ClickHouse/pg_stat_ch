@@ -86,12 +86,20 @@ subtest 'nested SPI parent_query_id links to outer' => sub {
         END$$;
     });
 
-    # Flush before truncating: the setup DDL above (its CREATE TABLE/INSERT
-    # text, and CREATE FUNCTION's body, all mention pqid_inner_marker) is
-    # still sitting in the queue at this point. Without an explicit flush,
-    # it lands in ClickHouse only when the flush below fires — after the
-    # truncate — and pollutes the parent_query_id=0 counts we check next.
+    # Flush and wait before truncating: the setup DDL above (its CREATE
+    # TABLE/INSERT text, and CREATE FUNCTION's body, all mention
+    # pqid_inner_marker) is still sitting in the queue at this point.
+    # pg_stat_ch_flush() only signals the bgworker and returns immediately —
+    # it does not wait for the export to land — so we poll ClickHouse for
+    # the 3 setup statements before truncating. Without this, they'd land
+    # only when the flush below fires, after the truncate, and pollute the
+    # parent_query_id=0 counts we check next.
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+    psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query_text LIKE '%pqid_inner_marker%'",
+        sub { $_[0] >= 3 },
+        10,
+    );
 
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
@@ -155,9 +163,16 @@ subtest 'log event inside nested SPI links queryid -> outer' => sub {
         END$$;
     });
 
-    # See the matching comment in the subtest above: flush before truncating
-    # so the setup DDL doesn't land in ClickHouse after the truncate below.
+    # See the matching comment in the subtest above: flush and wait so the
+    # setup DDL (4 statements, all naming a pqid_-prefixed identifier)
+    # actually lands in ClickHouse before the truncate below, rather than
+    # racing it.
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+    psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE query_text LIKE '%pqid_%'",
+        sub { $_[0] >= 4 },
+        10,
+    );
 
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
