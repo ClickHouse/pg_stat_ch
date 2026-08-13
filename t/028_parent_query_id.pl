@@ -86,6 +86,13 @@ subtest 'nested SPI parent_query_id links to outer' => sub {
         END$$;
     });
 
+    # Flush before truncating: the setup DDL above (its CREATE TABLE/INSERT
+    # text, and CREATE FUNCTION's body, all mention pqid_inner_marker) is
+    # still sitting in the queue at this point. Without an explicit flush,
+    # it lands in ClickHouse only when the flush below fires — after the
+    # truncate — and pollutes the parent_query_id=0 counts we check next.
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
@@ -147,6 +154,10 @@ subtest 'log event inside nested SPI links queryid -> outer' => sub {
             RETURN v;
         END$$;
     });
+
+    # See the matching comment in the subtest above: flush before truncating
+    # so the setup DDL doesn't land in ClickHouse after the truncate below.
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
