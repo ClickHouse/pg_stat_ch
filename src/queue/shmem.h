@@ -34,6 +34,12 @@ int PschEnqueueBatch(const PschEvent* events, int count);
 // Dequeue an event from the ring buffer (returns true if event was available)
 bool PschDequeueEvent(PschEvent* event);
 
+// Events currently waiting in the ring buffer (sizing hint, races with producers).
+uint32 PschQueueDepth(void);
+
+// pg_stat_ch.batch_max clamped to the ring buffer capacity.
+int PschEffectiveBatchMax(void);
+
 // Get current queue statistics.
 // last_error_buf must point to a caller-owned buffer of last_error_buf_size bytes;
 // the error text is copied into it under the lock to prevent torn reads.

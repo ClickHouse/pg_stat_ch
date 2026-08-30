@@ -6,6 +6,7 @@ extern "C" {
 #include "utils/timestamp.h"
 }
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -98,7 +99,7 @@ LenT ClampFieldLen(LenT len, LenT max, const char* field_name) {
 // Dequeue events from the shared memory queue
 std::vector<PschEvent> DequeueEvents(int max_events) {
   std::vector<PschEvent> events;
-  events.reserve(max_events);
+  events.reserve(std::min<size_t>(static_cast<size_t>(max_events), PschQueueDepth()));
 
   PschEvent event;
   while (events.size() < static_cast<size_t>(max_events) && PschDequeueEvent(&event)) {
@@ -435,10 +436,9 @@ bool PschExporterInit(void) {
   }
 }
 
-// Exception barrier: DequeueEvents reserves a std::vector sized for
-// psch_batch_max events and can throw std::bad_alloc. Catching here prevents
-// C++ exceptions from escaping this extern "C" entry point or crossing
-// PostgreSQL C frames.
+// Exception barrier: DequeueEvents grows a std::vector of queued events and can
+// throw std::bad_alloc. Catching here prevents C++ exceptions from escaping this
+// extern "C" entry point or crossing PostgreSQL C frames.
 int PschExportBatch(void) {
   try {
     elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
@@ -452,8 +452,9 @@ int PschExportBatch(void) {
       }
     }
 
-    elog(DEBUG1, "pg_stat_ch: dequeuing events (max=%d)", psch_batch_max);
-    std::vector<PschEvent> events = DequeueEvents(psch_batch_max);
+    const int batch_max = PschEffectiveBatchMax();
+    elog(DEBUG1, "pg_stat_ch: dequeuing events (max=%d)", batch_max);
+    std::vector<PschEvent> events = DequeueEvents(batch_max);
     if (events.empty()) {
       elog(DEBUG1, "pg_stat_ch: no events to export");
       return 0;
@@ -483,12 +484,16 @@ int PschExportBatch(void) {
     // here, narrow the scope of `events` to a nested {} block first or move
     // the call below this point.  A longjmp through these frames skips
     // destructors and leaks the events buffer (heap, not palloc).
-    if (exporter->CommitBatch()) {
-      if (psch_shared_state != nullptr) {
-        pg_atomic_fetch_add_u64(&psch_shared_state->exported, exporter->NumExported());
-      }
-      PschRecordExportSuccess();
+    // Report 0 on commit failure: NumExported() still counts the staged rows,
+    // and a full count tells the drain loop to keep going instead of backing off.
+    if (!exporter->CommitBatch()) {
+      return 0;
     }
+
+    if (psch_shared_state != nullptr) {
+      pg_atomic_fetch_add_u64(&psch_shared_state->exported, exporter->NumExported());
+    }
+    PschRecordExportSuccess();
 
     return exporter->NumExported();
   } catch (const std::bad_alloc&) {
@@ -526,9 +531,9 @@ int PschGetRetryDelayMs(void) {
       return 0;
     }
     // Exponential backoff: base * 2^(failures-1), capped at max
-    int capped_failures = (failures > kMaxConsecutiveFailures) ? kMaxConsecutiveFailures : failures;
+    int capped_failures = std::min(failures, kMaxConsecutiveFailures);
     int delay = kBaseDelayMs * (1 << (capped_failures - 1));
-    return (delay > kMaxDelayMs) ? kMaxDelayMs : delay;
+    return std::min(delay, kMaxDelayMs);
   } catch (const std::exception& e) {
     LogExporterWarning("retry delay exception", e.what());
     return 0;

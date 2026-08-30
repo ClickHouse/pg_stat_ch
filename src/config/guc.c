@@ -23,7 +23,7 @@ char* psch_hostname = NULL;
 int psch_queue_capacity = 131072;
 int psch_string_area_size = 64;  // MB, for DSA string storage
 int psch_flush_interval_ms = 500;
-int psch_batch_max = 200000;
+int psch_batch_max = 131072;
 int psch_log_min_elevel = WARNING;
 int psch_otel_log_queue_size = 65536;
 int psch_otel_log_batch_size = 8192;
@@ -231,9 +231,9 @@ void PschInitGuc(void) {
   DefineCustomIntVariable(
       "pg_stat_ch.batch_max",
       "Maximum number of events per ClickHouse insert batch.",
-      NULL,
+      "Clamped to pg_stat_ch.queue_capacity.",
       &psch_batch_max,
-      200000,           // bootValue
+      131072,           // bootValue: pg_stat_ch.queue_capacity default
       1, 1000000,       // min, max
       PGC_SIGHUP,
       0,
