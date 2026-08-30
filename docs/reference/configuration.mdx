@@ -147,7 +147,7 @@ Maximum number of events the ring buffer can hold.
 
 Must be a power of 2 (1024, 2048, 4096, ... 4194304). The ring buffer uses bitmask arithmetic for slot indexing, which requires a power-of-2 capacity.
 
-Each event is approximately 4.5 KB. The default capacity of 131072 events uses about **576 MB** of shared memory. Adjust based on your query throughput and acceptable memory usage.
+Each ring slot is about 520 bytes on 64-bit platforms; query and error text live in the DSA string area rather than in the slot. The default capacity of 131072 events uses about **68 MB** for slots, on top of `pg_stat_ch.string_area_size` (64 MB by default) and an interner hash table sized to the same capacity. Adjust based on your query throughput and acceptable memory usage.
 
 <Warning>
 Changing this parameter requires a PostgreSQL restart.
@@ -155,12 +155,12 @@ Changing this parameter requires a PostgreSQL restart.
 
 **Sizing guidance:**
 
-| Workload | QPS | Recommended capacity | Memory |
+| Workload | QPS | Recommended capacity | Ring slot memory |
 |---|---|---|---|
-| Low traffic | < 1,000 | 8192 | ~36 MB |
-| Medium traffic | 1,000 - 10,000 | 65536 | ~288 MB |
-| High traffic | 10,000 - 100,000 | 131072 (default) | ~576 MB |
-| Very high traffic | > 100,000 | 524288+ | ~2.3 GB+ |
+| Low traffic | < 1,000 | 8192 | ~4 MB |
+| Medium traffic | 1,000 - 10,000 | 65536 | ~34 MB |
+| High traffic | 10,000 - 100,000 | 131072 (default) | ~68 MB |
+| Very high traffic | > 100,000 | 524288+ | ~273 MB+ |
 
 The queue needs to hold enough events to buffer a burst while the background worker flushes a batch. If `dropped_events` in `pg_stat_ch_stats()` is non-zero, increase this value.
 
@@ -171,7 +171,7 @@ Interval between export batches, in milliseconds.
 | | |
 |---|---|
 | **Type** | integer |
-| **Default** | `200` |
+| **Default** | `500` |
 | **Min** | `100` |
 | **Max** | `60000` |
 | **Context** | sighup |
@@ -186,12 +186,14 @@ Maximum number of events per ClickHouse insert.
 | | |
 |---|---|
 | **Type** | integer |
-| **Default** | `200000` |
+| **Default** | `131072` |
 | **Min** | `1` |
 | **Max** | `1000000` |
 | **Context** | sighup |
 
-Limits the size of each batch sent to ClickHouse. The background worker drains up to `batch_max` events per insert, then loops until the queue is empty or below the threshold. Larger batches are more efficient for ClickHouse but use more memory in the background worker.
+Limits the size of each batch sent to ClickHouse. The background worker drains up to `batch_max` events per insert, then loops until the queue is empty or below the threshold.
+
+Values above `pg_stat_ch.queue_capacity` are clamped: one drain pass cannot yield more events than the ring buffer holds. The dequeue buffer is sized to the events actually queued, roughly 4.6 KB each, so a full-queue drain at the default peaks near 600 MB in the worker.
 
 ## ClickHouse connection
 

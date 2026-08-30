@@ -110,10 +110,11 @@ static void ProcessPendingSignals(void) {
   HandleConfigReload();
 }
 
-// Drain the queue: loop exporting batches until a partial batch (< batch_max)
-// indicates the queue is nearly empty. Each batch gets its own PG_TRY/PG_CATCH
-// so an error on batch N+1 doesn't lose batches 1..N. Signals are processed
-// between batches to stay responsive to SIGTERM, barriers, and config reload.
+// Drain the queue: loop exporting batches until a partial batch (< batch_max
+// clamped to queue capacity) indicates the queue is nearly empty. Each batch
+// gets its own PG_TRY/PG_CATCH so an error on batch N+1 doesn't lose batches
+// 1..N. Signals are processed between batches to stay responsive to SIGTERM,
+// barriers, and config reload.
 static void ExportBatchWithRecovery(void) {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
@@ -133,7 +134,7 @@ static void ExportBatchWithRecovery(void) {
     }
     PG_END_TRY();
 
-    if (exported < psch_batch_max) {
+    if (exported < PschEffectiveBatchMax()) {
       break;
     }
 
