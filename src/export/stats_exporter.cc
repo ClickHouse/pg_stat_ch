@@ -245,6 +245,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   auto col_db_user = exporter->DbUserColumn();
   auto col_pid = exporter->StatLCInt32("pid");
   auto col_query_id = exporter->StatHCInt64("query_id");
+  auto col_parent_query_id = exporter->StatHCInt64("parent_query_id");
   auto col_db_operation = exporter->DbOperationColumn();
   auto col_rows = exporter->StatHCUInt64("rows");
   auto col_query_text = exporter->DbQueryTextColumn();
@@ -300,6 +301,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_db_user->Append(std::string(ev.username, ev.username_len));
     col_pid->Append(ev.pid);
     col_query_id->Append(static_cast<int64_t>(ev.queryid));
+    col_parent_query_id->Append(static_cast<int64_t>(ev.parent_query_id));
     col_db_operation->Append(PschCmdTypeToString(ev.cmd_type));
     col_rows->Append(ev.rows);
 
