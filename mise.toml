@@ -36,11 +36,11 @@ run = "cp build/compile_commands.json ."
 description = "Copy compile_commands.json to project root"
 
 [tasks.format]
-run = "fd -e cc -e h . src include | xargs clang-format -i"
+run = "fd -e c -e cc -e h . src include | xargs clang-format -i"
 description = "Format code with clang-format"
 
 [tasks.lint]
-run = "fd -e cc . src | xargs clang-tidy"
+run = "fd -e c -e cc . src | xargs clang-tidy"
 description = "Run clang-tidy linting"
 
 [tasks.installcheck]

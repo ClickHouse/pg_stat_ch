@@ -2,12 +2,17 @@
 Checks: >
   -*,
   clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   clang-diagnostic-*,
   google-*,
+  -google-readability-braces-around-statements,
   -google-readability-todo,
   modernize-*,
+  -modernize-macro-to-enum,
   -modernize-use-trailing-return-type,
   readability-*,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
   -readability-magic-numbers,
   -readability-identifier-length
 
@@ -15,19 +20,40 @@ WarningsAsErrors: >
   clang-analyzer-core.NullDereference,
   clang-analyzer-unix.*
 
-HeaderFilterRegex: 'include/pg_stat_ch/.*'
+HeaderFilterRegex: '(include/pg_stat_ch|src)/.*\.h$'
 
 CheckOptions:
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.FunctionCase
     value: CamelCase
+  # SQL-callable symbols, named in sql/*.sql
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: 'pg_stat_ch_.*'
   - key: readability-identifier-naming.VariableCase
     value: lower_case
   - key: readability-identifier-naming.ConstantCase
-    value: kCamelCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstantPrefix
+    value: k
   - key: readability-identifier-naming.GlobalConstantCase
-    value: kCamelCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantPrefix
+    value: k
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstantParameterCase
+    value: lower_case
+  # PostgreSQL-style enumerators in C layer
+  - key: readability-identifier-naming.EnumConstantCase
+    value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
+  # Header guards end with underscore
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '.*_H_'
 ...

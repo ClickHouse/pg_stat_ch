@@ -129,8 +129,8 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
     // Clamp the input length to what we'd have stored anyway, so the intern
     // key doesn't include trailing bytes the consumer would have truncated.
     uint16 clamped_len = Min(event->query_len, (uint16)(PSCH_MAX_QUERY_LEN - 1));
-    slot->query_dsa = PschQueryInternAcquire(event->dbid, event->queryid,
-                                             event->query, clamped_len);
+    slot->query_dsa =
+        PschQueryInternAcquire(event->dbid, event->queryid, event->query, clamped_len);
     if (!DsaPointerIsValid(slot->query_dsa)) {
       slot->query_len = 0;
     } else {
@@ -150,8 +150,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   return true;
 }
 
-static void PschShmemShutdown(int code pg_attribute_unused(),
-                              Datum arg pg_attribute_unused()) {
+static void PschShmemShutdown(int code pg_attribute_unused(), Datum arg pg_attribute_unused()) {
   if (psch_shared_state != NULL) {
     elog(LOG,
          "pg_stat_ch: shutdown (enqueued=" UINT64_FORMAT ", dropped=" UINT64_FORMAT
@@ -223,8 +222,9 @@ static void InitializeSharedState(void) {
 
   // Create DSA area for variable-length string storage.
   // See psch_dsa.h for the shared memory layout diagram.
-  char* dsa_place = (char*)psch_shared_state +
-                    MAXALIGN(sizeof(PschSharedState) + psch_queue_capacity * sizeof(PschRingEntry));
+  char* dsa_place =
+      (char*)psch_shared_state +
+      MAXALIGN(sizeof(PschSharedState) + (psch_queue_capacity * sizeof(PschRingEntry)));
   PschDsaInit(psch_shared_state, dsa_place);
 
   elog(LOG, "pg_stat_ch: initialized shared memory (capacity=%d, ring=%zuKB, dsa=%zuMB, total=%zu)",
