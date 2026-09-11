@@ -176,12 +176,8 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
   dsa_pointer new_dp;
   bool found;
 
-  if (query_len == 0 || psch_query_intern_htab == NULL) {
-    return InvalidDsaPointer;
-  }
-
-  dsa = PschDsaGetArea();
-  if (dsa == NULL) {
+  dsa = PschDsaAttach();
+  if (query_len == 0 || psch_query_intern_htab == NULL || dsa == NULL) {
     return InvalidDsaPointer;
   }
 
@@ -249,9 +245,7 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
   return new_dp;
 }
 
-// Drop one reference to `ref`.  Frees the DSA object when refcount hits zero.
-// Caller has already copied any data it needs out of the object.
-static void ReleaseRef(dsa_pointer ref) {
+void PschQueryInternRelease(dsa_pointer ref) {
   dsa_area* dsa;
   PschQueryInternObject* obj;
   PschQueryInternKey key;
@@ -260,12 +254,8 @@ static void ReleaseRef(dsa_pointer ref) {
   PschQueryInternEntry* entry;
   dsa_pointer freed_dp = InvalidDsaPointer;
 
-  if (!DsaPointerIsValid(ref) || psch_query_intern_htab == NULL) {
-    return;
-  }
-
-  dsa = PschDsaGetArea();
-  if (dsa == NULL) {
+  dsa = PschDsaAttach();
+  if (!DsaPointerIsValid(ref) || psch_query_intern_htab == NULL || dsa == NULL) {
     return;
   }
 
@@ -311,12 +301,8 @@ static void ResolveInto(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out
   PschQueryInternObject* obj;
   uint16 copy_len;
 
-  if (!DsaPointerIsValid(ref) || dst == NULL || dst_size == 0 || out_len == NULL) {
-    return;
-  }
-
-  dsa = PschDsaGetArea();
-  if (dsa == NULL) {
+  dsa = PschDsaAttach();
+  if (!DsaPointerIsValid(ref) || dst == NULL || dst_size == 0 || out_len == NULL || dsa == NULL) {
     return;
   }
 
@@ -348,5 +334,5 @@ void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_siz
   }
 
   ResolveInto(ref, dst, dst_size, out_len);
-  ReleaseRef(ref);
+  PschQueryInternRelease(ref);
 }

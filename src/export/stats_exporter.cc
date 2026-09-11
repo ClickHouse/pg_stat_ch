@@ -549,17 +549,10 @@ int PschGetConsecutiveFailures(void) {
   }
 }
 
-// Exception barrier: the OTel exporter's destructors (gRPC stub teardown,
-// protobuf arena release) can throw. Catching here prevents the throw from
-// crossing the on_proc_exit chain.
+// Destructors and unique_ptr::reset() are noexcept, a throw during teardown
+// reaches PschTerminateHandler through std::terminate, never this frame
 void PschExporterShutdown(void) {
-  try {
-    g_exporter.exporter.reset();
-  } catch (const std::bad_alloc&) {
-    LogExporterWarning("exporter shutdown", "out of memory");
-  } catch (const std::exception& e) {
-    LogExporterWarning("exporter shutdown exception", e.what());
-  }
+  g_exporter.exporter.reset();
   elog(LOG, "pg_stat_ch: statistics exporter shutdown");
 }
 

@@ -64,8 +64,7 @@ void PschQueryInternShmemInit(LWLockPadded* lwlock_base);
 // (collisions are treated as a miss with no insert — exporting empty query
 // text is preferable to exporting the wrong SQL).
 //
-// Attaches lazily via PschDsaGetArea; returns InvalidDsaPointer if DSA is
-// unavailable.
+// Returns InvalidDsaPointer if DSA is unavailable
 dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, uint16 query_len);
 
 // Resolve `ref` into the caller's buffer and drop one reference.
@@ -83,6 +82,10 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
 //
 // Called by the bgworker (single consumer) on every dequeued event.
 void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len);
+
+// Release query reference left by an aborted enqueue without copying text
+// Free interned object when its last reference is released
+void PschQueryInternRelease(dsa_pointer ref);
 
 #ifdef __cplusplus
 }

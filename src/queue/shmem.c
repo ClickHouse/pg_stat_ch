@@ -90,6 +90,21 @@ static void HandleOverflow(void) {
 // dsa_pointers).  Verified by static assert in ring_entry.h.
 static const size_t kFixedPrefixSize = offsetof(PschRingEntry, err_message_dsa);
 
+// Reclaim strings left by an enqueue that failed before advancing head
+// Consumer cannot reach this slot until head advances, so overwriting it
+// would leak error text and retain an unused query reference
+// Clear each pointer before freeing it so an abort mid-cleanup leaks at most
+// one reference instead of double-freeing on retry
+static void ReclaimSlotStrings(PschRingEntry* slot) {
+  dsa_pointer err_message_dsa = slot->err_message_dsa;
+  slot->err_message_dsa = InvalidDsaPointer;
+  PschDsaFreeString(err_message_dsa);
+
+  dsa_pointer query_dsa = slot->query_dsa;
+  slot->query_dsa = InvalidDsaPointer;
+  PschQueryInternRelease(query_dsa);
+}
+
 // Check queue fullness and enqueue event if space available.
 // Called with lock held.  Returns true if event was enqueued.
 //
@@ -106,9 +121,20 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
     return false;
   }
 
+  // Consumer advances tail without our lock, so pair this read with its
+  // pg_write_barrier() in PschDequeueEvent: without a barrier a weakly ordered
+  // CPU can observe the new tail yet still read the freed string pointers the
+  // consumer cleared, double-freeing them below.  Slot writes below depend on
+  // the tail compare, so they cannot become visible before the tail read
+  pg_read_barrier();
+
   // Fast modulo via bitmask (requires power-of-2 capacity, enforced by GUC check)
   uint32 mask = capacity - 1;
   PschRingEntry* slot = &GetRingBuffer()[head & mask];
+
+  // Attach up front, a lazy attach between the pointer clear and the free could raise
+  PschDsaAttach();
+  ReclaimSlotStrings(slot);
 
   // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
   //    client_addr, lengths — everything before the variable-length data).
@@ -441,15 +467,27 @@ bool PschDequeueEvent(PschEvent* event) {
   uint32 mask = capacity - 1;
   PschRingEntry* slot = &GetRingBuffer()[tail & mask];
 
+  // Attach up front, a lazy attach after step 2 detaches the references could raise
+  PschDsaAttach();
+
   // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(event, slot, kFixedPrefixSize);
 
-  // 2. Resolve err_message (per-event DSA) and query text (shared interner).
-  PschDsaResolveString(slot->err_message_dsa, slot->err_message_len, event->err_message,
+  // 2. Detach each string reference before consuming it.  A FATAL exits with
+  //    status 1, which postmaster does not treat as a crash, so shmem survives
+  //    into the replacement worker: a slot left pointing at freed memory would
+  //    double-free the error message and drop a second interner reference.
+  //    Detaching one reference at a time bounds an abort mid-consume to
+  //    leaking that single reference.
+  dsa_pointer err_message_dsa = slot->err_message_dsa;
+  slot->err_message_dsa = InvalidDsaPointer;
+  PschDsaResolveString(err_message_dsa, event->err_message_len, event->err_message,
                        PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
-  PschQueryInternResolveAndRelease(slot->query_dsa, event->query, PSCH_MAX_QUERY_LEN,
-                                   &event->query_len);
+
+  dsa_pointer query_dsa = slot->query_dsa;
+  slot->query_dsa = InvalidDsaPointer;
+  PschQueryInternResolveAndRelease(query_dsa, event->query, PSCH_MAX_QUERY_LEN, &event->query_len);
 
   // CRITICAL: Write barrier ensures all reads and DSA frees complete before we
   // update tail.  Producers cannot reuse this slot until tail advances past it.
