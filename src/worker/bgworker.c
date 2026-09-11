@@ -202,7 +202,8 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
   // Store our PID for signaling (used by pg_stat_ch_flush())
   PschSetBgworkerPid(MyProcPid);
 
-  // Attach to DSA area eagerly so the first dequeue doesn't hit lazy init
+  // Attach in this C frame: an attach ERROR raised inside DequeueEvents would
+  // longjmp past its std::vector destructor
   PschDsaAttach();
 
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
