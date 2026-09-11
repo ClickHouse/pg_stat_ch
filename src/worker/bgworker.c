@@ -91,8 +91,7 @@ static void HandleConfigReload(void) {
 // Callback for bgworker process exit (registered via on_proc_exit).
 // Clear bgworker_pid before exporter teardown so a concurrent
 // pg_stat_ch_flush() cannot race a SIGUSR2 to a recycled PID.
-static void PschBgworkerShutdown(int code pg_attribute_unused(),
-                                 Datum arg pg_attribute_unused()) {
+static void PschBgworkerShutdown(int code pg_attribute_unused(), Datum arg pg_attribute_unused()) {
   PschSetBgworkerPid(0);
   PschExporterShutdown();
 }
@@ -187,7 +186,8 @@ static void RunExportCycle(uint32 wait_event) {
 
 void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
 #ifdef __GLIBC__
-  // Set before any gRPC/Arrow threads are created; cap glibc malloc arenas to reduce virtual memory usage.
+  // Set before any gRPC/Arrow threads are created; cap glibc malloc arenas to reduce virtual memory
+  // usage.
   if (mallopt(M_ARENA_MAX, 4) == 0) {
     elog(DEBUG1, "pg_stat_ch: mallopt(M_ARENA_MAX, 4) failed");
   }

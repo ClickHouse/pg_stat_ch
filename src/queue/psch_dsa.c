@@ -23,8 +23,7 @@ static bool psch_dsa_exit_hook_registered = false;
 // but because there is no containing DSM segment, PostgreSQL won't release it
 // automatically.  We must detach the backend-local handle and drop the shared
 // reference explicitly on backend/bgworker exit (see pgstat_detach_shmem()).
-static void PschDsaDetachOnExit(int code pg_attribute_unused(),
-                                Datum arg pg_attribute_unused()) {
+static void PschDsaDetachOnExit(int code pg_attribute_unused(), Datum arg pg_attribute_unused()) {
   if (psch_dsa != NULL) {
     dsa_detach(psch_dsa);
     psch_dsa = NULL;

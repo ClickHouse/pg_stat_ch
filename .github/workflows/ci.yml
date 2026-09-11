@@ -122,7 +122,7 @@ jobs:
       - name: Check formatting
         run: |
           sudo apt-get update && sudo apt-get install -y clang-format
-          find src include -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror
+          find src include -name '*.c' -o -name '*.cc' -o -name '*.h' | xargs clang-format --dry-run --Werror
 
   # Clang build: exercises -Werror=global-constructors on the C++ exporter
   # (Clang-only flag).  GCC has no equivalent, so we run a separate Clang job

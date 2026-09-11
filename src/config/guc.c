@@ -42,7 +42,7 @@ char* psch_debug_arrow_dump_dir = NULL;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
-static const struct config_enum_entry log_elevel_options[] = {
+static const struct config_enum_entry kLogElevelOptions[] = {
     {"debug5",  DEBUG5,  false},
     {"debug4",  DEBUG4,  false},
     {"debug3",  DEBUG3,  false},
@@ -60,9 +60,9 @@ static const struct config_enum_entry log_elevel_options[] = {
 // clang-format on
 
 // Check hook to ensure queue_capacity is a power of 2.
-// Parameters follow PostgreSQL GUC check hook signature.
-static bool check_psch_queue_capacity(int* newval, void** extra pg_attribute_unused(),
-                                      GucSource source pg_attribute_unused()) {
+// NOLINTNEXTLINE(readability-non-const-parameter): GucIntCheckHook signature
+static bool CheckPschQueueCapacity(int* newval, void** extra pg_attribute_unused(),
+                                   GucSource source pg_attribute_unused()) {
   // Check if value is positive and a power of 2
   if (*newval <= 0) {
     GUC_check_errdetail("pg_stat_ch.queue_capacity must be positive.");
@@ -203,7 +203,7 @@ void PschInitGuc(void) {
       1024, 4194304,      // min, max
       PGC_POSTMASTER,
       0,
-      check_psch_queue_capacity, NULL, NULL);
+      CheckPschQueueCapacity, NULL, NULL);
 
   DefineCustomIntVariable(
       "pg_stat_ch.string_area_size",
@@ -306,7 +306,7 @@ void PschInitGuc(void) {
       "'error' for errors only, or 'debug5' for all messages.",
       &psch_log_min_elevel,
       WARNING,
-      log_elevel_options,
+      kLogElevelOptions,
       PGC_SUSET,
       0,
       NULL, NULL, NULL);
