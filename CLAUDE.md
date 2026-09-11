@@ -15,6 +15,12 @@ Most third-party dependencies (OpenTelemetry, Arrow, OpenSSL, lz4, zstd) are man
 
 The ClickHouse client is **clickhouse-c** (`https://github.com/ClickHouse/clickhouse-c`), a header-only C library vendored as the `third_party/clickhouse-c` submodule. Its sole `CHC_IMPLEMENTATION` unit is `src/export/clickhouse_c_impl.c`; the C++ exporter includes the headers for declarations only.
 
+## Exporter Boundary
+
+`src/export/` builds as a separate static library (`pg_stat_ch_exporter`) with no PostgreSQL include path. Its only interface to the extension is the C header `src/export/psch_exporter.h`: opaque `PschExporter` handle, borrowed `PschExporterConfig` and `PschExportEvent` views, and a `PschExporterResult` filled without allocation. Every entry point catches all C++ exceptions.
+
+The C side (`src/worker/bgworker.c`, `src/worker/exporter_bridge.c`) owns dequeue, GUC snapshots, shared statistics, logging, retry backoff, and error recovery. PostgreSQL calls happen only after a library call returns, so `longjmp` never crosses C++ frames. `pg_stat_ch_exporter_check` links the library without PostgreSQL and exercises failure paths.
+
 **First-time setup:**
 ```bash
 git submodule update --init  # clone vcpkg + clickhouse-c
@@ -84,7 +90,10 @@ mise run test:isolation     # Isolation tests (race conditions)
 ## Architecture
 
 **Source files:**
-- `src/pg_stat_ch.cc` - Main entry point with `_PG_init()` and SQL functions
+- `src/pg_stat_ch.c` - Main entry point with `_PG_init()` and SQL functions
+- `src/worker/bgworker.c` - Background worker: drain loop, exporter handle ownership, statistics
+- `src/worker/exporter_bridge.c` - GUC snapshot, event views, diagnostics logging for exporter calls
+- `src/export/psch_exporter.h` - C interface of exporter library
 - `include/pg_stat_ch/pg_stat_ch.h` - Public header with version macro and declarations
 - `sql/pg_stat_ch--0.1.sql` - SQL function definitions
 

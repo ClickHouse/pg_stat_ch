@@ -131,13 +131,13 @@ pg_stat_ch.batch_max = 1
     $node_max->init();
     $node_max->append_conf('postgresql.conf', qq{
 shared_preload_libraries = 'pg_stat_ch'
-pg_stat_ch.batch_max = 100000
+pg_stat_ch.batch_max = 16384
 });
     $node_max->start();
     $node_max->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');
 
     my $batch_max = $node_max->safe_psql('postgres', 'SHOW pg_stat_ch.batch_max');
-    is($batch_max, '100000', 'Large batch_max 100000 accepted');
+    is($batch_max, '16384', 'Maximum batch_max 16384 accepted');
     $node_max->stop();
 };
 

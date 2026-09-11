@@ -111,9 +111,9 @@ If `queue_usage_pct` from `pg_stat_ch_stats()` is consistently above 80%:
    SELECT pg_reload_conf();
    ```
 
-2. **Increase batch size** -- drain more events per insert, capped at `pg_stat_ch.queue_capacity`:
+2. **Increase batch size** -- drain more events per insert, up to the maximum:
    ```sql
-   ALTER SYSTEM SET pg_stat_ch.batch_max = 131072;
+   ALTER SYSTEM SET pg_stat_ch.batch_max = 16384;
    SELECT pg_reload_conf();
    ```
 

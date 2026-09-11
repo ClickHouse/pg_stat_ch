@@ -186,14 +186,14 @@ Maximum number of events per ClickHouse insert.
 | | |
 |---|---|
 | **Type** | integer |
-| **Default** | `131072` |
+| **Default** | `16384` |
 | **Min** | `1` |
-| **Max** | `1000000` |
+| **Max** | `16384` |
 | **Context** | sighup |
 
-Limits the size of each batch sent to ClickHouse. The background worker drains up to `batch_max` events per insert, then loops until the queue is empty or below the threshold.
+Limits the size of each batch sent to ClickHouse. The background worker drains up to `batch_max` events per insert, then loops until the queue is empty or below the threshold. Larger backlogs drain as consecutive full batches within one cycle.
 
-Values above `pg_stat_ch.queue_capacity` are clamped: one drain pass cannot yield more events than the ring buffer holds. The dequeue buffer is sized to the events actually queued, roughly 4.6 KB each, so a full-queue drain at the default peaks near 600 MB in the worker.
+Values above `pg_stat_ch.queue_capacity` are clamped: one drain pass cannot yield more events than the ring buffer holds. The maximum bounds worker batch memory, roughly 5 KB per event, near 80 MB.
 
 ## ClickHouse connection
 

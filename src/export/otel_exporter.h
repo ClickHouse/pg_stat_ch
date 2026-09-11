@@ -5,6 +5,7 @@
 
 #include <memory>
 
-std::unique_ptr<StatsExporter> MakeOpenTelemetryExporter();
+std::unique_ptr<StatsExporter> MakeOpenTelemetryExporter(const ExporterConfig* config,
+                                                         Diagnostics* diag);
 
 #endif  // PG_STAT_CH_SRC_EXPORT_OTEL_EXPORTER_H_

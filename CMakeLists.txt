@@ -34,77 +34,64 @@ find_package(Arrow CONFIG REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 
-# Source layout: src/*.c is the C plugin layer; src/export/*.cc is the C++
-# exporter.  Keeping the PG ↔ extension boundary in pure C is what prevents
-# an uncaught C++ throw from unwinding across PG's longjmp frames.  Reject
-# anything that fell outside the two legitimate globs — C++ in the wrong
-# location, or any C++ extension we don't compile (.cxx/.cpp/.c++) that
-# would otherwise be silently dropped from the build.
-file(GLOB_RECURSE PG_STAT_CH_PLUGIN_SOURCES CONFIGURE_DEPENDS src/*.c)
-file(GLOB_RECURSE PG_STAT_CH_EXPORTER_SOURCES CONFIGURE_DEPENDS src/export/*.cc)
-
-# CONFIGURE_DEPENDS: re-run the glob on every build, not just at first
-# configure.  Without it, a newly-added src/foo.cc would silently slip past
-# the stray check until someone manually reconfigured.
-file(GLOB_RECURSE PG_STAT_CH_OFFENDING_SOURCES CONFIGURE_DEPENDS
-  src/*.cc src/*.cxx src/*.cpp src/*.c++
+# ---------------------------------------------------------------------------
+# Source ownership
+#
+# C PostgreSQL integration and C++ exporter library are separate targets with
+# explicit source lists. Exporter target has no PostgreSQL include path, so a
+# PostgreSQL header included from src/export fails to compile.
+# ---------------------------------------------------------------------------
+set(PG_STAT_CH_PLUGIN_SOURCES
+  src/pg_stat_ch.c
+  src/config/guc.c
+  src/hooks/hooks.c
+  src/hooks/query_normalize.c
+  src/hooks/query_normalize_state.c
+  src/queue/local_batch.c
+  src/queue/psch_dsa.c
+  src/queue/query_intern.c
+  src/queue/shmem.c
+  src/worker/bgworker.c
+  src/worker/exporter_bridge.c
 )
-list(FILTER PG_STAT_CH_OFFENDING_SOURCES
-  EXCLUDE REGEX "^${CMAKE_SOURCE_DIR}/src/export/.*\\.cc$")
-if(PG_STAT_CH_OFFENDING_SOURCES)
+set(PG_STAT_CH_EXPORTER_SOURCES
+  src/export/arrow_batch.cc
+  src/export/arrow_dump.cc
+  src/export/clickhouse_c_impl.c
+  src/export/clickhouse_exporter.cc
+  src/export/otel_arrow_exporter.cc
+  src/export/otel_exporter.cc
+  src/export/psch_exporter.cc
+)
+
+# Every source under src/ must belong to one target, so nothing is silently
+# dropped from the build or placed outside its boundary
+file(GLOB_RECURSE PG_STAT_CH_UNLISTED_SOURCES CONFIGURE_DEPENDS
+  RELATIVE ${CMAKE_SOURCE_DIR}
+  src/*.c src/*.cc src/*.cxx src/*.cpp src/*.c++
+)
+list(REMOVE_ITEM PG_STAT_CH_UNLISTED_SOURCES
+  ${PG_STAT_CH_PLUGIN_SOURCES} ${PG_STAT_CH_EXPORTER_SOURCES})
+if(PG_STAT_CH_UNLISTED_SOURCES)
   message(FATAL_ERROR
-    "pg_stat_ch: C++ sources are allowed only as *.cc under src/export/.  "
-    "Port to C, move under src/export/, or rename to .cc.  Offending:\n"
-    "  ${PG_STAT_CH_OFFENDING_SOURCES}")
+    "pg_stat_ch: sources not assigned to a target in CMakeLists.txt:\n"
+    "  ${PG_STAT_CH_UNLISTED_SOURCES}")
 endif()
 
-# Defense in depth on top of the C-only plugin lock above: when building the
-# exporter with Clang, forbid namespace-scope C++ variables that need a
-# non-trivial constructor or destructor.  -Wglobal-constructors catches both
-# halves at namespace scope: the load-time "std::thread above main" / "static
-# std::map<...> g_cache" hazard, and the exit-time "destructor runs after PG
-# has already torn down" hazard.
-#
-# Clang-only: GCC has no equivalent flag (the warning has been requested
-# upstream for years but never landed).  GCC builds rely on code review +
-# clang-tidy.  Our CI runs an additional Clang build job so regressions are
-# caught before they merge.
-#
-# -Wexit-time-destructors (the sibling warning) is intentionally NOT enabled
-# here.  At namespace scope, -Wglobal-constructors already covers what we
-# care about.  -Wexit-time-destructors additionally fires on function-local
-# statics — the two cached Arrow DataType shared_ptrs in arrow_batch.cc
-# would trip it today.  Not enabling it avoids those annotations for now;
-# easy to layer on later if a regression motivates it.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  set_source_files_properties(${PG_STAT_CH_EXPORTER_SOURCES}
-    PROPERTIES COMPILE_OPTIONS
-      "-Wglobal-constructors;-Werror=global-constructors")
-endif()
-
-# Build shared library
-add_library(pg_stat_ch MODULE
-  ${PG_STAT_CH_PLUGIN_SOURCES}
-  ${PG_STAT_CH_EXPORTER_SOURCES}
-)
-
-target_compile_features(pg_stat_ch PRIVATE cxx_std_17)
-target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
-# Force-include libintl.h before any source file so its declarations are parsed
-# before PostgreSQL's postgres.h defines gettext/ngettext as macros.  The include
-# guard then prevents re-inclusion when C++ <locale> pulls it in later (via Arrow).
-target_compile_options(pg_stat_ch PRIVATE -include libintl.h)
-target_include_directories(pg_stat_ch PRIVATE
-  include
-  src
-)
+# ---------------------------------------------------------------------------
+# Exporter library: C++ exporters plus clickhouse-c implementation unit.
+# Standard headers and exporter dependencies only.
+# ---------------------------------------------------------------------------
+add_library(pg_stat_ch_exporter STATIC ${PG_STAT_CH_EXPORTER_SOURCES})
+target_compile_features(pg_stat_ch_exporter PRIVATE cxx_std_17)
+target_compile_definitions(pg_stat_ch_exporter PRIVATE CHC_PROVIDE_STDLIB_ALLOC)
+target_include_directories(pg_stat_ch_exporter PRIVATE src)
 # clickhouse-c is vendored third-party code: include it as SYSTEM so its
 # header-only bodies don't trip the strict warning flags / -Werror below.
-target_include_directories(pg_stat_ch SYSTEM PRIVATE
+target_include_directories(pg_stat_ch_exporter SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/clickhouse-c
 )
-target_link_libraries(pg_stat_ch PRIVATE
-  PostgreSQLServer::PostgreSQLServer
+target_link_libraries(pg_stat_ch_exporter PRIVATE
   opentelemetry-cpp::api
   opentelemetry-cpp::sdk
   opentelemetry-cpp::otlp_grpc_metrics_exporter
@@ -112,8 +99,38 @@ target_link_libraries(pg_stat_ch PRIVATE
   opentelemetry-cpp::metrics
   opentelemetry-cpp::logs
   Arrow::arrow_static
+  OpenSSL::SSL OpenSSL::Crypto lz4::lz4 zstd::libzstd
 )
-target_link_libraries(pg_stat_ch PRIVATE OpenSSL::SSL OpenSSL::Crypto lz4::lz4 zstd::libzstd)
+# Forbid namespace-scope C++ objects needing construction or destruction:
+# they would run at dlopen and at PostgreSQL process exit. Clang-only flag, CI
+# runs a Clang build job for it
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(pg_stat_ch_exporter PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-Wglobal-constructors;-Werror=global-constructors>)
+endif()
+pg_stat_ch_set_warnings(pg_stat_ch_exporter)
+
+# Links exporter without PostgreSQL: a stray PostgreSQL symbol reference in
+# the library fails here at link time
+add_executable(pg_stat_ch_exporter_check test/exporter_check.c test/exporter_oom_check.cc)
+target_compile_features(pg_stat_ch_exporter_check PRIVATE cxx_std_17)
+target_include_directories(pg_stat_ch_exporter_check PRIVATE src)
+target_link_libraries(pg_stat_ch_exporter_check PRIVATE pg_stat_ch_exporter)
+set_target_properties(pg_stat_ch_exporter_check PROPERTIES LINKER_LANGUAGE CXX)
+
+# ---------------------------------------------------------------------------
+# Extension module: C PostgreSQL integration linking exporter library
+# ---------------------------------------------------------------------------
+add_library(pg_stat_ch MODULE ${PG_STAT_CH_PLUGIN_SOURCES})
+target_compile_definitions(pg_stat_ch PRIVATE PG_STAT_CH_VERSION="${GIT_VERSION}")
+target_include_directories(pg_stat_ch PRIVATE
+  include
+  src
+)
+target_link_libraries(pg_stat_ch PRIVATE
+  PostgreSQLServer::PostgreSQLServer
+  pg_stat_ch_exporter
+)
 # Hide static-archive symbols from dynamic export: PG dlopens RTLD_GLOBAL, so
 # exported dep symbols (grpc, Arrow, protobuf — ~45k) interpose across backend
 # and other extensions.  dlsym entry points live in our own objects and stay
@@ -126,6 +143,7 @@ pg_stat_ch_set_warnings(pg_stat_ch)
 set_target_properties(pg_stat_ch PROPERTIES
   PREFIX ""
   SUFFIX "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+  LINKER_LANGUAGE CXX
 )
 if(APPLE)
   # PGXS uses -bundle_loader on Darwin (Makefile.port) instead of
@@ -145,4 +163,3 @@ install(TARGETS pg_stat_ch LIBRARY DESTINATION ${PostgreSQLServer_PKGLIB_DIR})
 install(FILES pg_stat_ch.control DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 file(GLOB SQL_FILES sql/pg_stat_ch--*.sql)
 install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
-

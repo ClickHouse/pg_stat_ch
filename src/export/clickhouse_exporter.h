@@ -6,6 +6,7 @@
 
 #include <memory>
 
-std::unique_ptr<StatsExporter> MakeClickHouseExporter();
+std::unique_ptr<StatsExporter> MakeClickHouseExporter(const ExporterConfig* config,
+                                                      Diagnostics* diag);
 
 #endif  // PG_STAT_CH_SRC_EXPORT_CLICKHOUSE_EXPORTER_H_

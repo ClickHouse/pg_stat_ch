@@ -16,6 +16,7 @@
 // arrow_batch.cc path stays alive when the GUC is off — wire shape there
 // targets clickgres-platform's query_logs_arrow, which is a different
 // table from events_raw and retains the sprintf-decimal id encoding.
-std::unique_ptr<StatsExporter> MakeUnifiedArrowExporter();
+std::unique_ptr<StatsExporter> MakeUnifiedArrowExporter(const ExporterConfig* config,
+                                                        Diagnostics* diag);
 
 #endif  // PG_STAT_CH_SRC_EXPORT_OTEL_ARROW_EXPORTER_H_
