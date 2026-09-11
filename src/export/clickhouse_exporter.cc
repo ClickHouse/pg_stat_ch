@@ -1,14 +1,7 @@
 // pg_stat_ch ClickHouse exporter implementation
 
-extern "C" {
-#include "postgres.h"
-
-#include "miscadmin.h"  // ProcDiePending
-#include "utils/memutils.h"
-#include "utils/palloc.h"
-}
-
 #include <algorithm>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -42,14 +35,15 @@ extern "C" {
 #include "clickhouse-posix-io.h"
 #include "clickhouse.h"
 
-#include "config/guc.h"
+#include "export/clickhouse_exporter.h"
+#include "export/diagnostics.h"
+#include "export/exporter_config.h"
 #include "export/exporter_interface.h"
-#include "queue/shmem.h"  // PschRecordExportFailure
 
-// Abort blocking reads when bgworker receives SIGTERM
+// Abort blocking I/O once caller raises its cancellation flag
 extern "C" {
-static bool PschChcCheckCancel(void* /*ud*/) {
-  return ProcDiePending != 0;
+static bool PschChcCheckCancel(void* ud) {
+  return *static_cast<const volatile sig_atomic_t*>(ud) != 0;
 }
 }
 
@@ -60,24 +54,9 @@ constexpr int kSocketTimeoutSec = 30;
 // Bound packets consumed while awaiting response
 constexpr int kMaxRecvPackets = 4096;
 
-void* PschChcAlloc(void* ud, size_t bytes) {
-  return MemoryContextAllocExtended(static_cast<MemoryContext>(ud), bytes,
-                                    MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
-}
-
-void* PschChcRealloc(void* ud, void* p, size_t /*old_bytes*/, size_t new_bytes) {
-  if (p == nullptr)
-    return PschChcAlloc(ud, new_bytes);
-  return repalloc_extended(p, new_bytes, MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
-}
-
-void PschChcFree(void* /*ud*/, void* p, size_t /*bytes*/) {
-  if (p != nullptr)
-    pfree(p);
-}
-
-chc_alloc MakePschChcAlloc(MemoryContext cxt) {
-  return {cxt, PschChcAlloc, PschChcRealloc, PschChcFree};
+const chc_alloc& StdAlloc() {
+  static const chc_alloc kAlloc = chc_alloc_stdlib();
+  return kAlloc;
 }
 
 int64_t MonotonicNowUs() {
@@ -130,8 +109,6 @@ bool ConnectWithTimeout(int fd, const struct sockaddr* sa, socklen_t slen, int t
     save_errno = errno;
   }
 
-  // Always restore blocking mode, even on failure: keeps the helper safe to
-  // reuse and matches clickhouse-c I/O expectations
   if (fcntl(fd, F_SETFL, flags) < 0)
     return false;
   if (!ok)
@@ -145,24 +122,19 @@ struct ChcBlockBuilderDeleter {
 
 using ChcBlockBuilderPtr = std::unique_ptr<chc_block_builder, ChcBlockBuilderDeleter>;
 
+struct ChcTypeDeleter {
+  void operator()(chc_type* type) const { chc_type_destroy(type, &StdAlloc()); }
+};
+
+using ChcTypePtr = std::unique_ptr<chc_type, ChcTypeDeleter>;
+
 class ClickHouseExporter : public StatsExporter {
  public:
-  ClickHouseExporter() = default;
-  ~ClickHouseExporter() override {
-    CloseConnection();
-    ClearTypes();
-    if (batch_cxt_ != nullptr)
-      MemoryContextDelete(batch_cxt_);
-    if (conn_cxt_ != nullptr)
-      MemoryContextDelete(conn_cxt_);
-  }
+  ClickHouseExporter(const ExporterConfig* config, Diagnostics* diag)
+      : StatsExporter(config, diag) {}
+  ~ClickHouseExporter() override { CloseConnection(); }
 
-  // On the CH-native side, the LC/HC distinction is a hint: the server-side
-  // LowCardinality(<Type>) wrap (declared in the schema) is what actually
-  // applies dictionary encoding on write. clickhouse-c speaks plain typed
-  // columns either way, so StatLC* and StatHC* of the same C++ type produce
-  // identical wire bytes here. The new Arrow exporter is where the LC/HC
-  // distinction materially changes the wire shape (DictBuilder vs plain).
+  // Send plain types, ClickHouse applies schema-declared LowCardinality encoding
 
   // Low-cardinality columns
   shared_ptr<Column<string>> StatLCString(string_view name) final {
@@ -203,16 +175,13 @@ class ClickHouseExporter : public StatsExporter {
   void BeginBatch() final {
     for (auto& col : columns_)
       col->Clear();
-    exported_count_ = 0;
+    row_count_ = 0;
   }
-  void BeginRow() final { ++exported_count_; }
+  void BeginRow() final { ++row_count_; }
   bool CommitBatch() final;
 
   bool EstablishNewConnection() final;
-  bool IsConnected() const final { return client_ != nullptr; }
-  int NumConsecutiveFailures() const final { return consecutive_failures_; }
-  void ResetFailures() final { consecutive_failures_ = 0; }
-  int NumExported() const final { return exported_count_; }
+  bool IsConnected() const noexcept final { return client_ != nullptr; }
 
  private:
   // Buffers rows on Append, then Crunch materializes them into the chc block builder at commit;
@@ -297,24 +266,15 @@ class ClickHouseExporter : public StatsExporter {
   bool AppendFixed(string_view name, const char* type_name, const void* data, size_t n_rows);
   bool AppendString(string_view name, const uint64_t* offsets, const uint8_t* data, size_t n_rows);
 
-  bool RecordFailure(const char* context, const char* message, bool close_conn);
-  bool EnsureMemoryContexts();
-  bool MemoryContextsReady() const { return conn_cxt_ != nullptr && batch_cxt_ != nullptr; }
-  void ClearTypes();
-  void ResetBatchContext();
-  void ResetConnectionContext();
+  bool Fail(const char* context, std::string_view message, bool close_conn);
   bool TcpConnect(const char* host, int port);
   bool TlsConnect(const char* host);
   void CloseConnection();
   void SetReadDeadline();
   std::string BuildInsertQuery() const;
-  bool SendInsert(const chc_block_builder* bb, std::string& err_out);
-  bool RecvUntil(chc_packet_kind target, std::string& err_out);
+  bool SendInsert(const chc_block_builder* bb);
+  bool RecvUntil(chc_packet_kind target);
 
-  MemoryContext conn_cxt_ = nullptr;
-  MemoryContext batch_cxt_ = nullptr;
-  chc_alloc conn_al_{};
-  chc_alloc batch_al_{};
   chc_client* client_ = nullptr;
   int fd_ = -1;
   SSL_CTX* ssl_ctx_ = nullptr;
@@ -327,82 +287,15 @@ class ClickHouseExporter : public StatsExporter {
   chc_block_builder* bb_ = nullptr;
   chc_err build_err_{};
 
-  std::map<std::string, chc_type*, std::less<>> types_;
+  std::map<std::string, ChcTypePtr, std::less<>> types_;
   std::vector<shared_ptr<ChColumn>> columns_;
   std::map<std::string, size_t, std::less<>> col_index_;  // name -> index in columns_
   std::vector<std::string> col_names_;
-  int consecutive_failures_ = 0;
-  int exported_count_ = 0;
+  int row_count_ = 0;
 };
 
-// Sole longjmp source in the connection path: AllocSetContextCreate ereports on
-// OOM. Swallow it here so EstablishNewConnection stays a pure bool — callers
-// then need no PG_TRY frame around it. elog.c leaves CurrentMemoryContext at
-// ErrorContext after a caught error, so restore it before returning.
-bool ClickHouseExporter::EnsureMemoryContexts() {
-  if (MemoryContextsReady())
-    return true;
-
-  MemoryContext oldcontext = CurrentMemoryContext;
-  PG_TRY();
-  {
-    if (conn_cxt_ == nullptr)
-      conn_cxt_ = AllocSetContextCreate(TopMemoryContext, "pg_stat_ch clickhouse-c",
-                                        ALLOCSET_DEFAULT_SIZES);
-    if (batch_cxt_ == nullptr)
-      batch_cxt_ = AllocSetContextCreate(TopMemoryContext, "pg_stat_ch clickhouse-c batch",
-                                         ALLOCSET_DEFAULT_SIZES);
-  }
-  PG_CATCH();
-  {
-    MemoryContextSwitchTo(oldcontext);
-    if (batch_cxt_ != nullptr) {
-      MemoryContextDelete(batch_cxt_);
-      batch_cxt_ = nullptr;
-    }
-    if (conn_cxt_ != nullptr) {
-      MemoryContextDelete(conn_cxt_);
-      conn_cxt_ = nullptr;
-    }
-    conn_al_ = {};
-    batch_al_ = {};
-    EmitErrorReport();
-    FlushErrorState();
-    return false;
-  }
-  PG_END_TRY();
-
-  conn_al_ = MakePschChcAlloc(conn_cxt_);
-  batch_al_ = MakePschChcAlloc(batch_cxt_);
-  return true;
-}
-
-void ClickHouseExporter::ClearTypes() {
-  for (auto& kv : types_)
-    chc_type_destroy(kv.second, &conn_al_);
-  types_.clear();
-}
-
-void ClickHouseExporter::ResetBatchContext() {
-  if (batch_cxt_ != nullptr) {
-    MemoryContextReset(batch_cxt_);
-    batch_al_ = MakePschChcAlloc(batch_cxt_);
-  }
-}
-
-void ClickHouseExporter::ResetConnectionContext() {
-  ClearTypes();
-  if (conn_cxt_ != nullptr) {
-    MemoryContextReset(conn_cxt_);
-    conn_al_ = MakePschChcAlloc(conn_cxt_);
-  }
-}
-
-bool ClickHouseExporter::RecordFailure(const char* context, const char* message, bool close_conn) {
-  const char* m = message != nullptr ? message : "unknown failure";
-  elog(WARNING, "pg_stat_ch: %s: %s", context, m);
-  ++consecutive_failures_;
-  PschRecordExportFailure(m);
+bool ClickHouseExporter::Fail(const char* context, std::string_view message, bool close_conn) {
+  diag_->Fail(context, message);
   if (close_conn)
     CloseConnection();
   return false;
@@ -411,14 +304,15 @@ bool ClickHouseExporter::RecordFailure(const char* context, const char* message,
 const chc_type* ClickHouseExporter::ResolveType(const char* type_name) {
   auto it = types_.find(type_name);
   if (it != types_.end())
-    return it->second;
+    return it->second.get();
   chc_type* t = nullptr;
   chc_err err = {};
-  if (chc_type_parse(type_name, std::strlen(type_name), &conn_al_, &t, &err) != CHC_OK) {
+  if (chc_type_parse(type_name, std::strlen(type_name), &StdAlloc(), &t, &err) != CHC_OK) {
     build_err_ = err;
     return nullptr;
   }
-  types_.emplace(type_name, t);
+  ChcTypePtr type(t);
+  types_.emplace(type_name, std::move(type));
   return t;
 }
 
@@ -450,13 +344,13 @@ std::string ClickHouseExporter::BuildInsertQuery() const {
 
 void ClickHouseExporter::SetReadDeadline() {
   const int64_t dl = MonotonicNowUs() + static_cast<int64_t>(kSocketTimeoutSec) * 1000000;
-  if (psch_clickhouse_use_tls)
+  if (ssl_ != nullptr)
     chc_openssl_io_set_deadline(&openssl_io_, dl);
   else
     chc_posix_io_set_deadline(&posix_io_, dl);
 }
 
-bool ClickHouseExporter::RecvUntil(chc_packet_kind target, std::string& err_out) {
+bool ClickHouseExporter::RecvUntil(chc_packet_kind target) {
   struct PacketGuard {
     chc_client* client;
     chc_packet* packet;
@@ -467,50 +361,47 @@ bool ClickHouseExporter::RecvUntil(chc_packet_kind target, std::string& err_out)
     chc_packet pkt = {};
     chc_err err = {};
     if (chc_client_recv_packet(client_, &pkt, &err) != CHC_OK) {
-      err_out = err.msg[0] ? err.msg : "recv_packet failed";
-      return false;
+      return Fail("failed to insert to ClickHouse", err.msg[0] ? err.msg : "recv_packet failed",
+                  false);
     }
     PacketGuard guard{client_, &pkt};
     const chc_packet_kind kind = pkt.kind;
     if (kind == CHC_PKT_EXCEPTION) {
       if (pkt.exception != nullptr && pkt.exception->display_text != nullptr)
-        err_out.assign(pkt.exception->display_text, pkt.exception->display_text_len);
-      else
-        err_out = "server exception";
-      return false;
+        return Fail("failed to insert to ClickHouse",
+                    {pkt.exception->display_text, pkt.exception->display_text_len}, false);
+      return Fail("failed to insert to ClickHouse", "server exception", false);
     }
     if (kind == target)
       return true;
   }
-  err_out = "too many packets awaiting response";
-  return false;
+  return Fail("failed to insert to ClickHouse", "too many packets awaiting response", false);
 }
 
-bool ClickHouseExporter::SendInsert(const chc_block_builder* bb, std::string& err_out) {
+bool ClickHouseExporter::SendInsert(const chc_block_builder* bb) {
   chc_err err = {};
   SetReadDeadline();
 
   const std::string query = BuildInsertQuery();
   if (chc_client_send_query(client_, query.data(), query.size(), "", 0, &err) != CHC_OK) {
-    err_out = err.msg[0] ? err.msg : "send_query failed";
-    return false;
+    return Fail("failed to insert to ClickHouse", err.msg[0] ? err.msg : "send_query failed",
+                false);
   }
   // Server echoes a 0-row Data block describing the target columns.
-  if (!RecvUntil(CHC_PKT_DATA, err_out))
+  if (!RecvUntil(CHC_PKT_DATA))
     return false;
 
   if (chc_client_send_data(client_, bb, &err) != CHC_OK) {
-    err_out = err.msg[0] ? err.msg : "send_data failed";
-    return false;
+    return Fail("failed to insert to ClickHouse", err.msg[0] ? err.msg : "send_data failed", false);
   }
   // Empty trailing block terminates the INSERT stream.
   if (chc_client_send_data(client_, nullptr, &err) != CHC_OK) {
-    err_out = err.msg[0] ? err.msg : "send_data terminator failed";
-    return false;
+    return Fail("failed to insert to ClickHouse",
+                err.msg[0] ? err.msg : "send_data terminator failed", false);
   }
 
   SetReadDeadline();
-  return RecvUntil(CHC_PKT_END_OF_STREAM, err_out);
+  return RecvUntil(CHC_PKT_END_OF_STREAM);
 }
 
 bool ClickHouseExporter::CommitBatch() {
@@ -518,51 +409,39 @@ bool ClickHouseExporter::CommitBatch() {
     chc_block_builder*& slot;
     ~ActiveBuilder() { slot = nullptr; }
   };
-  struct BatchReset {
-    ClickHouseExporter* exporter;
-    ~BatchReset() { exporter->ResetBatchContext(); }
-  };
 
   try {
-    if (!MemoryContextsReady())
-      return RecordFailure("ClickHouse commit failed", "allocator not initialized", false);
+    if (client_ == nullptr)
+      return Fail("ClickHouse insert", "not connected", false);
 
-    BatchReset reset{this};
     chc_block_builder* raw_bb = nullptr;
     chc_err err = {};
-    if (chc_block_builder_init(&raw_bb, &batch_al_, &err) != CHC_OK) {
-      return RecordFailure("block builder init failed", err.msg[0] ? err.msg : "OOM", false);
-    }
+    if (chc_block_builder_init(&raw_bb, &StdAlloc(), &err) != CHC_OK)
+      return Fail("block builder init failed", err.msg[0] ? err.msg : "OOM", false);
     ChcBlockBuilderPtr bb(raw_bb);
 
     bb_ = bb.get();
     ActiveBuilder active{bb_};
 
-    if (client_ == nullptr && (!EstablishNewConnection() || client_ == nullptr)) {
-      return RecordFailure("ClickHouse connection failed", "connection not established", false);
-    }
-
     build_err_ = {};
     for (const auto& col : columns_) {
       if (!col->Crunch()) {
-        return RecordFailure("failed to build ClickHouse block",
-                             build_err_.msg[0] ? build_err_.msg : "block build failed", false);
+        return Fail("failed to build ClickHouse block",
+                    build_err_.msg[0] ? build_err_.msg : "block build failed", false);
       }
     }
 
-    elog(DEBUG1, "pg_stat_ch: Inserting Block to ClickHouse");
-    std::string emsg;
-    if (!SendInsert(bb.get(), emsg)) {
-      return RecordFailure("failed to insert to ClickHouse", emsg.c_str(), true);
+    if (!SendInsert(bb.get())) {
+      CloseConnection();
+      return false;
     }
 
-    consecutive_failures_ = 0;
-    elog(DEBUG1, "pg_stat_ch: exported %d events to ClickHouse", exported_count_);
+    diag_->AddExported(static_cast<uint32_t>(row_count_));
     return true;
   } catch (const std::bad_alloc&) {
-    return RecordFailure("ClickHouse commit failed", "out of memory", true);
+    return Fail("ClickHouse insert", "out of memory", true);
   } catch (const std::exception& e) {
-    return RecordFailure("ClickHouse commit failed", e.what(), true);
+    return Fail("ClickHouse insert", e.what(), true);
   }
 }
 
@@ -572,12 +451,13 @@ bool ClickHouseExporter::TcpConnect(const char* host, int port) {
   hints.ai_socktype = SOCK_STREAM;
   char port_s[16];
   snprintf(port_s, sizeof port_s, "%d", port);
+  char msg[256];
 
   struct addrinfo* res = nullptr;
   const int rc = getaddrinfo(host, port_s, &hints, &res);
   if (rc != 0) {
-    elog(WARNING, "pg_stat_ch: getaddrinfo(%s:%d): %s", host, port, gai_strerror(rc));
-    return false;
+    snprintf(msg, sizeof msg, "getaddrinfo(%s:%d): %s", host, port, gai_strerror(rc));
+    return Fail("ClickHouse connect", msg, false);
   }
 
   int fd = -1;
@@ -596,8 +476,8 @@ bool ClickHouseExporter::TcpConnect(const char* host, int port) {
   }
   freeaddrinfo(res);
   if (fd < 0) {
-    elog(WARNING, "pg_stat_ch: connect(%s:%d): %s", host, port, strerror(save_errno));
-    return false;
+    snprintf(msg, sizeof msg, "connect(%s:%d): %s", host, port, strerror(save_errno));
+    return Fail("ClickHouse connect", msg, false);
   }
 
   const int one = 1;
@@ -613,38 +493,26 @@ bool ClickHouseExporter::TcpConnect(const char* host, int port) {
 bool ClickHouseExporter::TlsConnect(const char* host) {
   // OpenSSL 1.1.0+ auto-initializes on first use; no explicit library init.
   ssl_ctx_ = SSL_CTX_new(TLS_client_method());
-  if (ssl_ctx_ == nullptr) {
-    elog(WARNING, "pg_stat_ch: SSL_CTX_new failed");
-    return false;
-  }
-  if (!psch_clickhouse_skip_tls_verify) {
+  if (ssl_ctx_ == nullptr)
+    return Fail("TLS setup", "SSL_CTX_new failed", false);
+  if (!config_->clickhouse_skip_tls_verify) {
     SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER, nullptr);
-    if (SSL_CTX_set_default_verify_paths(ssl_ctx_) != 1) {
-      elog(WARNING, "pg_stat_ch: could not load default CA certificates");
-      return false;
-    }
+    if (SSL_CTX_set_default_verify_paths(ssl_ctx_) != 1)
+      return Fail("TLS setup", "could not load default CA certificates", false);
   }
 
   ssl_ = SSL_new(ssl_ctx_);
-  if (ssl_ == nullptr) {
-    elog(WARNING, "pg_stat_ch: SSL_new failed");
-    return false;
-  }
-  if (SSL_set_tlsext_host_name(ssl_, host) != 1) {  // SNI
-    elog(WARNING, "pg_stat_ch: could not set TLS SNI host name");
-    return false;
-  }
-  if (!psch_clickhouse_skip_tls_verify) {
+  if (ssl_ == nullptr)
+    return Fail("TLS setup", "SSL_new failed", false);
+  if (SSL_set_tlsext_host_name(ssl_, host) != 1)  // SNI
+    return Fail("TLS setup", "could not set TLS SNI host name", false);
+  if (!config_->clickhouse_skip_tls_verify) {
     SSL_set_hostflags(ssl_, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-    if (SSL_set1_host(ssl_, host) != 1) {
-      elog(WARNING, "pg_stat_ch: could not set TLS verification host");
-      return false;
-    }
+    if (SSL_set1_host(ssl_, host) != 1)
+      return Fail("TLS setup", "could not set TLS verification host", false);
   }
-  if (SSL_set_fd(ssl_, fd_) != 1) {
-    elog(WARNING, "pg_stat_ch: SSL_set_fd failed");
-    return false;
-  }
+  if (SSL_set_fd(ssl_, fd_) != 1)
+    return Fail("TLS setup", "SSL_set_fd failed", false);
   ERR_clear_error();  // queue is per-thread, drop any residue from a prior retry
   if (SSL_connect(ssl_) != 1) {
     // cert-verify failures leave the error queue empty, so check vr first
@@ -658,8 +526,7 @@ bool ClickHouseExporter::TlsConnect(const char* host) {
     } else {
       snprintf(ebuf, sizeof ebuf, "SSL_connect failed");
     }
-    elog(WARNING, "pg_stat_ch: TLS handshake failed: %s", ebuf);
-    return false;
+    return Fail("TLS handshake failed", ebuf, false);
   }
   return true;
 }
@@ -682,60 +549,51 @@ void ClickHouseExporter::CloseConnection() {
     close(fd_);
     fd_ = -1;
   }
-  ResetConnectionContext();
 }
 
 bool ClickHouseExporter::EstablishNewConnection() {
-  if (!EnsureMemoryContexts())
-    return false;
   CloseConnection();
 
-  const char* host = psch_clickhouse_host != nullptr ? psch_clickhouse_host : "localhost";
-  const int port = psch_clickhouse_port;
+  const char* host =
+      config_->clickhouse_host.empty() ? "localhost" : config_->clickhouse_host.c_str();
+  const int port = config_->clickhouse_port;
 
   if (!TcpConnect(host, port))
     return false;
 
-  if (psch_clickhouse_use_tls) {
+  auto check_cancel = config_->cancel_flag != nullptr ? PschChcCheckCancel : nullptr;
+  void* cancel_ud = const_cast<void*>(static_cast<const volatile void*>(config_->cancel_flag));
+  if (config_->clickhouse_use_tls) {
     if (!TlsConnect(host)) {
       CloseConnection();
       return false;
     }
-    chc_openssl_io_init(&openssl_io_, &io_, ssl_, PschChcCheckCancel, nullptr);
+    chc_openssl_io_init(&openssl_io_, &io_, ssl_, check_cancel, cancel_ud);
   } else {
-    chc_posix_io_init(&posix_io_, &io_, fd_, PschChcCheckCancel, nullptr);
+    chc_posix_io_init(&posix_io_, &io_, fd_, check_cancel, cancel_ud);
   }
 
   chc_lz4_codec_init(&codec_);
 
   chc_client_opts opts = {};
   opts.client_name = "pg_stat_ch";
-  opts.database = psch_clickhouse_database != nullptr ? psch_clickhouse_database : "pg_stat_ch";
-  opts.user = psch_clickhouse_user != nullptr ? psch_clickhouse_user : "default";
-  opts.password = psch_clickhouse_password != nullptr ? psch_clickhouse_password : "";
+  opts.database =
+      config_->clickhouse_database.empty() ? "pg_stat_ch" : config_->clickhouse_database.c_str();
+  opts.user = config_->clickhouse_user.empty() ? "default" : config_->clickhouse_user.c_str();
+  opts.password = config_->clickhouse_password.c_str();
   opts.compression = CHC_COMP_LZ4;
   opts.codec = &codec_;
 
   SetReadDeadline();  // bound the Hello / Ping handshake reads
   chc_err err = {};
-  if (chc_client_init(&client_, &opts, &conn_al_, &io_, &err) != CHC_OK) {
-    elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s",
-         err.msg[0] ? err.msg : "init failed");
-    if (client_ != nullptr) {
-      chc_client_close(client_);
-      client_ = nullptr;
-    }
-    CloseConnection();
-    return false;
-  }
-
-  elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d%s", host, port,
-       psch_clickhouse_use_tls ? " (TLS)" : "");
+  if (chc_client_init(&client_, &opts, &StdAlloc(), &io_, &err) != CHC_OK)
+    return Fail("failed to connect to ClickHouse", err.msg[0] ? err.msg : "init failed", true);
   return true;
 }
 
 }  // namespace
 
-std::unique_ptr<StatsExporter> MakeClickHouseExporter() {
-  return std::make_unique<ClickHouseExporter>();
+std::unique_ptr<StatsExporter> MakeClickHouseExporter(const ExporterConfig* config,
+                                                      Diagnostics* diag) {
+  return std::make_unique<ClickHouseExporter>(config, diag);
 }

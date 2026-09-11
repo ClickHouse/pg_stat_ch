@@ -40,6 +40,7 @@ COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
 COPY src/ src/
+COPY test/exporter_check.c test/
 COPY sql/ sql/
 COPY pg_stat_ch.control ./
 # Vendored header-only clickhouse-c client (git submodule, must be checked out

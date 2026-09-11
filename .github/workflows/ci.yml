@@ -77,6 +77,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+      - name: Check exporter library without PostgreSQL
+        run: ./build/pg_stat_ch_exporter_check
+
       - name: Install extension
         run: sudo cmake --install build
 
@@ -168,3 +171,6 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Check exporter library without PostgreSQL
+        run: ./build/pg_stat_ch_exporter_check

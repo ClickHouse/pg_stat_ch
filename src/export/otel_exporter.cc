@@ -1,11 +1,4 @@
-// Direct-proto OTel exporter.
-//
-// Builds OTLP ExportLogsServiceRequest protobuf messages directly on a
-// google::protobuf::Arena, bypassing the OTel SDK entirely. Our bgworker
-// already owns batching and retry, so the SDK's pipelines are redundant.
-//
-// Arena allocation eliminates per-object malloc/free (the largest cost in the
-// SDK path) and makes batch destruction O(1) via Arena::Reset().
+// Build OTLP requests on protobuf arenas, worker owns batching and retry
 
 #include <opentelemetry/exporters/otlp/otlp_grpc_client.h>
 #include <opentelemetry/exporters/otlp/otlp_grpc_log_record_exporter_options.h>
@@ -15,7 +8,8 @@
 #include <opentelemetry/proto/logs/v1/logs.pb.h>
 #include <opentelemetry/proto/resource/v1/resource.pb.h>
 
-#include "config/guc.h"
+#include "export/diagnostics.h"
+#include "export/exporter_config.h"
 #include "export/exporter_interface.h"
 
 #include <google/protobuf/arena.h>
@@ -37,10 +31,12 @@ namespace common_pb = opentelemetry::proto::common::v1;
 namespace resource_pb = opentelemetry::proto::resource::v1;
 namespace collector_logs = opentelemetry::proto::collector::logs::v1;
 
-// Exposed with external linkage so unit tests can link against it directly.
-std::string GetAHostname(const char* fallback) {
-  if (psch_hostname != nullptr && *psch_hostname != '\0') {
-    return psch_hostname;
+namespace {
+
+// Configured hostname, else HOSTNAME environment, else gethostname
+std::string Hostname(const std::string& configured, const char* fallback) {
+  if (!configured.empty()) {
+    return configured;
   }
   const char* env = getenv("HOSTNAME");
   if (env != nullptr && *env != '\0') {
@@ -54,8 +50,6 @@ std::string GetAHostname(const char* fallback) {
   return fallback;
 }
 
-namespace {
-
 using string = std::string;
 using string_view = std::string_view;
 
@@ -65,11 +59,9 @@ std::shared_ptr<grpc::Channel> MakeOptimizedChannel(
     const otlp::OtlpGrpcLogRecordExporterOptions& opts) {
   grpc::ChannelArguments args;
 
-  // gzip — telemetry payloads with repeated attribute keys compress very well.
   args.SetCompressionAlgorithm(GRPC_COMPRESS_GZIP);
 
-  // Keepalive: the bgworker holds a persistent channel.  Without keepalive
-  // pings, idle periods cause silent TCP drops and surprise RPC failures.
+  // Detect idle connection drops before next export
   args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 30000);
   args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 10000);
   args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
@@ -122,13 +114,11 @@ size_t EstimateScalarAttrBytes(string_view key) {
   return kAttrOverheadBytes + key.size() + sizeof(int64_t);
 }
 
-// ---------------------------------------------------------------------------
-// Direct-proto exporter — no OTel SDK dependency on the hot path.
-// ---------------------------------------------------------------------------
 class OTelExporter : public StatsExporter {
  public:
+  OTelExporter(const ExporterConfig* config, Diagnostics* diag) : StatsExporter(config, diag) {}
+
   void BeginBatch() final {
-    exported_count_ = 0;
     batch_failed_ = false;
     ResetChunk();
   }
@@ -151,16 +141,7 @@ class OTelExporter : public StatsExporter {
 
   bool CommitBatch() final;
 
-  // -- Column factories (all write directly to the arena-allocated LogRecord) --
-  //
-  // OTel logs are flat attribute bags, so the LC/HC distinction collapses on
-  // this side — both StatLC* and StatHC* of the same wire type produce
-  // identical log attributes. The intent declared at the interface layer
-  // matters for downstream metric processors (LC -> eligible as dimension;
-  // HC -> log-attribute-only) but those decisions live in the collector
-  // config, not here.
-
-  // Low-cardinality columns
+  // OTLP logs use identical attributes for LC and HC columns
   shared_ptr<Column<string>> StatLCString(string_view name) final { return MakeStringCol(name); }
   shared_ptr<Column<uint8_t>> StatLCUInt8(string_view name) final {
     return MakeIntCol<uint8_t>(name);
@@ -195,10 +176,7 @@ class OTelExporter : public StatsExporter {
   shared_ptr<Column<string_view>> DbQueryTextColumn() final { return MakeSvCol("db.query.text"); }
 
   bool EstablishNewConnection() final;
-  bool IsConnected() const final { return stub_ != nullptr; }
-  int NumConsecutiveFailures() const final { return consecutive_failures_; }
-  void ResetFailures() final { consecutive_failures_ = 0; }
-  int NumExported() const final { return exported_count_; }
+  bool IsConnected() const noexcept final { return stub_ != nullptr; }
   bool SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows,
                       string_view block_format) final;
 
@@ -317,9 +295,14 @@ class OTelExporter : public StatsExporter {
   }
 
   void ResetChunk() {
+    // Drop arena-owned pointers before arena replacement can throw
+    request_ = nullptr;
+    scope_logs_ = nullptr;
+    current_record_ = nullptr;
+
     google::protobuf::ArenaOptions arena_opts;
-    arena_opts.initial_block_size = 65536;  // 64 KiB — skip many small doublings
-    arena_opts.max_block_size = 1048576;    // 1 MiB — sized for 3 MiB chunk budget
+    arena_opts.initial_block_size = 65536;  // 64 KiB
+    arena_opts.max_block_size = 1048576;    // 1 MiB
     arena_ = std::make_unique<google::protobuf::Arena>(arena_opts);
 
     request_ =
@@ -332,12 +315,16 @@ class OTelExporter : public StatsExporter {
     PopulateResource(resource_logs->mutable_resource());
     scope_logs_ = resource_logs->add_scope_logs();
     scope_logs_->mutable_scope()->set_name("pg_stat_ch");
-    scope_logs_->mutable_scope()->set_version(PG_STAT_CH_VERSION);
+    scope_logs_->mutable_scope()->set_version(config_->service_version);
   }
 
   bool FlushChunk() {
-    if (stub_ == nullptr || chunk_count_ == 0) {
+    if (chunk_count_ == 0) {
       return true;
+    }
+    if (stub_ == nullptr) {
+      diag_->Fail("OTLP export", "not connected");
+      return false;
     }
 
     auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
@@ -350,30 +337,24 @@ class OTelExporter : public StatsExporter {
     current_record_ = nullptr;
 
     if (status.ok()) {
-      exported_count_ += static_cast<int>(chunk_count_);
+      diag_->AddExported(static_cast<uint32_t>(chunk_count_));
       chunk_count_ = 0;
       chunk_bytes_ = 0;
       return true;
     }
 
-    LogExporterWarning("gRPC export failed", status.error_message().c_str());
-    RecordExporterFailure(status.error_message().c_str());
-    consecutive_failures_++;
+    diag_->Fail("gRPC export failed", status.error_message());
     return false;
   }
 
-  // block_format is the discriminator the central OTel collector's
-  // routingconnector matches on to fan batches between the legacy
-  // query_logs_arrow receiver path and the new events_raw receiver path.
-  // Empty string means "do not emit the attribute" (column-emission/OTLP
-  // logs path, no Arrow body).
-  static void PopulateResource(resource_pb::Resource* resource, string_view block_format = "") {
+  // Set block_format for collector routing between Arrow destinations
+  void PopulateResource(resource_pb::Resource* resource, string_view block_format = "") const {
     auto add = [&](string_view key, string_view val) {
       SetString(resource->add_attributes(), key, val);
     };
     add("service.name", "pg_stat_ch");
-    add("service.version", PG_STAT_CH_VERSION);
-    add("host.name", GetAHostname("postgres-primary"));
+    add("service.version", config_->service_version);
+    add("host.name", Hostname(config_->hostname, "postgres-primary"));
     if (!block_format.empty()) {
       add("pg_stat_ch.block_format", block_format);
     }
@@ -384,11 +365,11 @@ class OTelExporter : public StatsExporter {
     if (!endpoint.empty()) {
       grpc_opts_.endpoint = endpoint;
     }
-    grpc_opts_.timeout = std::chrono::milliseconds(psch_otel_log_delay_ms);
+    grpc_opts_.timeout = std::chrono::milliseconds(config_->otel_log_delay_ms);
 
-    max_chunk_bytes_ = std::max<size_t>(kMinBytesPerRecord, psch_otel_log_max_bytes);
+    max_chunk_bytes_ = std::max<size_t>(kMinBytesPerRecord, config_->otel_log_max_bytes);
     max_chunk_records_ = std::max<size_t>(
-        1, std::min<size_t>(psch_otel_log_batch_size, max_chunk_bytes_ / kMinBytesPerRecord));
+        1, std::min<size_t>(config_->otel_log_batch_size, max_chunk_bytes_ / kMinBytesPerRecord));
   }
 
   // gRPC state
@@ -396,8 +377,6 @@ class OTelExporter : public StatsExporter {
   std::unique_ptr<collector_logs::LogsService::StubInterface> stub_;
   size_t max_chunk_records_ = 1;
   size_t max_chunk_bytes_ = kMinBytesPerRecord;
-  int consecutive_failures_ = 0;
-  int exported_count_ = 0;
   bool batch_failed_ = false;
 
   // Per-chunk state (arena-allocated)
@@ -411,20 +390,17 @@ class OTelExporter : public StatsExporter {
 
 bool OTelExporter::EstablishNewConnection() {
   try {
-    const string endpoint =
-        (psch_otel_endpoint != nullptr && *psch_otel_endpoint != '\0') ? psch_otel_endpoint : "";
-
-    ConfigureLogExport(endpoint);
+    ConfigureLogExport(config_->otel_endpoint);
     auto channel = MakeOptimizedChannel(grpc_opts_);
     if (channel == nullptr) {
-      LogExporterWarning("OTel init failed", "invalid or empty OTLP endpoint");
+      diag_->Fail("OTel init failed", "invalid or empty OTLP endpoint");
       stub_.reset();
       return false;
     }
     stub_ = collector_logs::LogsService::NewStub(channel);
     return true;
   } catch (const std::exception& e) {
-    LogExporterWarning("OTel init failed", e.what());
+    diag_->Fail("OTel init failed", e.what());
     stub_.reset();
     return false;
   }
@@ -434,29 +410,22 @@ bool OTelExporter::CommitBatch() {
   if (batch_failed_) {
     return false;
   }
-
-  if (stub_ == nullptr) {
-    ResetFailures();
-    return true;
-  }
-
   try {
-    bool ok = FlushChunk();
-    if (ok) {
-      ResetFailures();
-    }
-    return ok;
+    return FlushChunk();
   } catch (const std::exception& e) {
-    LogExporterWarning("export exception", e.what());
-    RecordExporterFailure(e.what());
-    consecutive_failures_++;
+    diag_->Fail("OTLP export", e.what());
     return false;
   }
 }
 
 bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int num_rows,
                                   string_view block_format) {
-  if (stub_ == nullptr || ipc_data == nullptr || ipc_len == 0 || num_rows <= 0) {
+  if (stub_ == nullptr) {
+    diag_->Fail("Arrow batch export", "not connected");
+    return false;
+  }
+  if (ipc_data == nullptr || ipc_len == 0 || num_rows <= 0) {
+    diag_->Fail("Arrow batch export", "empty batch");
     return false;
   }
 
@@ -472,7 +441,7 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     PopulateResource(resource_logs->mutable_resource(), block_format);
     auto* scope_logs = resource_logs->add_scope_logs();
     scope_logs->mutable_scope()->set_name("pg_stat_ch");
-    scope_logs->mutable_scope()->set_version(PG_STAT_CH_VERSION);
+    scope_logs->mutable_scope()->set_version(config_->service_version);
 
     auto* record = scope_logs->add_log_records();
     const auto now_ns =
@@ -491,25 +460,20 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
                                                        std::move(arena), request, &response);
 
     if (status.ok()) {
-      exported_count_ += num_rows;
-      consecutive_failures_ = 0;
+      diag_->AddExported(static_cast<uint32_t>(num_rows));
       return true;
     }
-
-    LogExporterWarning("Arrow batch gRPC failed", status.error_message().c_str());
-    RecordExporterFailure(status.error_message().c_str());
-    consecutive_failures_++;
+    diag_->Fail("Arrow batch gRPC failed", status.error_message());
     return false;
   } catch (const std::exception& e) {
-    LogExporterWarning("Arrow batch export exception", e.what());
-    RecordExporterFailure(e.what());
-    consecutive_failures_++;
+    diag_->Fail("Arrow batch export", e.what());
     return false;
   }
 }
 
 }  // namespace
 
-std::unique_ptr<StatsExporter> MakeOpenTelemetryExporter() {
-  return std::make_unique<OTelExporter>();
+std::unique_ptr<StatsExporter> MakeOpenTelemetryExporter(const ExporterConfig* config,
+                                                         Diagnostics* diag) {
+  return std::make_unique<OTelExporter>(config, diag);
 }

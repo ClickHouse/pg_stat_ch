@@ -1,25 +1,4 @@
 // pg_stat_ch background worker implementation
-//
-// Signal handling notes:
-//
-// PostgreSQL uses SIGUSR1 for inter-process signaling via the "procsignal"
-// mechanism (storage/procsignal.h). Operations like DROP DATABASE use
-// ProcSignalBarrier to coordinate across all backends - they send SIGUSR1
-// and wait for each backend to acknowledge by calling ProcessProcSignalBarrier().
-//
-// We MUST use procsignal_sigusr1_handler for SIGUSR1. A previous bug used a
-// custom handler which prevented barrier acknowledgment, causing DROP DATABASE
-// to hang indefinitely. The fix:
-//   1. Use procsignal_sigusr1_handler for SIGUSR1 (handles barriers)
-//   2. Use SIGUSR2 for extension-specific immediate flush requests
-//   3. Add socket timeouts to ClickHouse connections as a safety net
-//
-// Signal assignments:
-//   SIGHUP  -> SignalHandlerForConfigReload (reload postgresql.conf)
-//   SIGTERM -> die() (graceful shutdown)
-//   SIGUSR1 -> procsignal_sigusr1_handler (PostgreSQL internal - barriers, etc.)
-//   SIGUSR2 -> HandleFlushSignal (extension-specific - immediate flush)
-//   SIGPIPE -> SIG_IGN (ignore broken pipe from network)
 
 #include "postgres.h"
 
@@ -32,6 +11,7 @@
 #include "storage/procsignal.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 #include "utils/wait_event.h"
 
 #include "queue/psch_dsa.h"
@@ -43,14 +23,27 @@
 #endif
 
 #include "config/guc.h"
-#include "export/stats_exporter.h"
+#include "export/psch_exporter.h"
 #include "worker/bgworker.h"
+#include "worker/exporter_bridge.h"
+
+// Exponential backoff after exporter failures
+static const int kBaseDelayMs = 1000;
+static const int kMaxDelayMs = 60000;
+static const int kMaxConsecutiveFailures = 10;
 
 // Custom wait event for pg_stat_activity visibility
 static uint32 psch_wait_event_main = 0;
 
-// SIGUSR2 handler: wake the worker for immediate flush.
-// Note: SIGUSR1 is reserved for PostgreSQL's procsignal mechanism.
+// Exporter handle, owned here and destroyed by PschBgworkerShutdown
+static PschExporter* exporter = NULL;
+static bool exporter_config_stale = false;
+static bool exporter_connected = false;
+static int consecutive_failures = 0;
+
+// Dequeued events and their exporter views, reset after every batch
+static MemoryContext batch_cxt = NULL;
+
 static void HandleFlushSignal(SIGNAL_ARGS) {
   (void)postgres_signal_arg;
   int save_errno = errno;
@@ -58,24 +51,12 @@ static void HandleFlushSignal(SIGNAL_ARGS) {
   errno = save_errno;
 }
 
-// Set up signal handlers before unblocking signals.
-// Pattern from worker_spi.c:158-163 and autovacuum.c.
-//
-// CRITICAL: We MUST use procsignal_sigusr1_handler for SIGUSR1.
-// This handler processes PostgreSQL's internal signals including:
-//   - PROCSIG_BARRIER: Global barrier for DROP DATABASE, DROP TABLESPACE, etc.
-//   - PROCSIG_CATCHUP_INTERRUPT: Shared invalidation catchup
-//   - PROCSIG_NOTIFY_INTERRUPT: LISTEN/NOTIFY
-//   - PROCSIG_LOG_MEMORY_CONTEXT: Memory context logging
-//   - PROCSIG_RECOVERY_CONFLICT_*: Standby recovery conflicts
-//
-// If we don't use this handler, operations that require barrier acknowledgment
-// (like DROP DATABASE) will hang indefinitely waiting for this worker.
+// Reserve SIGUSR1 for PostgreSQL barriers, including DROP DATABASE
 static void SetupSignalHandlers(void) {
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   pqsignal(SIGTERM, die);
-  pqsignal(SIGUSR1, procsignal_sigusr1_handler);  // REQUIRED for barriers
-  pqsignal(SIGUSR2, HandleFlushSignal);           // Extension-specific flush
+  pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+  pqsignal(SIGUSR2, HandleFlushSignal);
   pqsignal(SIGPIPE, SIG_IGN);
 }
 
@@ -84,24 +65,20 @@ static void HandleConfigReload(void) {
   if (ConfigReloadPending != 0) {
     ConfigReloadPending = 0;
     ProcessConfigFile(PGC_SIGHUP);
+    exporter_config_stale = true;
     elog(DEBUG1, "pg_stat_ch: configuration reloaded");
   }
 }
 
-// Callback for bgworker process exit (registered via on_proc_exit).
-// Clear bgworker_pid before exporter teardown so a concurrent
-// pg_stat_ch_flush() cannot race a SIGUSR2 to a recycled PID.
+// Clear published PID before teardown to prevent flush signals reaching a recycled PID
 static void PschBgworkerShutdown(int code pg_attribute_unused(), Datum arg pg_attribute_unused()) {
   PschSetBgworkerPid(0);
-  PschExporterShutdown();
+  PschExporterDestroy(exporter);
+  exporter = NULL;
+  elog(LOG, "pg_stat_ch: statistics exporter shutdown");
 }
 
-// Process pending signals: barriers, interrupts (SIGTERM/SIGINT), config reload.
-// Called after WaitLatch wakes and between batches in the drain loop.
 static void ProcessPendingSignals(void) {
-  // Barriers first: ProcSignalBarrierPending is set when operations like
-  // DROP DATABASE need all backends to acknowledge. Failing to process
-  // causes those operations to hang.
   if (ProcSignalBarrierPending) {
     ProcessProcSignalBarrier();
   }
@@ -109,34 +86,144 @@ static void ProcessPendingSignals(void) {
   HandleConfigReload();
 }
 
-// Drain the queue: loop exporting batches until a partial batch (< batch_max
-// clamped to queue capacity) indicates the queue is nearly empty. Each batch
-// gets its own PG_TRY/PG_CATCH so an error on batch N+1 doesn't lose batches
-// 1..N. Signals are processed between batches to stay responsive to SIGTERM,
-// barriers, and config reload.
-static void ExportBatchWithRecovery(void) {
+static void LogConnected(void) {
+  if (psch_use_otel) {
+    elog(LOG, "pg_stat_ch: connected to OTLP endpoint %s", psch_otel_endpoint);
+  } else {
+    elog(LOG, "pg_stat_ch: connected to ClickHouse at %s:%d%s", psch_clickhouse_host,
+         psch_clickhouse_port, psch_clickhouse_use_tls ? " (TLS)" : "");
+  }
+}
+
+// Track connection state reported by exporter, log transitions to connected
+static void NoteConnection(const PschExporterResult* result) {
+  if (result->connected && !exporter_connected) {
+    LogConnected();
+  }
+  exporter_connected = result->connected;
+}
+
+// Account a failed exporter call: diagnostics, shared statistics, backoff
+static void RecordFailure(const char* operation, PschExporterResult* result) {
+  PschLogExporterResult(operation, result);
+  if (result->status == PSCH_EXPORTER_FAILED) {
+    PschRecordExportFailure(result->error);
+    consecutive_failures++;
+  }
+}
+
+static void CreateExporter(void) {
+  PschExporterConfig config;
+  PschExporterResult result;
+
+  PschBuildExporterConfig(&config);
+  if (PschExporterCreate(&config, &exporter, &result) != PSCH_EXPORTER_OK) {
+    PschLogExporterResult("create exporter", &result);
+    ereport(FATAL, (errmsg("pg_stat_ch: exporter unavailable, bgworker will be restarted")));
+  }
+  exporter_config_stale = false;
+}
+
+// Apply reloaded GUCs, previous configuration stays in effect on rejection
+static void ReconfigureExporter(void) {
+  PschExporterConfig config;
+  PschExporterResult result;
+
+  PschBuildExporterConfig(&config);
+  PschExporterConfigure(exporter, &config, &result);
+  PschLogExporterResult("configure exporter", &result);
+  exporter_config_stale = false;
+}
+
+// Connect if needed. False means back off without dequeuing
+static bool ConnectExporter(void) {
+  PschExporterResult result;
+  PschExporterStatus status = PschExporterConnect(exporter, &result);
+
+  NoteConnection(&result);
+  if (status != PSCH_EXPORTER_OK) {
+    RecordFailure("connect", &result);
+    return false;
+  }
+  PschLogExporterResult("connect", &result);
+  return true;
+}
+
+// Dequeue one batch and export it. True when a full batch was exported, so
+// queue may hold more
+static bool ExportBatch(void) {
+  int batch_max = PschEffectiveBatchMax();
+  int capacity = Min(batch_max, (int)PschQueueDepth());
+  if (capacity == 0) {
+    return false;
+  }
+
+  MemoryContext oldcxt = MemoryContextSwitchTo(batch_cxt);
+  PschEvent* events = palloc(capacity * sizeof(PschEvent));
+  PschExportEvent* views = palloc(capacity * sizeof(PschExportEvent));
+  MemoryContextSwitchTo(oldcxt);
+
+  int count = 0;
+  while (count < capacity && PschDequeueEvent(&events[count])) {
+    count++;
+  }
+  for (int i = 0; i < count; i++) {
+    PschToExportEvent(&events[i], &views[i]);
+  }
+
+  bool full_batch_exported = false;
+  if (count > 0) {
+    PschExporterResult result;
+    PschExporterStatus status = PschExporterExport(exporter, views, count, &result);
+
+    NoteConnection(&result);
+    if (status == PSCH_EXPORTER_OK) {
+      PschLogExporterResult("export", &result);
+      if (psch_shared_state != NULL) {
+        pg_atomic_fetch_add_u64(&psch_shared_state->exported, result.exported);
+      }
+      PschRecordExportSuccess();
+      consecutive_failures = 0;
+      full_batch_exported = count == batch_max;
+    } else {
+      RecordFailure("export", &result);
+      elog(DEBUG1, "pg_stat_ch: %u of %d events accepted before failure", result.exported, count);
+    }
+  }
+
+  MemoryContextReset(batch_cxt);
+  return full_batch_exported;
+}
+
+// Drain queue in bounded batches until it runs short, export fails, or worker
+// is disabled. A PostgreSQL error inside one batch is reported and ends this pass
+static void DrainQueue(void) {
   pgstat_report_activity(STATE_RUNNING, "exporting to ClickHouse");
 
   for (;;) {
-    // volatile: required because PG_TRY/PG_CATCH uses setjmp/longjmp.
-    // Without it, the compiler may keep 'exported' in a register that
-    // gets clobbered on longjmp, making the value undefined in PG_CATCH.
-    volatile int exported = 0;
+    MemoryContext oldcxt = CurrentMemoryContext;
+    volatile bool more = false;
 
     PG_TRY();
-    { exported = PschExportBatch(); }
+    {
+      if (exporter_config_stale) {
+        ReconfigureExporter();
+      }
+      more = ConnectExporter() && ExportBatch();
+    }
     PG_CATCH();
     {
+      MemoryContextSwitchTo(oldcxt);
       EmitErrorReport();
       FlushErrorState();
+      MemoryContextReset(batch_cxt);
       elog(WARNING, "pg_stat_ch: export error, will retry");
     }
     PG_END_TRY();
 
-    if (exported < PschEffectiveBatchMax()) {
+    if (!more) {
       break;
     }
-
     ProcessPendingSignals();
     if (!psch_enabled) {
       break;
@@ -155,23 +242,26 @@ static uint32 InitializeWaitEvent(void) {
 #endif
 }
 
-// Calculate sleep time with exponential backoff on failures
+// Exponential backoff: base * 2^(failures-1), capped
+static int RetryDelayMs(void) {
+  if (consecutive_failures <= 0) {
+    return 0;
+  }
+  int capped_failures = Min(consecutive_failures, kMaxConsecutiveFailures);
+  return Min(kBaseDelayMs * (1 << (capped_failures - 1)), kMaxDelayMs);
+}
+
 static int CalculateSleepMs(void) {
   int sleep_ms = psch_flush_interval_ms;
-  int failures = PschGetConsecutiveFailures();
-  if (failures > 0) {
-    int backoff_ms = PschGetRetryDelayMs();
-    sleep_ms = (backoff_ms > sleep_ms) ? backoff_ms : sleep_ms;
-    elog(DEBUG1, "pg_stat_ch: %d consecutive failures, sleeping %d ms", failures, sleep_ms);
+  if (consecutive_failures > 0) {
+    sleep_ms = Max(RetryDelayMs(), sleep_ms);
+    elog(DEBUG1, "pg_stat_ch: %d consecutive failures, sleeping %d ms", consecutive_failures,
+         sleep_ms);
   }
   return sleep_ms;
 }
 
-// Run one export cycle: sleep, process signals, then drain queue if enabled.
-//
-// Note on blocking: If we're blocked in ClickHouse network I/O when a barrier
-// signal arrives, we can't process it until the I/O completes. The socket
-// timeouts configured in stats_exporter.cc (30 seconds) bound this delay.
+// Process PostgreSQL signals between synchronous exporter calls
 static void RunExportCycle(uint32 wait_event) {
   int sleep_ms = CalculateSleepMs();
   (void)WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sleep_ms, wait_event);
@@ -180,14 +270,13 @@ static void RunExportCycle(uint32 wait_event) {
   ProcessPendingSignals();
 
   if (psch_enabled) {
-    ExportBatchWithRecovery();
+    DrainQueue();
   }
 }
 
 void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
 #ifdef __GLIBC__
-  // Set before any gRPC/Arrow threads are created; cap glibc malloc arenas to reduce virtual memory
-  // usage.
+  // Cap glibc arenas before gRPC/Arrow threads allocate
   if (mallopt(M_ARENA_MAX, 4) == 0) {
     elog(DEBUG1, "pg_stat_ch: mallopt(M_ARENA_MAX, 4) failed");
   }
@@ -196,7 +285,7 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
   BackgroundWorkerUnblockSignals();
   BackgroundWorkerInitializeConnection("postgres", NULL, 0);
 
-  // Register cleanup callback for graceful shutdown
+  // Register cleanup before creating exporter
   on_proc_exit(PschBgworkerShutdown, 0);
 
   // Store our PID for signaling (used by pg_stat_ch_flush())
@@ -205,6 +294,9 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
   // Attach to DSA area eagerly so the first dequeue doesn't hit lazy init
   PschDsaAttach();
 
+  batch_cxt =
+      AllocSetContextCreate(TopMemoryContext, "pg_stat_ch export batch", ALLOCSET_DEFAULT_SIZES);
+
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
 
   // Register custom wait event for pg_stat_activity visibility
@@ -212,13 +304,12 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
     psch_wait_event_main = InitializeWaitEvent();
   }
 
-  // Initialize ClickHouse exporter and verify connectivity
-  pgstat_report_activity(STATE_RUNNING, "initializing ClickHouse exporter");
-  if (PschExporterInit()) {
-    elog(LOG, "pg_stat_ch: ClickHouse connectivity verified on startup");
+  pgstat_report_activity(STATE_RUNNING, "initializing exporter");
+  CreateExporter();
+  if (ConnectExporter()) {
+    elog(LOG, "pg_stat_ch: exporter connectivity verified on startup");
   } else {
-    elog(WARNING,
-         "pg_stat_ch: failed to connect to ClickHouse on startup, will retry on first export");
+    elog(WARNING, "pg_stat_ch: failed to connect on startup, will retry on first export");
   }
   pgstat_report_activity(STATE_IDLE, NULL);
 
