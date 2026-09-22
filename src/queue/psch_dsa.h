@@ -29,9 +29,9 @@
 // LIFECYCLE
 // =========
 //  1. Postmaster: PschDsaInit()  — dsa_create_in_place, dsa_pin, dsa_detach
-//  2. Backends:   PschDsaAllocString() calls PschDsaAttach() lazily on first use
-//  3. Bgworker:   PschDsaAttach() eagerly at startup, then PschDsaResolveString()
-//                 on each dequeue (resolves pointer + frees DSA memory)
+//  2. Backends:   PschDsaAllocString() attaches on first enqueue
+//  3. Bgworker:   Attach before consuming queue slots
+//  String helpers reuse process-local attachment until process exit
 //
 // CONCURRENCY
 // ===========
@@ -103,14 +103,10 @@ Size PschDsaShmemSize(void);
 // PschDsaShmemSize() bytes available.
 void PschDsaInit(PschSharedState* state, void* dsa_place);
 
-// Attach to the DSA area (lazy, idempotent).
-// Must be called before PschDsaAllocString / PschDsaResolveString.
-// Backends attach lazily on first enqueue; bgworker attaches eagerly at startup.
-void PschDsaAttach(void);
-
-// Get the process-local DSA handle, attaching lazily if needed.
-// Returns nullptr if shared state / raw_dsa_area is unavailable.
-dsa_area* PschDsaGetArea(void);
+// Attach once per process, return existing handle on subsequent calls
+// Return NULL if shared state or raw_dsa_area is unavailable
+// Call before clearing shared references, attachment can raise ERROR
+dsa_area* PschDsaAttach(void);
 
 // Allocate a DSA string from an inline buffer.
 // Returns InvalidDsaPointer on zero-length, unavailable DSA handle, or allocation

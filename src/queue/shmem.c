@@ -114,10 +114,12 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(slot, event, kFixedPrefixSize);
 
-  // 2. Allocate DSA for err_message and query text
-  slot->err_message_dsa =
+  // 2. Allocate DSA for err_message and query text.  Store pointers in slot
+  //    only right before head advances, so slots outside [tail, head) never
+  //    hold references
+  dsa_pointer err_message_dsa =
       PschDsaAllocString(event->err_message, event->err_message_len, PSCH_MAX_ERR_MSG_LEN);
-  if (event->err_message_len > 0 && !DsaPointerIsValid(slot->err_message_dsa)) {
+  if (event->err_message_len > 0 && !DsaPointerIsValid(err_message_dsa)) {
     slot->err_message_len = 0;  // Lost string on OOM — numeric data preserved
   }
 
@@ -125,20 +127,21 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   // normalized queries share a single DSA-allocated body.  See query_intern.h
   // for the design rationale.  On miss + DSA OOM, miss + hash-full, or hash
   // collision we drop the query bytes (numeric data is preserved).
+  dsa_pointer query_dsa = InvalidDsaPointer;
   if (event->query_len > 0) {
     // Clamp the input length to what we'd have stored anyway, so the intern
     // key doesn't include trailing bytes the consumer would have truncated.
     uint16 clamped_len = Min(event->query_len, (uint16)(PSCH_MAX_QUERY_LEN - 1));
-    slot->query_dsa =
-        PschQueryInternAcquire(event->dbid, event->queryid, event->query, clamped_len);
-    if (!DsaPointerIsValid(slot->query_dsa)) {
+    query_dsa = PschQueryInternAcquire(event->dbid, event->queryid, event->query, clamped_len);
+    if (!DsaPointerIsValid(query_dsa)) {
       slot->query_len = 0;
     } else {
       slot->query_len = clamped_len;
     }
-  } else {
-    slot->query_dsa = InvalidDsaPointer;
   }
+
+  slot->err_message_dsa = err_message_dsa;
+  slot->query_dsa = query_dsa;
 
   // CRITICAL: Memory barrier ensures the event data is written to shared memory
   // before we update head. Without this, the consumer might read stale data on
@@ -441,15 +444,24 @@ bool PschDequeueEvent(PschEvent* event) {
   uint32 mask = capacity - 1;
   PschRingEntry* slot = &GetRingBuffer()[tail & mask];
 
+  // Attach up front, a lazy attach after step 2 detaches the references could raise
+  PschDsaAttach();
+
   // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(event, slot, kFixedPrefixSize);
 
-  // 2. Resolve err_message (per-event DSA) and query text (shared interner).
-  PschDsaResolveString(slot->err_message_dsa, slot->err_message_len, event->err_message,
+  // 2. Clear each reference before consuming it.  ExportBatchWithRecovery
+  //    catches ERROR and retries this slot, so a stale pointer would be freed
+  //    twice.  An abort mid-consume leaks at most one reference
+  dsa_pointer err_message_dsa = slot->err_message_dsa;
+  slot->err_message_dsa = InvalidDsaPointer;
+  PschDsaResolveString(err_message_dsa, event->err_message_len, event->err_message,
                        PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
-  PschQueryInternResolveAndRelease(slot->query_dsa, event->query, PSCH_MAX_QUERY_LEN,
-                                   &event->query_len);
+
+  dsa_pointer query_dsa = slot->query_dsa;
+  slot->query_dsa = InvalidDsaPointer;
+  PschQueryInternResolveAndRelease(query_dsa, event->query, PSCH_MAX_QUERY_LEN, &event->query_len);
 
   // CRITICAL: Write barrier ensures all reads and DSA frees complete before we
   // update tail.  Producers cannot reuse this slot until tail advances past it.
