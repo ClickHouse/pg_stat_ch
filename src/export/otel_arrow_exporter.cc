@@ -371,7 +371,7 @@ class OTelArrowExporter : public StatsExporter {
   // BeginRow so stats_exporter.cc's column-emission loop doesn't have to
   // know about them:
   //
-  // - 8 envelope columns + read_replica_type: per-process constants from
+  // - Envelope columns: per-process constants from
   //   pg_stat_ch.extra_attributes (or "none" default for read_replica_type
   //   per clickgres-platform's convention).
   // - service_version: PG_STAT_CH_VERSION macro, not from extra_attributes.
@@ -403,6 +403,7 @@ class OTelArrowExporter : public StatsExporter {
 
   // Synthesized columns (populated implicitly in BeginRow).
   shared_ptr<Column<string_view>> inst_ubid_;
+  shared_ptr<Column<string_view>> inst_uuid_;
   shared_ptr<Column<string_view>> srv_ubid_;
   shared_ptr<Column<string_view>> srv_role_;
   shared_ptr<Column<string_view>> region_;
@@ -414,6 +415,7 @@ class OTelArrowExporter : public StatsExporter {
 
   // Cached for per-row appends.
   std::string instance_ubid_val_;
+  std::string instance_uuid_val_;
   std::string server_ubid_val_;
   std::string server_role_val_;
   std::string region_val_;
@@ -427,6 +429,7 @@ class OTelArrowExporter : public StatsExporter {
 void OTelArrowExporter::RegisterEnvelopeColumns() {
   // OTel resource attributes from psch_extra_attributes.
   inst_ubid_ = MakeUtf8Sv("instance_ubid");
+  inst_uuid_ = MakeUtf8Sv("instance_uuid");
   srv_ubid_ = MakeUtf8Sv("server_ubid");
   srv_role_ = MakeDictSv("server_role");
   read_replica_type_ = MakeDictSv("read_replica_type");
@@ -438,6 +441,7 @@ void OTelArrowExporter::RegisterEnvelopeColumns() {
 
   const ExtraAttrs attrs(psch_extra_attributes);
   instance_ubid_val_ = attrs.Get("instance_ubid");
+  instance_uuid_val_ = attrs.Get("instance_uuid");
   server_ubid_val_ = attrs.Get("server_ubid");
   server_role_val_ = attrs.Get("server_role");
   region_val_ = attrs.Get("region");
@@ -488,6 +492,7 @@ void OTelArrowExporter::BeginRow() {
   // Synthesized columns fire here so the call site doesn't need to know
   // about them.
   inst_ubid_->Append(instance_ubid_val_);
+  inst_uuid_->Append(instance_uuid_val_);
   srv_ubid_->Append(server_ubid_val_);
   srv_role_->Append(server_role_val_);
   read_replica_type_->Append(read_replica_type_val_);

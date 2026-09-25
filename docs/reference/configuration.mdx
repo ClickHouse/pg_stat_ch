@@ -60,6 +60,24 @@ Override the machine hostname sent with events.
 
 Useful in containerized environments where the system hostname is a random container ID. Set this to a stable identifier like the pod name or instance ID.
 
+### `pg_stat_ch.extra_attributes`
+
+Resource columns included in both Arrow export formats, expressed as semicolon-separated `key:value` pairs.
+
+| | |
+|---|---|
+| **Type** | string |
+| **Default** | `''` |
+| **Context** | sighup |
+
+Supply `instance_uuid` with the Postgres service's canonical UUID alongside the existing `instance_ubid` and server attributes:
+
+```ini
+pg_stat_ch.extra_attributes = 'instance_uuid:01234567-89ab-8ad0-9234-56789abcdef0;instance_ubid:pg04hmasw9ne4j8t5cy4tqkff1;server_role:primary'
+```
+
+The producer copies the UUID into a UTF-8 `instance_uuid` column; it does not derive it from the UBID. An omitted value produces an empty string. The provisioner must supply the UUID, and Arrow receivers must support the new column before the producer is rolled out. The bundled ClickHouse migration adds `instance_uuid String DEFAULT ''` to `events_raw`; external schemas need their own migration.
+
 ### `pg_stat_ch.log_min_elevel`
 
 Minimum error severity level to capture via the `emit_log_hook`.

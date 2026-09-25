@@ -125,35 +125,39 @@ subtest 'multiple dump files for large batch' => sub {
 # Test 3: Validate IPC file contents with pyarrow (if available)
 # ============================================================================
 SKIP: {
-    skip 'uv not installed (needed for pyarrow validation)', 1 unless $have_uv;
+    skip 'uv not installed (needed for pyarrow validation)', 2 unless $have_uv;
 
-    subtest 'ipc file contents valid' => sub {
-        # Clean and produce a fresh dump.
-        unlink glob("$dump_dir/*.ipc");
+    for my $instance_uuid ('', '01234567-89ab-8ad0-9234-56789abcdef0') {
+        subtest 'ipc file contents valid with ' . ($instance_uuid eq '' ? 'unset UUID' : 'configured UUID') => sub {
+            $node->safe_psql('postgres',
+                "ALTER SYSTEM SET pg_stat_ch.extra_attributes = 'instance_uuid:$instance_uuid'");
+            $node->restart();
+            # Clean and produce a fresh dump.
+            unlink glob("$dump_dir/*.ipc");
 
-        psch_reset_stats($node);
+            psch_reset_stats($node);
 
-        # Run a distinctive query we can look for.
-        $node->safe_psql('postgres',
-            'CREATE TABLE IF NOT EXISTS arrow_test(id int)');
-        $node->safe_psql('postgres',
-            "INSERT INTO arrow_test VALUES (42), (43), (44)");
-        $node->safe_psql('postgres', 'SELECT * FROM arrow_test');
-        $node->safe_psql('postgres', 'DROP TABLE arrow_test');
+            # Run a distinctive query we can look for.
+            $node->safe_psql('postgres',
+                'CREATE TABLE IF NOT EXISTS arrow_test(id int)');
+            $node->safe_psql('postgres',
+                "INSERT INTO arrow_test VALUES (42), (43), (44)");
+            $node->safe_psql('postgres', 'SELECT * FROM arrow_test');
+            $node->safe_psql('postgres', 'DROP TABLE arrow_test');
 
-        # Wait for dump.
-        my @ipc_files;
-        my $deadline = time() + 10;
-        while (time() < $deadline) {
-            @ipc_files = glob("$dump_dir/*.ipc");
-            last if @ipc_files > 0;
-            select(undef, undef, undef, 0.2);
-        }
+            # Wait for dump.
+            my @ipc_files;
+            my $deadline = time() + 10;
+            while (time() < $deadline) {
+                @ipc_files = glob("$dump_dir/*.ipc");
+                last if @ipc_files > 0;
+                select(undef, undef, undef, 0.2);
+            }
 
-        cmp_ok(scalar @ipc_files, '>=', 1, 'IPC dump file present for validation');
+            cmp_ok(scalar @ipc_files, '>=', 1, 'IPC dump file present for validation');
 
-        # Validate with pyarrow via uv inline script.
-        my $validation_script = <<'PYEOF';
+            # Validate with pyarrow via uv inline script.
+            my $validation_script = <<'PYEOF';
 # /// script
 # requires-python = ">=3.10"
 # dependencies = ["pyarrow"]
@@ -166,13 +170,18 @@ errors = []
 total_rows = 0
 schema = None
 
-for path in sys.argv[1:]:
+expected_uuid = sys.argv[1]
+
+for path in sys.argv[2:]:
     try:
         with open(path, 'rb') as f:
             reader = pa.ipc.open_stream(f)
             schema = reader.schema
             for batch in reader:
                 total_rows += batch.num_rows
+                uuid_column = batch.column(schema.get_field_index("instance_uuid"))
+                assert uuid_column.type == pa.utf8(), f"instance_uuid type wrong: {uuid_column.type}"
+                assert all(value == expected_uuid for value in uuid_column.to_pylist()), "instance_uuid was not preserved"
     except Exception as e:
         errors.append(f"{path}: {e}")
 
@@ -186,7 +195,7 @@ expected = [
     'duration_us', 'rows', 'pid', 'query_id',
     'shared_blks_hit', 'shared_blks_read',
     'wal_records', 'wal_bytes',
-    'service_version', 'region', 'read_replica_type',
+    'service_version', 'region', 'read_replica_type', 'instance_uuid',
 ]
 missing = [c for c in expected if schema.get_field_index(c) == -1]
 if missing:
@@ -211,27 +220,28 @@ assert rr_field.type.value_type == pa.utf8(), f"read_replica_type dict value typ
 print(f"OK:fields={len(schema)},rows={total_rows}")
 PYEOF
 
-        # Write script to temp file.
-        my $script_path = "$dump_dir/_validate.py";
-        open(my $fh, '>', $script_path) or die "Cannot write $script_path: $!";
-        print $fh $validation_script;
-        close $fh;
+            # Write script to temp file.
+            my $script_path = "$dump_dir/_validate.py";
+            open(my $fh, '>', $script_path) or die "Cannot write $script_path: $!";
+            print $fh $validation_script;
+            close $fh;
 
-        my $file_args = join(' ', map { "'$_'" } @ipc_files);
-        my $raw_output = `uv run '$script_path' $file_args 2>&1`;
-        chomp($raw_output);
-        # uv prints install progress on earlier lines; grab the last line.
-        my @lines = split /\n/, $raw_output;
-        my $output = $lines[-1] // '';
+            my $file_args = join(' ', map { "'$_'" } @ipc_files);
+            my $raw_output = `uv run '$script_path' '$instance_uuid' $file_args 2>&1`;
+            chomp($raw_output);
+            # uv prints install progress on earlier lines; grab the last line.
+            my @lines = split /\n/, $raw_output;
+            my $output = $lines[-1] // '';
 
-        like($output, qr/^OK:/, "pyarrow validation passed: $output");
+            like($output, qr/^OK:/, "pyarrow validation passed: $output");
 
-        # Extract row count and verify we captured events.
-        if ($output =~ /rows=(\d+)/) {
-            cmp_ok($1, '>=', 3,
-                "IPC files contain >= 3 rows (got $1)");
-        }
-    };
+            # Extract row count and verify we captured events.
+            if ($output =~ /rows=(\d+)/) {
+                cmp_ok($1, '>=', 3,
+                    "IPC files contain >= 3 rows (got $1)");
+            }
+        };
+    }
 }
 
 # ============================================================================
