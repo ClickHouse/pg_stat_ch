@@ -39,6 +39,7 @@ extern "C" {
 #include "pg_stat_ch/pg_stat_ch.h"
 #include "config/guc.h"
 #include "export/exporter_interface.h"
+#include "export/extra_attributes.h"
 #include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
 
@@ -115,43 +116,6 @@ struct ArrowSlot {
   std::string name;
   std::shared_ptr<arrow::Field> field;
   std::shared_ptr<arrow::ArrayBuilder> builder;
-};
-
-// Parse "key1:val1;key2:val2" into a flat list. First match wins on
-// duplicate keys (Get linear-scans from the front). Empty input -> empty list.
-class ExtraAttrs {
- public:
-  explicit ExtraAttrs(const char* raw) {
-    if (raw == nullptr) {
-      return;
-    }
-    std::string_view input(raw);
-    while (!input.empty()) {
-      const size_t delim = input.find(';');
-      const std::string_view token =
-          (delim == std::string_view::npos) ? input : input.substr(0, delim);
-      const size_t sep = token.find(':');
-      if (sep != std::string_view::npos) {
-        attrs_.emplace_back(std::string(token.substr(0, sep)), std::string(token.substr(sep + 1)));
-      }
-      if (delim == std::string_view::npos) {
-        break;
-      }
-      input.remove_prefix(delim + 1);
-    }
-  }
-
-  std::string Get(std::string_view key) const {
-    for (const auto& [k, v] : attrs_) {
-      if (k == key) {
-        return v;
-      }
-    }
-    return {};
-  }
-
- private:
-  std::vector<std::pair<std::string, std::string>> attrs_;
 };
 
 // ---------------------------------------------------------------------------
@@ -403,7 +367,6 @@ class OTelArrowExporter : public StatsExporter {
 
   // Synthesized columns (populated implicitly in BeginRow).
   shared_ptr<Column<string_view>> inst_ubid_;
-  shared_ptr<Column<string_view>> inst_uuid_;
   shared_ptr<Column<string_view>> srv_ubid_;
   shared_ptr<Column<string_view>> srv_role_;
   shared_ptr<Column<string_view>> region_;
@@ -415,7 +378,6 @@ class OTelArrowExporter : public StatsExporter {
 
   // Cached for per-row appends.
   std::string instance_ubid_val_;
-  std::string instance_uuid_val_;
   std::string server_ubid_val_;
   std::string server_role_val_;
   std::string region_val_;
@@ -429,7 +391,6 @@ class OTelArrowExporter : public StatsExporter {
 void OTelArrowExporter::RegisterEnvelopeColumns() {
   // OTel resource attributes from psch_extra_attributes.
   inst_ubid_ = MakeUtf8Sv("instance_ubid");
-  inst_uuid_ = MakeUtf8Sv("instance_uuid");
   srv_ubid_ = MakeUtf8Sv("server_ubid");
   srv_role_ = MakeDictSv("server_role");
   read_replica_type_ = MakeDictSv("read_replica_type");
@@ -441,7 +402,6 @@ void OTelArrowExporter::RegisterEnvelopeColumns() {
 
   const ExtraAttrs attrs(psch_extra_attributes);
   instance_ubid_val_ = attrs.Get("instance_ubid");
-  instance_uuid_val_ = attrs.Get("instance_uuid");
   server_ubid_val_ = attrs.Get("server_ubid");
   server_role_val_ = attrs.Get("server_role");
   region_val_ = attrs.Get("region");
@@ -492,7 +452,6 @@ void OTelArrowExporter::BeginRow() {
   // Synthesized columns fire here so the call site doesn't need to know
   // about them.
   inst_ubid_->Append(instance_ubid_val_);
-  inst_uuid_->Append(instance_uuid_val_);
   srv_ubid_->Append(server_ubid_val_);
   srv_role_->Append(server_role_val_);
   read_replica_type_->Append(read_replica_type_val_);

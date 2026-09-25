@@ -389,9 +389,9 @@ void PschInitGuc(void) {
 
   DefineCustomStringVariable(
       "pg_stat_ch.extra_attributes",
-      "Key-value pairs appended to exported Arrow batches.",
+      "Key-value metadata for exported events.",
       "Semicolon-separated k:v pairs for resource columns, including instance_uuid "
-      "for the Postgres service UUID: "
+      "for the Postgres service UUID in all export formats: "
       "'instance_ubid:abc;server_role:primary;read_replica_type:regional;region:us-east-1'.",
       &psch_extra_attributes,
       "",

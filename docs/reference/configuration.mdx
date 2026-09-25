@@ -62,7 +62,7 @@ Useful in containerized environments where the system hostname is a random conta
 
 ### `pg_stat_ch.extra_attributes`
 
-Resource columns included in both Arrow export formats, expressed as semicolon-separated `key:value` pairs.
+Exporter metadata expressed as semicolon-separated `key:value` pairs. `instance_uuid` is included in all export formats; the other resource columns are populated by the Arrow exporters.
 
 | | |
 |---|---|
@@ -76,7 +76,9 @@ Supply `instance_uuid` with the Postgres service's canonical UUID alongside the 
 pg_stat_ch.extra_attributes = 'instance_uuid:01234567-89ab-8ad0-9234-56789abcdef0;instance_ubid:pg04hmasw9ne4j8t5cy4tqkff1;server_role:primary'
 ```
 
-The producer copies the UUID into a UTF-8 `instance_uuid` column; it does not derive it from the UBID. An omitted value produces an empty string. The provisioner must supply the UUID, and Arrow receivers must support the new column before the producer is rolled out. The bundled ClickHouse migration adds `instance_uuid String DEFAULT ''` to `events_raw`; external schemas need their own migration.
+The provisioner supplies the UUID; the producer does not derive it from the UBID. Native ClickHouse and Arrow exports include an `instance_uuid` string column, and ordinary OTLP exports include an `instance_uuid` log attribute. An omitted value produces an empty string.
+
+The bundled ClickHouse migration adds `instance_uuid String DEFAULT ''` to `events_raw`. Apply it **before deploying the producer when using native ClickHouse export**: its named inserts require the column even when the UUID is unset. ArrowStream inserts can arrive before the column exists; ClickHouse ignores the extra field until the schema includes it. External schemas and materialized-view projections need their own updates to retain the UUID; previously ignored values are not backfilled.
 
 ### `pg_stat_ch.log_min_elevel`
 
