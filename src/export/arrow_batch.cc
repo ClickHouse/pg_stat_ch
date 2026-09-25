@@ -191,6 +191,7 @@ struct ArrowBatchBuilder::Impl {
   arrow::UInt32Builder parallel_workers_planned_builder;
   arrow::UInt32Builder parallel_workers_launched_builder;
   arrow::StringBuilder instance_ubid_builder;
+  arrow::StringBuilder instance_uuid_builder;
   arrow::StringBuilder server_ubid_builder;
   DictBuilder server_role_builder;
   DictBuilder read_replica_type_builder;
@@ -259,6 +260,7 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("parallel_workers_planned", arrow::uint32()),
         arrow::field("parallel_workers_launched", arrow::uint32()),
         arrow::field("instance_ubid", arrow::utf8()),
+        arrow::field("instance_uuid", arrow::utf8()),
         arrow::field("server_ubid", arrow::utf8()),
         arrow::field("server_role", DictionaryUtf8Type()),
         arrow::field("read_replica_type", DictionaryUtf8Type()),
@@ -424,6 +426,8 @@ struct ArrowBatchBuilder::Impl {
 
     if (!AppendString(&instance_ubid_builder, ExtraAttr("instance_ubid"),
                       "Arrow instance_ubid append") ||
+        !AppendString(&instance_uuid_builder, ExtraAttr("instance_uuid"),
+                      "Arrow instance_uuid append") ||
         !AppendString(&server_ubid_builder, ExtraAttr("server_ubid"), "Arrow server_ubid append") ||
         !AppendString(&server_role_builder, ExtraAttr("server_role"), "Arrow server_role append") ||
         !AppendString(&read_replica_type_builder, ExtraAttr("read_replica_type"),
@@ -436,13 +440,13 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    estimated_bytes += kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() +
-                       client_addr.size() + query_text.size() + err_message.size() +
-                       err_sqlstate.size() + service_version.size() +
-                       ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
-                       ExtraAttr("server_role").size() + ExtraAttr("read_replica_type").size() +
-                       ExtraAttr("region").size() + ExtraAttr("cell").size() +
-                       ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
+    estimated_bytes +=
+        kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() + client_addr.size() +
+        query_text.size() + err_message.size() + err_sqlstate.size() + service_version.size() +
+        ExtraAttr("instance_ubid").size() + ExtraAttr("instance_uuid").size() +
+        ExtraAttr("server_ubid").size() + ExtraAttr("server_role").size() +
+        ExtraAttr("read_replica_type").size() + ExtraAttr("region").size() +
+        ExtraAttr("cell").size() + ExtraAttr("host_id").size() + ExtraAttr("pod_name").size();
     ++num_rows;
     return true;
   }
@@ -522,6 +526,7 @@ struct ArrowBatchBuilder::Impl {
         !add_array(&parallel_workers_planned_builder, "Arrow parallel_workers_planned finish") ||
         !add_array(&parallel_workers_launched_builder, "Arrow parallel_workers_launched finish") ||
         !add_array(&instance_ubid_builder, "Arrow instance_ubid finish") ||
+        !add_array(&instance_uuid_builder, "Arrow instance_uuid finish") ||
         !add_array(&server_ubid_builder, "Arrow server_ubid finish") ||
         !add_dict_array(&server_role_builder, "Arrow server_role finish") ||
         !add_dict_array(&read_replica_type_builder, "Arrow read_replica_type finish") ||
@@ -629,6 +634,7 @@ struct ArrowBatchBuilder::Impl {
     parallel_workers_planned_builder.Reset();
     parallel_workers_launched_builder.Reset();
     instance_ubid_builder.Reset();
+    instance_uuid_builder.Reset();
     server_ubid_builder.Reset();
     server_role_builder.ResetFull();
     read_replica_type_builder.ResetFull();
