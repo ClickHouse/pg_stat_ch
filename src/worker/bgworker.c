@@ -250,6 +250,15 @@ void PschSignalFlush(void) {
 void PschRegisterBgworker(void) {
   BackgroundWorker worker;
 
+  // Skip registration when the postmaster is started by pg_upgrade in -b
+  // mode. Otherwise the worker connects to "postgres" as soon as the new
+  // cluster reaches consistent state, and that open session blocks
+  // pg_restore's `DROP DATABASE "postgres"` step during the upgrade.
+  if (IsBinaryUpgrade) {
+    elog(LOG, "pg_stat_ch: skipping background worker registration during binary upgrade");
+    return;
+  }
+
   MemSet(&worker, 0, sizeof(worker));
   strlcpy(worker.bgw_name, "pg_stat_ch exporter", BGW_MAXLEN);
   strlcpy(worker.bgw_type, "pg_stat_ch exporter", BGW_MAXLEN);
