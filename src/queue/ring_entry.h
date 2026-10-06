@@ -39,7 +39,7 @@ typedef struct PschRingEntry {
   uint8 username_len;
   int32 pid;
   uint64 queryid;
-  bool top_level;
+  uint64 parent_query_id;
   PschCmdType cmd_type;
 
   // === Results ===
