@@ -11,30 +11,24 @@
 #include "common/pg_prng.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
+#include "jit/jit.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
+#include "nodes/queryjumble.h"
+#include "parser/analyze.h"
 #include "postmaster/bgworker.h"
+#include "storage/proc.h"
 #include "tcop/utility.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 
-#include "parser/analyze.h"
-
-#if PG_VERSION_NUM >= 140000
-#include "nodes/queryjumble.h"
-#endif
-
-#if PG_VERSION_NUM >= 150000
-#include "jit/jit.h"
-#endif
-
-#include "hooks/query_normalize_state.h"
-
+#include "compat.h"
 #include "config/guc.h"
 #include "hooks/hooks.h"
 #include "hooks/query_normalize.h"
+#include "hooks/query_normalize_state.h"
 #include "hooks/string_utils.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -151,10 +145,8 @@ static PschCmdType ConvertCmdType(CmdType cmd) {
       return PSCH_CMD_INSERT;
     case CMD_DELETE:
       return PSCH_CMD_DELETE;
-#if PG_VERSION_NUM >= 150000
     case CMD_MERGE:
       return PSCH_CMD_MERGE;
-#endif
     case CMD_UTILITY:
       return PSCH_CMD_UTILITY;
     case CMD_NOTHING:
@@ -261,10 +253,8 @@ static void CopyIoTiming(PschEvent* event, const BufferUsage* buf) {
   event->shared_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_read_time);
   event->shared_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->blk_write_time);
 #endif
-#if PG_VERSION_NUM >= 150000
   event->temp_blk_read_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_read_time);
   event->temp_blk_write_time_us = INSTR_TIME_GET_MICROSEC(buf->temp_blk_write_time);
-#endif
 }
 
 static void CopyWalUsage(PschEvent* event, const WalUsage* wal) {
@@ -351,10 +341,8 @@ static void ResolveNames(PschEvent* event) {
                                      username != NULL ? username : "<unknown>");
 }
 
-// Copy JIT instrumentation to event (PG15+)
-static void CopyJitInstrumentation(PschEvent* event pg_attribute_unused(),
-                                   QueryDesc* query_desc pg_attribute_unused()) {
-#if PG_VERSION_NUM >= 150000
+// Copy JIT instrumentation to event
+static void CopyJitInstrumentation(PschEvent* event, QueryDesc* query_desc) {
   if (query_desc->estate->es_jit != NULL) {
     JitInstrumentation* jit = &query_desc->estate->es_jit->instr;
     event->jit_functions = (int32)(jit->created_functions);
@@ -366,7 +354,6 @@ static void CopyJitInstrumentation(PschEvent* event pg_attribute_unused(),
     event->jit_deform_time_us = (int32)(INSTR_TIME_GET_MICROSEC(jit->deform_counter));
 #endif
   }
-#endif
 }
 
 // Copy parallel worker info to event (PG18+)
@@ -380,6 +367,18 @@ static void CopyParallelWorkerInfo(PschEvent* event pg_attribute_unused(),
 #endif
 }
 
+static uint64 QueryDurationUs(QueryDesc* query_desc) {
+  Instrumentation* instr = PschQueryInstr(query_desc);
+  if (instr == NULL) {
+    return (uint64)(GetCurrentTimestamp() - query_start_ts);
+  }
+#if PG_VERSION_NUM >= 190000
+  return (uint64)(INSTR_TIME_GET_MICROSEC(instr->total));
+#else
+  return (uint64)(instr->total * 1000000.0);
+#endif
+}
+
 static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
                                     int64 cpu_sys_us) {
   InitBaseEvent(event, query_start_ts, current_query_is_top_level,
@@ -390,17 +389,12 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
   event->cpu_sys_time_us = cpu_sys_us;
 
   // Instrumentation data (duration, buffer, WAL)
-  if (query_desc->totaltime != NULL) {
-#if PG_VERSION_NUM >= 190000
-    event->duration_us = (uint64)(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
-#else
-    event->duration_us = (uint64)(query_desc->totaltime->total * 1000000.0);
-#endif
-    CopyBufferUsage(event, &query_desc->totaltime->bufusage);
-    CopyIoTiming(event, &query_desc->totaltime->bufusage);
-    CopyWalUsage(event, &query_desc->totaltime->walusage);
-  } else {
-    event->duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
+  event->duration_us = QueryDurationUs(query_desc);
+  Instrumentation* instr = PschQueryInstr(query_desc);
+  if (instr != NULL) {
+    CopyBufferUsage(event, &instr->bufusage);
+    CopyIoTiming(event, &instr->bufusage);
+    CopyWalUsage(event, &instr->walusage);
   }
 
   CopyJitInstrumentation(event, query_desc);
@@ -413,7 +407,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
 // The JumbleState (with constant locations) is only available here, so we
 // must generate any normalized form now and stash the final exported text for
 // ExecutorEnd.
-static void PschPostParseAnalyze(ParseState* pstate, Query* query, JumbleState* jstate) {
+static void PschPostParseAnalyze(ParseState* pstate, Query* query, PschJumbleState* jstate) {
   if (prev_post_parse_analyze != NULL) {
     prev_post_parse_analyze(pstate, query, jstate);
   }
@@ -478,23 +472,26 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     current_query_is_top_level = false;
   }
 
+  bool track = psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0);
+#if PG_VERSION_NUM >= 190000
+  if (track) {
+    query_desc->query_instr_options |= INSTRUMENT_ALL;
+  }
+#endif
+
   if (prev_executor_start != NULL) {
     prev_executor_start(query_desc, eflags);
   } else {
     standard_ExecutorStart(query_desc, eflags);
   }
 
-  if (psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0)) {
-    if (query_desc->totaltime == NULL) {
-      MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
-#if PG_VERSION_NUM < 140000
-      query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
-#else
-      query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
-#endif
-      MemoryContextSwitchTo(oldcxt);
-    }
+#if PG_VERSION_NUM < 190000
+  if (track && query_desc->totaltime == NULL) {
+    MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
+    query_desc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
+    MemoryContextSwitchTo(oldcxt);
   }
+#endif
 }
 
 #if PG_VERSION_NUM >= 180000
@@ -576,21 +573,14 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     return;
   }
 
+#if PG_VERSION_NUM < 190000
   if (query_desc->totaltime != NULL) {
     InstrEndLoop(query_desc->totaltime);
   }
+#endif
 
   // Compute duration early for sampling filter
-  uint64 duration_us;
-  if (query_desc->totaltime != NULL) {
-#if PG_VERSION_NUM >= 190000
-    duration_us = (uint64)(INSTR_TIME_GET_MICROSEC(query_desc->totaltime->total));
-#else
-    duration_us = (uint64)(query_desc->totaltime->total * 1000000.0);
-#endif
-  } else {
-    duration_us = (uint64)(GetCurrentTimestamp() - query_start_ts);
-  }
+  uint64 duration_us = QueryDurationUs(query_desc);
 
   if (!ShouldSampleEvent(duration_us)) {
     if (prev_executor_end != NULL) {
@@ -641,7 +631,6 @@ static void BuildEventForUtility(PschEvent* event, uint64 query_id, TimestampTz 
 }
 
 // Helper macro to call ProcessUtility (previous hook or standard)
-#if PG_VERSION_NUM >= 140000
 #define CALL_PROCESS_UTILITY()                                                                     \
   do {                                                                                             \
     if (prev_process_utility) {                                                                    \
@@ -651,16 +640,6 @@ static void BuildEventForUtility(PschEvent* event, uint64 query_id, TimestampTz 
                               qc);                                                                 \
     }                                                                                              \
   } while (0)
-#else
-#define CALL_PROCESS_UTILITY()                                                          \
-  do {                                                                                  \
-    if (prev_process_utility) {                                                         \
-      prev_process_utility(pstmt, queryString, context, params, queryEnv, dest, qc);    \
-    } else {                                                                            \
-      standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, qc); \
-    }                                                                                   \
-  } while (0)
-#endif
 
 static bool ShouldTrackUtility(Node* parsetree) {
   if (!psch_enabled || IsParallelWorker()) {
@@ -697,12 +676,9 @@ static uint64 GetUtilityRowCount(QueryCompletion* qc) {
 }
 
 static void ExecuteUtilityWithNesting(PlannedStmt* pstmt, const char* queryString,
-#if PG_VERSION_NUM >= 140000
-                                      bool readOnlyTree,
-#endif
-                                      ProcessUtilityContext context, ParamListInfo params,
-                                      QueryEnvironment* queryEnv, DestReceiver* dest,
-                                      QueryCompletion* qc) {
+                                      bool readOnlyTree, ProcessUtilityContext context,
+                                      ParamListInfo params, QueryEnvironment* queryEnv,
+                                      DestReceiver* dest, QueryCompletion* qc) {
   nesting_level++;
   PG_TRY();
   { CALL_PROCESS_UTILITY(); }
@@ -712,17 +688,10 @@ static void ExecuteUtilityWithNesting(PlannedStmt* pstmt, const char* queryStrin
 }
 
 // ProcessUtility hook - captures DDL and utility statements
-#if PG_VERSION_NUM >= 140000
 static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString, bool readOnlyTree,
                                ProcessUtilityContext context, ParamListInfo params,
                                QueryEnvironment* queryEnv, DestReceiver* dest,
                                QueryCompletion* qc) {
-#else
-static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
-                               ProcessUtilityContext context, ParamListInfo params,
-                               QueryEnvironment* queryEnv, DestReceiver* dest,
-                               QueryCompletion* qc) {
-#endif
   if (!ShouldTrackUtility(pstmt->utilityStmt)) {
     CALL_PROCESS_UTILITY();
     return;
@@ -739,11 +708,7 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString,
   instr_time start_time;
   INSTR_TIME_SET_CURRENT(start_time);
 
-#if PG_VERSION_NUM >= 140000
   ExecuteUtilityWithNesting(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
-#else
-  ExecuteUtilityWithNesting(pstmt, queryString, context, params, queryEnv, dest, qc);
-#endif
 
   instr_time duration;
   INSTR_TIME_SET_CURRENT(duration);
@@ -887,9 +852,7 @@ bool PschSuppressErrorCapture(bool suppress) {
 }
 
 void PschInstallHooks(void) {
-#if PG_VERSION_NUM >= 140000
   EnableQueryId();
-#endif
 
   prev_post_parse_analyze = post_parse_analyze_hook;
   post_parse_analyze_hook = PschPostParseAnalyze;

@@ -50,9 +50,7 @@ PschSharedState* psch_shared_state = NULL;
 
 // Previous hook values for chaining
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-#if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
-#endif
 
 static inline PschRingEntry* GetRingBuffer(void) {
   return (PschRingEntry*)((char*)psch_shared_state + sizeof(PschSharedState));
@@ -185,14 +183,12 @@ static void RequestSharedResources(void) {
   RequestNamedLWLockTranche("pg_stat_ch", 1 + PschQueryInternLockCount());
 }
 
-#if PG_VERSION_NUM >= 150000
 static void PschShmemRequestHook(void) {
   if (prev_shmem_request_hook != NULL) {
     prev_shmem_request_hook();
   }
   RequestSharedResources();
 }
-#endif
 
 // Initialize shared state fields on first-time setup.
 // Called with AddinShmemInitLock held.
@@ -267,21 +263,9 @@ static void PschShmemStartupHook(void) {
   on_shmem_exit(PschShmemShutdown, 0);
 }
 
-void PschShmemRequest(void) {
-#if PG_VERSION_NUM < 150000
-  RequestSharedResources();
-#endif
-}
-
-void PschShmemStartup(void) {}
-
 void PschInstallShmemHooks(void) {
-#if PG_VERSION_NUM >= 150000
   prev_shmem_request_hook = shmem_request_hook;
   shmem_request_hook = PschShmemRequestHook;
-#else
-  RequestSharedResources();
-#endif
 
   prev_shmem_startup_hook = shmem_startup_hook;
   shmem_startup_hook = PschShmemStartupHook;

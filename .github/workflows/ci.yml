@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [16, 17, 18]
+        pg_version: [16, 17, 18, 19]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -37,19 +37,14 @@ jobs:
       - name: Checkout clickhouse-c submodule
         run: git submodule update --init third_party/clickhouse-c
 
-      - name: Add PostgreSQL APT repository
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl ca-certificates gnupg
-          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
-          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update
-
+      # apt.postgresql.org.sh (shipped with postgresql-common) adds the PGDG
+      # repo, including the per-version component for beta/devel releases, and
+      # with -i installs postgresql-$v + postgresql-server-dev-$v.
       - name: Install PostgreSQL ${{ matrix.pg_version }}
         run: |
-          sudo apt-get install -y \
-            postgresql-${{ matrix.pg_version }} \
-            postgresql-server-dev-${{ matrix.pg_version }}
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y -v ${{ matrix.pg_version }} -i
 
       # libkrb5-dev: PGDG packages are built with GSSAPI, so including
       # libpq/libpq-be.h (for MyProcPort) pulls in gssapi/gssapi.h.
@@ -140,18 +135,15 @@ jobs:
       - name: Checkout clickhouse-c submodule
         run: git submodule update --init third_party/clickhouse-c
 
-      - name: Add PostgreSQL APT repository
+      - name: Install PostgreSQL 18
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl ca-certificates gnupg
-          curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg >/dev/null
-          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y -v 18 -i
 
-      - name: Install PostgreSQL 18 + Clang
+      - name: Install Clang + build dependencies
         run: |
           sudo apt-get install -y \
-            postgresql-18 postgresql-server-dev-18 \
             cmake ninja-build clang libssl-dev libkrb5-dev pkg-config curl zip unzip tar
 
       - uses: ./.github/actions/setup-vcpkg

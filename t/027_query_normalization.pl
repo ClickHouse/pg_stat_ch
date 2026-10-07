@@ -318,6 +318,9 @@ subtest 'failed query does not leak normalized text into next query' => sub {
 # Test 18: Normalization must not emit a duplicate escape-string warning.
 # ---------------------------------------------------------------------------
 subtest 'no duplicate escape_string warnings' => sub {
+    plan skip_all => 'PG19 removed standard_conforming_strings = off'
+        if $node->pg_version->major >= 19;
+
     my $session = $node->background_psql('postgres', on_error_stop => 1);
 
     my ($stdout, $ret) = $session->query('SET client_min_messages = warning');
