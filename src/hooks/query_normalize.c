@@ -13,6 +13,7 @@
 
 #include "hooks/query_normalize.h"
 
+#if PG_VERSION_NUM < 190000
 // Comparator for qsorting LocationLen structs by location.
 static int CompLocation(const void* a, const void* b) {
   int l = ((const LocationLen*)(a))->location;
@@ -22,14 +23,15 @@ static int CompLocation(const void* a, const void* b) {
   }
   return (l > r) ? 1 : 0;
 }
+#endif
 
 #if PG_VERSION_NUM >= 180000
 static bool IsSquashedConstant(const LocationLen* loc) {
   return loc->squashed;
 }
 
-static bool ShouldPreserveExternalParam(const JumbleState* jstate, int index) {
-  return jstate->clocations[index].extern_param && !jstate->has_squashed_lists;
+static bool ShouldPreserveExternalParam(const JumbleState* jstate, const LocationLen* loc) {
+  return loc->extern_param && !jstate->has_squashed_lists;
 }
 #else
 static bool IsSquashedConstant(const LocationLen* loc pg_attribute_unused()) {
@@ -37,7 +39,7 @@ static bool IsSquashedConstant(const LocationLen* loc pg_attribute_unused()) {
 }
 
 static bool ShouldPreserveExternalParam(const JumbleState* jstate pg_attribute_unused(),
-                                        int index pg_attribute_unused()) {
+                                        const LocationLen* loc pg_attribute_unused()) {
   return false;
 }
 #endif
@@ -47,10 +49,11 @@ static void InitNormalizedQueryBuffer(StringInfoData* norm_query, int query_len)
   enlargeStringInfo(norm_query, Max(query_len, 32));
 }
 
+#if PG_VERSION_NUM < 190000
 // Populate the length field of LocationLen entries using the PostgreSQL lexer.
 // Core only provides locations; we need to lex the query to find token lengths.
 // Ported from pg_stat_statements fill_in_constant_lengths().
-static void FillInConstantLengths(JumbleState* jstate, const char* query, int query_loc) {
+static void FillInConstantLengths(const JumbleState* jstate, const char* query, int query_loc) {
   LocationLen* locs;
   core_yyscan_t yyscanner;
   core_yy_extra_type yyextra;
@@ -107,8 +110,20 @@ static void FillInConstantLengths(JumbleState* jstate, const char* query, int qu
 
   scanner_finish(yyscanner);
 }
+#endif
 
-char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, JumbleState* jstate) {
+// Return jstate's constant locations sorted, with lengths filled in
+static LocationLen* ComputeLocations(const JumbleState* jstate, const char* query, int query_loc) {
+#if PG_VERSION_NUM >= 190000
+  return ComputeConstantLengths(jstate, query, query_loc);
+#else
+  FillInConstantLengths(jstate, query, query_loc);
+  return jstate->clocations;
+#endif
+}
+
+char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p,
+                         const JumbleState* jstate) {
   if (jstate == NULL || jstate->clocations_count <= 0) {
     return NULL;
   }
@@ -127,14 +142,11 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
   // this under a long-lived context (e.g. TopMemoryContext for older code
   // paths), so without this the per-query scanner allocations would
   // accumulate for the lifetime of the backend.
-  {
-    MemoryContext tmp =
-        AllocSetContextCreate(CurrentMemoryContext, "psch normalize", ALLOCSET_SMALL_SIZES);
-    MemoryContext old = MemoryContextSwitchTo(tmp);
-    FillInConstantLengths(jstate, query, query_loc);
-    MemoryContextSwitchTo(old);
-    MemoryContextDelete(tmp);
-  }
+  MemoryContext tmp =
+      AllocSetContextCreate(CurrentMemoryContext, "psch normalize", ALLOCSET_SMALL_SIZES);
+  MemoryContext old = MemoryContextSwitchTo(tmp);
+  LocationLen* locs = ComputeLocations(jstate, query, query_loc);
+  MemoryContextSwitchTo(old);
 
   InitNormalizedQueryBuffer(&norm_query, query_len + 1);
 
@@ -144,13 +156,13 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
 
     // If we have an external param at this location but no squashed lists,
     // skip it so the original $N text is preserved.
-    if (ShouldPreserveExternalParam(jstate, i)) {
+    if (ShouldPreserveExternalParam(jstate, &locs[i])) {
       continue;
     }
 
-    off = jstate->clocations[i].location;
+    off = locs[i].location;
     off -= query_loc;
-    tok_len = jstate->clocations[i].length;
+    tok_len = locs[i].length;
 
     if (tok_len < 0) {
       continue;  // duplicate, ignore
@@ -164,7 +176,7 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
     // Insert $N placeholder (and squashed-list comment if applicable)
     appendStringInfo(&norm_query, "$%d%s",
                      num_constants_replaced + 1 + jstate->highest_extern_param_id,
-                     IsSquashedConstant(&jstate->clocations[i]) ? " /*, ... */" : "");
+                     IsSquashedConstant(&locs[i]) ? " /*, ... */" : "");
     num_constants_replaced++;
 
     quer_loc = off + tok_len;
@@ -176,6 +188,7 @@ char* PschNormalizeQuery(const char* query, int query_loc, int* query_len_p, Jum
   len_to_wrt = query_len - quer_loc;
   Assert(len_to_wrt >= 0);
   appendBinaryStringInfo(&norm_query, query + quer_loc, len_to_wrt);
+  MemoryContextDelete(tmp);
 
   *query_len_p = norm_query.len;
   return norm_query.data;

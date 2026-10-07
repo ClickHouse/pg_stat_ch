@@ -9,6 +9,7 @@
 #include "utils/dsa.h"
 #include "utils/memutils.h"
 
+#include "compat.h"
 #include "config/guc.h"
 #include "queue/psch_dsa.h"
 #include "queue/shmem.h"
@@ -44,8 +45,7 @@ void PschDsaInit(PschSharedState* state, void* dsa_place) {
   Size dsa_size = PschDsaShmemSize();
   state->raw_dsa_area = dsa_place;
 
-  int tranche_id = LWLockNewTrancheId();
-  LWLockRegisterTranche(tranche_id, "pg_stat_ch_dsa");
+  int tranche_id = PschLWLockNewTrancheId("pg_stat_ch_dsa");
 
   dsa_area* dsa = dsa_create_in_place(dsa_place, dsa_size, tranche_id, NULL);
   dsa_pin(dsa);

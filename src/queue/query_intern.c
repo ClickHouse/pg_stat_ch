@@ -17,6 +17,7 @@
 #include "utils/dsa.h"
 #include "utils/hsearch.h"
 
+#include "compat.h"
 #include "config/guc.h"
 #include "queue/psch_dsa.h"
 #include "queue/query_intern.h"
@@ -94,9 +95,8 @@ void PschQueryInternShmemInit(LWLockPadded* lwlock_base) {
   // given key is derived from dynahash's own hashcode (get_hash_value) so the
   // external and internal partition agree, matching the LockTagHashCode /
   // LockHashPartitionLock pattern in src/backend/storage/lmgr/lock.c.
-  psch_query_intern_htab =
-      ShmemInitHash("pg_stat_ch query intern", PschQueryInternMaxEntries(),
-                    PschQueryInternMaxEntries(), &info, HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
+  psch_query_intern_htab = PschShmemInitHash("pg_stat_ch query intern", PschQueryInternMaxEntries(),
+                                             &info, HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 }
 
 static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const char* query,

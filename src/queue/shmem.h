@@ -14,12 +14,6 @@ extern "C" {
 // Calculate total shared memory size needed
 Size PschShmemSize(void);
 
-// Request shared memory allocation (called from _PG_init)
-void PschShmemRequest(void);
-
-// Initialize shared memory structures (called from shmem_startup_hook)
-void PschShmemStartup(void);
-
 // Install shmem hooks (called from _PG_init)
 void PschInstallShmemHooks(void);
 

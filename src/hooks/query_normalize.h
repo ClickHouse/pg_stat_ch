@@ -16,9 +16,7 @@ extern "C" {
 
 #include "postgres.h"
 
-#if PG_VERSION_NUM >= 140000
 #include "nodes/queryjumble.h"
-#endif
 
 // Generate a normalized query string with constants replaced by $1, $2, ...
 // Returns a palloc'd string (caller must pfree). Returns NULL if jstate is
@@ -28,7 +26,8 @@ extern "C" {
 // query_loc: byte offset of the statement within query (for multi-statement)
 // query_len: in/out — input length, updated to normalized length on return
 // jstate:    JumbleState from post_parse_analyze_hook (contains constant locations)
-char* PschNormalizeQuery(const char* query, int query_loc, int* query_len, JumbleState* jstate);
+char* PschNormalizeQuery(const char* query, int query_loc, int* query_len,
+                         const JumbleState* jstate);
 
 #ifdef __cplusplus
 }

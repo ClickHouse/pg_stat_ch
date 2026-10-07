@@ -42,6 +42,7 @@
 #include <malloc.h>
 #endif
 
+#include "compat.h"
 #include "config/guc.h"
 #include "export/stats_exporter.h"
 #include "worker/bgworker.h"
@@ -76,7 +77,7 @@ static void SetupSignalHandlers(void) {
   pqsignal(SIGTERM, die);
   pqsignal(SIGUSR1, procsignal_sigusr1_handler);  // REQUIRED for barriers
   pqsignal(SIGUSR2, HandleFlushSignal);           // Extension-specific flush
-  pqsignal(SIGPIPE, SIG_IGN);
+  pqsignal(SIGPIPE, PG_SIG_IGN);
 }
 
 // Handle SIGHUP config reload
