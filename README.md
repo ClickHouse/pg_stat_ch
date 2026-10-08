@@ -90,6 +90,8 @@ PostgreSQL Hooks (foreground) → Shared Memory Queue → Background Worker → 
 
 PostgreSQL 16, 17, and 18 are fully supported. See [docs/version-compatibility.md](docs/version-compatibility.md) for the feature matrix and version-specific fields.
 
+ClickHouse 23.3+ is required for native export.
+
 ## Building from Source
 
 Prerequisites:
