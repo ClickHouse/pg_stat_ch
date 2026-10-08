@@ -5,6 +5,10 @@ description: Feature matrix and version-specific behavior for PostgreSQL 16, 17,
 
 pg_stat_ch supports PostgreSQL 16, 17, and 18. All versions capture core telemetry. Newer versions expose additional metrics.
 
+## ClickHouse
+
+ClickHouse 23.3+ is required for native export.
+
 ## Feature matrix
 
 | Feature | PG 16 | PG 17 | PG 18 |

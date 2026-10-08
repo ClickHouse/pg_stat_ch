@@ -139,20 +139,12 @@ bool ConnectWithTimeout(int fd, const struct sockaddr* sa, socklen_t slen, int t
   return ok;
 }
 
-struct ChcBlockBuilderDeleter {
-  void operator()(chc_block_builder* bb) const { chc_block_builder_destroy(bb); }
-};
-
-using ChcBlockBuilderPtr = std::unique_ptr<chc_block_builder, ChcBlockBuilderDeleter>;
-
 class ClickHouseExporter : public StatsExporter {
  public:
   ClickHouseExporter() = default;
   ~ClickHouseExporter() override {
     CloseConnection();
     ClearTypes();
-    if (batch_cxt_ != nullptr)
-      MemoryContextDelete(batch_cxt_);
     if (conn_cxt_ != nullptr)
       MemoryContextDelete(conn_cxt_);
   }
@@ -230,7 +222,10 @@ class ClickHouseExporter : public StatsExporter {
     FixedCol(ClickHouseExporter* exp, string_view name, const char* type_name)
         : exp_(exp), name_(name), type_name_(type_name) {}
     void Append(const T& v) final { data_.push_back(v); }
-    bool Crunch() final { return exp_->AppendFixed(name_, type_name_, data_.data(), data_.size()); }
+    bool Crunch() final {
+      col_ = chc_build_fixed(data_.data(), sizeof(T), data_.size());
+      return exp_->AppendColumn(name_, type_name_, &col_);
+    }
     void Clear() final { data_.clear(); }
 
    private:
@@ -238,6 +233,7 @@ class ClickHouseExporter : public StatsExporter {
     const std::string name_;
     const char* const type_name_;
     std::vector<T> data_;
+    chc_column col_{};
   };
 
   template <typename T>
@@ -249,8 +245,9 @@ class ClickHouseExporter : public StatsExporter {
       offsets_.push_back(bytes_.size());
     }
     bool Crunch() final {
-      return exp_->AppendString(name_, offsets_.data(),
-                                reinterpret_cast<const uint8_t*>(bytes_.data()), offsets_.size());
+      col_ = chc_build_string(offsets_.data(), reinterpret_cast<const uint8_t*>(bytes_.data()),
+                              offsets_.size());
+      return exp_->AppendColumn(name_, "String", &col_);
     }
     void Clear() final {
       bytes_.clear();
@@ -262,6 +259,7 @@ class ClickHouseExporter : public StatsExporter {
     const std::string name_;
     std::vector<char> bytes_;
     std::vector<uint64_t> offsets_;
+    chc_column col_{};
   };
 
   template <typename ColT, typename... Args>
@@ -294,14 +292,12 @@ class ClickHouseExporter : public StatsExporter {
 
   const chc_type* ResolveType(const char* type_name);
 
-  bool AppendFixed(string_view name, const char* type_name, const void* data, size_t n_rows);
-  bool AppendString(string_view name, const uint64_t* offsets, const uint8_t* data, size_t n_rows);
+  bool AppendColumn(string_view name, const char* type_name, const chc_column* col);
 
   bool RecordFailure(const char* context, const char* message, bool close_conn);
   bool EnsureMemoryContexts();
-  bool MemoryContextsReady() const { return conn_cxt_ != nullptr && batch_cxt_ != nullptr; }
+  bool MemoryContextsReady() const { return conn_cxt_ != nullptr; }
   void ClearTypes();
-  void ResetBatchContext();
   void ResetConnectionContext();
   bool TcpConnect(const char* host, int port);
   bool TlsConnect(const char* host);
@@ -312,9 +308,7 @@ class ClickHouseExporter : public StatsExporter {
   bool RecvUntil(chc_packet_kind target, std::string& err_out);
 
   MemoryContext conn_cxt_ = nullptr;
-  MemoryContext batch_cxt_ = nullptr;
   chc_alloc conn_al_{};
-  chc_alloc batch_al_{};
   chc_client* client_ = nullptr;
   int fd_ = -1;
   SSL_CTX* ssl_ctx_ = nullptr;
@@ -324,7 +318,8 @@ class ClickHouseExporter : public StatsExporter {
   chc_io io_{};
   chc_codec codec_{};
 
-  chc_block_builder* bb_ = nullptr;
+  std::vector<chc_block_col> block_cols_;
+  chc_block_builder bb_{};
   chc_err build_err_{};
 
   std::map<std::string, chc_type*, std::less<>> types_;
@@ -346,26 +341,13 @@ bool ClickHouseExporter::EnsureMemoryContexts() {
   MemoryContext oldcontext = CurrentMemoryContext;
   PG_TRY();
   {
-    if (conn_cxt_ == nullptr)
-      conn_cxt_ = AllocSetContextCreate(TopMemoryContext, "pg_stat_ch clickhouse-c",
-                                        ALLOCSET_DEFAULT_SIZES);
-    if (batch_cxt_ == nullptr)
-      batch_cxt_ = AllocSetContextCreate(TopMemoryContext, "pg_stat_ch clickhouse-c batch",
-                                         ALLOCSET_DEFAULT_SIZES);
+    conn_cxt_ =
+        AllocSetContextCreate(TopMemoryContext, "pg_stat_ch clickhouse-c", ALLOCSET_DEFAULT_SIZES);
   }
   PG_CATCH();
   {
     MemoryContextSwitchTo(oldcontext);
-    if (batch_cxt_ != nullptr) {
-      MemoryContextDelete(batch_cxt_);
-      batch_cxt_ = nullptr;
-    }
-    if (conn_cxt_ != nullptr) {
-      MemoryContextDelete(conn_cxt_);
-      conn_cxt_ = nullptr;
-    }
     conn_al_ = {};
-    batch_al_ = {};
     EmitErrorReport();
     FlushErrorState();
     return false;
@@ -373,7 +355,6 @@ bool ClickHouseExporter::EnsureMemoryContexts() {
   PG_END_TRY();
 
   conn_al_ = MakePschChcAlloc(conn_cxt_);
-  batch_al_ = MakePschChcAlloc(batch_cxt_);
   return true;
 }
 
@@ -381,13 +362,6 @@ void ClickHouseExporter::ClearTypes() {
   for (auto& kv : types_)
     chc_type_destroy(kv.second, &conn_al_);
   types_.clear();
-}
-
-void ClickHouseExporter::ResetBatchContext() {
-  if (batch_cxt_ != nullptr) {
-    MemoryContextReset(batch_cxt_);
-    batch_al_ = MakePschChcAlloc(batch_cxt_);
-  }
 }
 
 void ClickHouseExporter::ResetConnectionContext() {
@@ -422,19 +396,13 @@ const chc_type* ClickHouseExporter::ResolveType(const char* type_name) {
   return t;
 }
 
-bool ClickHouseExporter::AppendFixed(string_view name, const char* type_name, const void* data,
-                                     size_t n_rows) {
+bool ClickHouseExporter::AppendColumn(string_view name, const char* type_name,
+                                      const chc_column* col) {
   const chc_type* t = ResolveType(type_name);
   if (t == nullptr)
     return false;
-  return chc_block_builder_append_fixed(bb_, name.data(), name.size(), t, data, n_rows,
-                                        &build_err_) == CHC_OK;
-}
-
-bool ClickHouseExporter::AppendString(string_view name, const uint64_t* offsets,
-                                      const uint8_t* data, size_t n_rows) {
-  return chc_block_builder_append_string(bb_, name.data(), name.size(), offsets, data, n_rows,
-                                         &build_err_) == CHC_OK;
+  chc_block_builder_append(&bb_, name.data(), name.size(), t, col);
+  return true;
 }
 
 std::string ClickHouseExporter::BuildInsertQuery() const {
@@ -514,29 +482,12 @@ bool ClickHouseExporter::SendInsert(const chc_block_builder* bb, std::string& er
 }
 
 bool ClickHouseExporter::CommitBatch() {
-  struct ActiveBuilder {
-    chc_block_builder*& slot;
-    ~ActiveBuilder() { slot = nullptr; }
-  };
-  struct BatchReset {
-    ClickHouseExporter* exporter;
-    ~BatchReset() { exporter->ResetBatchContext(); }
-  };
-
   try {
     if (!MemoryContextsReady())
       return RecordFailure("ClickHouse commit failed", "allocator not initialized", false);
 
-    BatchReset reset{this};
-    chc_block_builder* raw_bb = nullptr;
-    chc_err err = {};
-    if (chc_block_builder_init(&raw_bb, &batch_al_, &err) != CHC_OK) {
-      return RecordFailure("block builder init failed", err.msg[0] ? err.msg : "OOM", false);
-    }
-    ChcBlockBuilderPtr bb(raw_bb);
-
-    bb_ = bb.get();
-    ActiveBuilder active{bb_};
+    block_cols_.resize(columns_.size());
+    chc_block_builder_init(&bb_, block_cols_.data());
 
     if (client_ == nullptr && (!EstablishNewConnection() || client_ == nullptr)) {
       return RecordFailure("ClickHouse connection failed", "connection not established", false);
@@ -552,7 +503,7 @@ bool ClickHouseExporter::CommitBatch() {
 
     elog(DEBUG1, "pg_stat_ch: Inserting Block to ClickHouse");
     std::string emsg;
-    if (!SendInsert(bb.get(), emsg)) {
+    if (!SendInsert(&bb_, emsg)) {
       return RecordFailure("failed to insert to ClickHouse", emsg.c_str(), true);
     }
 
@@ -717,10 +668,17 @@ bool ClickHouseExporter::EstablishNewConnection() {
   opts.codec = &codec_;
 
   SetReadDeadline();  // bound the Hello / Ping handshake reads
+  chc_exception* exc = nullptr;
   chc_err err = {};
-  if (chc_client_init(&client_, &opts, &conn_al_, &io_, &err) != CHC_OK) {
-    elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s",
-         err.msg[0] ? err.msg : "init failed");
+  if (chc_client_init(&client_, &opts, &conn_al_, &io_, &exc, &err) != CHC_OK) {
+    if (exc != nullptr) {
+      elog(WARNING, "pg_stat_ch: ClickHouse rejected connection: %.*s",
+           static_cast<int>(exc->display_text_len), exc->display_text);
+      chc_exception_free(exc, &conn_al_);
+    } else {
+      elog(WARNING, "pg_stat_ch: failed to connect to ClickHouse: %s",
+           err.msg[0] ? err.msg : "init failed");
+    }
     if (client_ != nullptr) {
       chc_client_close(client_);
       client_ = nullptr;

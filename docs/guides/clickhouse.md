@@ -3,6 +3,8 @@ title: ClickHouse setup
 description: Set up the ClickHouse backend for pg_stat_ch
 ---
 
+Use ClickHouse 23.3 or newer.
+
 ## Quick start with Docker
 
 From the repository root:
