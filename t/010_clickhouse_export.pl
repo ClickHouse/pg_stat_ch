@@ -63,6 +63,11 @@ subtest 'basic export' => sub {
         10
     );
     cmp_ok($query_check, '>=', 1, 'Query text is captured');
+
+    my $uuid_count = psch_query_clickhouse(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE instance_uuid != ''");
+    chomp $uuid_count;
+    is($uuid_count, '0', 'Unconfigured instance UUID is empty');
 };
 
 # Test 2: Batch sizing - verify batch_max is honored
@@ -112,6 +117,10 @@ subtest 'immediate flush' => sub {
 
 # Test 4: All fields populated
 subtest 'all fields populated' => sub {
+    my $instance_uuid = '01234567-89ab-8ad0-9234-56789abcdef0';
+    $node->safe_psql('postgres',
+        "ALTER SYSTEM SET pg_stat_ch.extra_attributes = 'instance_uuid:$instance_uuid'");
+    $node->restart();
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
@@ -146,6 +155,13 @@ subtest 'all fields populated' => sub {
         10
     );
     cmp_ok($db_operation_check, '>=', 1, 'db_operation is populated');
+
+    my $uuid_check = psch_wait_for_clickhouse_query(
+        "SELECT count() FROM pg_stat_ch.events_raw WHERE instance_uuid = '$instance_uuid'",
+        sub { $_[0] >= 1 },
+        10
+    );
+    cmp_ok($uuid_check, '>=', 1, 'Configured instance UUID is exported natively');
 
     # Clean up
     $node->safe_psql('postgres', 'DROP TABLE IF EXISTS test_fields');

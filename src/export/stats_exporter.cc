@@ -18,6 +18,7 @@ extern "C" {
 #include "export/arrow_batch.h"
 #include "export/clickhouse_exporter.h"
 #include "export/exporter_interface.h"
+#include "export/extra_attributes.h"
 #include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
 #include "export/stats_exporter.h"
@@ -239,6 +240,8 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
   exporter->BeginBatch();
 
+  const std::string instance_uuid = ExtraAttrs(psch_extra_attributes).Get("instance_uuid");
+  auto col_instance_uuid = exporter->StatHCString("instance_uuid");
   auto col_ts = exporter->StatTimestamp("ts");
   auto col_duration_us = exporter->DbDurationColumn();
   auto col_db_name = exporter->DbNameColumn();
@@ -294,6 +297,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   for (const auto& ev : events) {
     exporter->BeginRow();
 
+    col_instance_uuid->Append(instance_uuid);
     col_ts->Append(ev.ts_start + kPostgresEpochOffsetUs);
     col_duration_us->Append(ev.duration_us);
     col_db_name->Append(std::string(ev.datname, ev.datname_len));

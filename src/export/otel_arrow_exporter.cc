@@ -39,6 +39,7 @@ extern "C" {
 #include "pg_stat_ch/pg_stat_ch.h"
 #include "config/guc.h"
 #include "export/exporter_interface.h"
+#include "export/extra_attributes.h"
 #include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
 
@@ -115,43 +116,6 @@ struct ArrowSlot {
   std::string name;
   std::shared_ptr<arrow::Field> field;
   std::shared_ptr<arrow::ArrayBuilder> builder;
-};
-
-// Parse "key1:val1;key2:val2" into a flat list. First match wins on
-// duplicate keys (Get linear-scans from the front). Empty input -> empty list.
-class ExtraAttrs {
- public:
-  explicit ExtraAttrs(const char* raw) {
-    if (raw == nullptr) {
-      return;
-    }
-    std::string_view input(raw);
-    while (!input.empty()) {
-      const size_t delim = input.find(';');
-      const std::string_view token =
-          (delim == std::string_view::npos) ? input : input.substr(0, delim);
-      const size_t sep = token.find(':');
-      if (sep != std::string_view::npos) {
-        attrs_.emplace_back(std::string(token.substr(0, sep)), std::string(token.substr(sep + 1)));
-      }
-      if (delim == std::string_view::npos) {
-        break;
-      }
-      input.remove_prefix(delim + 1);
-    }
-  }
-
-  std::string Get(std::string_view key) const {
-    for (const auto& [k, v] : attrs_) {
-      if (k == key) {
-        return v;
-      }
-    }
-    return {};
-  }
-
- private:
-  std::vector<std::pair<std::string, std::string>> attrs_;
 };
 
 // ---------------------------------------------------------------------------
@@ -371,7 +335,7 @@ class OTelArrowExporter : public StatsExporter {
   // BeginRow so stats_exporter.cc's column-emission loop doesn't have to
   // know about them:
   //
-  // - 8 envelope columns + read_replica_type: per-process constants from
+  // - Envelope columns: per-process constants from
   //   pg_stat_ch.extra_attributes (or "none" default for read_replica_type
   //   per clickgres-platform's convention).
   // - service_version: PG_STAT_CH_VERSION macro, not from extra_attributes.
