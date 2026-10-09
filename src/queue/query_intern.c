@@ -180,7 +180,7 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
     return InvalidDsaPointer;
   }
 
-  dsa = PschDsaGetArea();
+  dsa = PschDsaAttach();
   if (dsa == NULL) {
     return InvalidDsaPointer;
   }
@@ -264,7 +264,7 @@ static void ReleaseRef(dsa_pointer ref) {
     return;
   }
 
-  dsa = PschDsaGetArea();
+  dsa = PschDsaAttach();
   if (dsa == NULL) {
     return;
   }
@@ -315,7 +315,7 @@ static void ResolveInto(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out
     return;
   }
 
-  dsa = PschDsaGetArea();
+  dsa = PschDsaAttach();
   if (dsa == NULL) {
     return;
   }
