@@ -384,7 +384,8 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
   InitBaseEvent(event, query_start_ts, current_query_is_top_level,
                 ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
-  event->rows = query_desc->estate->es_processed;
+  // Match pg_stat_statements row counts across cursor fetches.
+  event->rows = query_desc->estate->es_total_processed;
   event->cpu_user_time_us = cpu_user_us;
   event->cpu_sys_time_us = cpu_sys_us;
 
