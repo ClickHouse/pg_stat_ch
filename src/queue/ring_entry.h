@@ -1,11 +1,11 @@
 // Compact ring buffer entry for shared memory storage.
 //
 // PschRingEntry mirrors PschEvent's numeric fields identically but replaces
-// the two large inline char arrays (query[2048] and err_message[2048]) with
-// dsa_pointer values that reference variable-length strings allocated in a
-// DSA (Dynamic Shared Memory Area).
+// the large inline char arrays (query[2048], err_message[2048], and
+// relations[1024]) with dsa_pointer values that reference variable-length
+// strings allocated in a DSA (Dynamic Shared Memory Area).
 //
-// This shrinks each ring buffer slot from ~4.5KB to ~500 bytes while keeping
+// This shrinks each ring buffer slot from ~5KB to ~510 bytes while keeping
 // the public API type (PschEvent) unchanged.  The conversion happens
 // transparently inside PschEnqueueEvent / PschDequeueEvent.
 #ifndef PG_STAT_CH_SRC_QUEUE_RING_ENTRY_H_
@@ -98,10 +98,13 @@ typedef struct PschRingEntry {
   char client_addr[46];
   uint8 client_addr_len;
   uint16 query_len;
+  uint16 relations_len;
+  uint8 _padding4[6];  // Matches PschEvent's padding; see event.h for why.
 
-  // --- DSA pointers replace the two trailing char arrays in PschEvent ---
+  // --- DSA pointers replace the three trailing char arrays in PschEvent ---
   dsa_pointer err_message_dsa;  // was: char err_message[PSCH_MAX_ERR_MSG_LEN]
   dsa_pointer query_dsa;        // was: char query[PSCH_MAX_QUERY_LEN]
+  dsa_pointer relations_dsa;    // was: char relations[PSCH_MAX_RELATIONS_LEN]
 } PschRingEntry;
 
 // Verify that fixed prefix of PschRingEntry has same binary layout as
@@ -127,8 +130,10 @@ StaticAssertDecl(offsetof(PschEvent, application_name) == offsetof(PschRingEntry
                  "application_name offset mismatch");
 StaticAssertDecl(offsetof(PschEvent, query_len) == offsetof(PschRingEntry, query_len),
                  "query_len offset mismatch");
-// Fields after query_len diverge: PschEvent has char arrays, PschRingEntry
-// has dsa_pointers.  Intentional, fixed prefix up to query_len is
+StaticAssertDecl(offsetof(PschEvent, relations_len) == offsetof(PschRingEntry, relations_len),
+                 "relations_len offset mismatch");
+// Fields after relations_len diverge: PschEvent has char arrays, PschRingEntry
+// has dsa_pointers.  Intentional, fixed prefix up to relations_len is
 // block-copied with single memcpy.
 StaticAssertDecl(offsetof(PschEvent, err_message) == offsetof(PschRingEntry, err_message_dsa),
                  "err_message/err_message_dsa start offset mismatch");
