@@ -29,11 +29,13 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.otel_max_block_bytes
  pg_stat_ch.otel_metric_interval_ms
  pg_stat_ch.queue_capacity
+ pg_stat_ch.relations_enabled
+ pg_stat_ch.relations_max_len
  pg_stat_ch.sample_rate
  pg_stat_ch.string_area_size
  pg_stat_ch.use_otel
  pg_stat_ch.use_unified_arrow_exporter
-(30 rows)
+(32 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 

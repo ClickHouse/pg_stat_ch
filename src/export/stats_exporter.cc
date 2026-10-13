@@ -20,6 +20,7 @@ extern "C" {
 #include "export/exporter_interface.h"
 #include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
+#include "export/relations_decode.h"
 #include "export/stats_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -248,6 +249,10 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   auto col_db_operation = exporter->DbOperationColumn();
   auto col_rows = exporter->StatHCUInt64("rows");
   auto col_query_text = exporter->DbQueryTextColumn();
+  auto col_relation_namespaces = exporter->StatHCStringArray("relation_namespaces");
+  auto col_relation_names = exporter->StatHCStringArray("relation_names");
+  auto col_relation_kinds = exporter->StatHCStringArray("relation_kinds");
+  auto col_relations_truncated = exporter->StatLCUInt8("relations_truncated");
 
   auto col_shared_blks_hit = exporter->StatHCInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->StatHCInt64("shared_blks_read");
@@ -305,6 +310,14 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
 
     auto qlen = ClampFieldLen(ev.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
     col_query_text->Append(std::string(ev.query, qlen));
+
+    auto rlen = ClampFieldLen(ev.relations_len, static_cast<uint16>(PSCH_MAX_RELATIONS_LEN),
+                              "relations_len");
+    auto decoded = DecodeRelations(ev.relations, rlen);
+    col_relation_namespaces->Append(decoded.namespaces);
+    col_relation_names->Append(decoded.names);
+    col_relation_kinds->Append(decoded.kinds);
+    col_relations_truncated->Append(decoded.truncated ? 1 : 0);
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);

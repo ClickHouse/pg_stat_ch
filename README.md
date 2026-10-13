@@ -185,6 +185,8 @@ SELECT * FROM pg_stat_ch_stats();
 | `pg_stat_ch.clickhouse_use_tls` | bool | `off` | Restart | Enable TLS for ClickHouse connections |
 | `pg_stat_ch.clickhouse_skip_tls_verify` | bool | `off` | Restart | Skip TLS certificate verification (insecure) |
 | `pg_stat_ch.log_min_elevel` | enum | `warning` | Superuser | Minimum error level to capture (debug5..panic) |
+| `pg_stat_ch.relations_enabled` | bool | `on` | Superuser | Collect the relations array (tables/views a query touches) |
+| `pg_stat_ch.relations_max_len` | int | `1023` | Superuser | Maximum encoded size in bytes of the per-query relations blob |
 
 See [Error Level Values](docs/version-compatibility.md#error-fields) for the complete list of error levels and their numeric values in ClickHouse.
 

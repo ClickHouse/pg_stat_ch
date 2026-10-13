@@ -48,6 +48,7 @@ COPY third_party/clickhouse-c/ third_party/clickhouse-c/
 
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DPSCH_BUILD_UNIT_TESTS=OFF \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
     -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
     -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
