@@ -33,9 +33,22 @@ ENV PATH="/opt/vcpkg:${PATH}"
 
 WORKDIR /build/pg_stat_ch
 
-# Copy dependency manifests first for layer caching
+# Build vcpkg dependencies in their own layer so source changes don't rebuild them.
+# The cache mount keeps vcpkg's per-package binary archives across builds, so a
+# vcpkg.json change only rebuilds the ports it affects.
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY triplets/ triplets/
+RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
+    case "$(uname -m)" in \
+      x86_64) triplet=x64-linux-pic ;; \
+      aarch64) triplet=arm64-linux-pic ;; \
+      *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && echo "$triplet" > /build/vcpkg-triplet \
+    && vcpkg install --triplet="$triplet" --host-triplet="$triplet" \
+      --x-install-root=/build/vcpkg_installed \
+      --clean-after-build
+
 COPY CMakeLists.txt ./
 COPY cmake/ cmake/
 COPY include/ include/
@@ -49,7 +62,9 @@ COPY third_party/clickhouse-c/ third_party/clickhouse-c/
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-    -DVCPKG_TARGET_TRIPLET=x64-linux-pic \
+    -DVCPKG_TARGET_TRIPLET="$(cat /build/vcpkg-triplet)" \
+    -DVCPKG_HOST_TRIPLET="$(cat /build/vcpkg-triplet)" \
+    -DVCPKG_INSTALLED_DIR=/build/vcpkg_installed \
     -DVCPKG_OVERLAY_TRIPLETS=/build/pg_stat_ch/triplets \
     && cmake --build build --parallel $(nproc)
 
