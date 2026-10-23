@@ -45,17 +45,39 @@ static emit_log_hook_type prev_emit_log_hook = NULL;
 // Track nesting level to identify top-level queries
 static int nesting_level = 0;
 
-// CPU time tracking via getrusage
-static struct rusage rusage_start;
+// Per-query state captured at ExecutorStart and consumed at ExecutorEnd.
+//
+// Each tracked QueryDesc gets its own CPU baseline, start timestamp and
+// top-level flag, so a nested statement (SPI from triggers / RI checks /
+// PL functions) measures only its own CPU instead of everything the
+// outer statement has used so far, and an outer statement's top_level is
+// not overwritten by a nested ExecutorStart.
+//
+// ExecutorStart/End are not strictly stack-ordered (portals and cursors can
+// start, yield, and end later), so the state is keyed by QueryDesc rather
+// than by nesting depth. It is palloc'd in the query's es_query_cxt and
+// linked into a backend-local list; a reset callback on that context
+// unlinks it when the executor state is freed, whether by ExecutorEnd or by
+// memory context cleanup on error/abort. No stale entries can outlive the
+// executor state they describe.
+typedef struct PschQueryState {
+  struct PschQueryState* prev;
+  struct PschQueryState* next;
+  QueryDesc* query_desc;
+  EState* estate;
+  struct rusage rusage_start;
+  bool rusage_valid;
+  bool top_level;
+  TimestampTz start_ts;
+  MemoryContextCallback cleanup_cb;
+} PschQueryState;
+
+// Most recently started query first; ExecutorEnd normally finds its entry at
+// or near the head.
+static PschQueryState* query_states = NULL;
 
 // Deadlock prevention for emit_log_hook
 static bool disable_error_capture = false;
-
-// Track whether the current query started at top level
-static bool current_query_is_top_level = false;
-
-// Track query start time for duration calculation
-static TimestampTz query_start_ts = 0;
 
 // System initialization flag - set after hooks are installed and shmem is ready
 static bool system_init = false;
@@ -367,10 +389,62 @@ static void CopyParallelWorkerInfo(PschEvent* event pg_attribute_unused(),
 #endif
 }
 
-static uint64 QueryDurationUs(QueryDesc* query_desc) {
+static void QueryStateUnlink(void* arg) {
+  PschQueryState* state = (PschQueryState*)arg;
+  if (state->prev != NULL) {
+    state->prev->next = state->next;
+  } else if (query_states == state) {
+    query_states = state->next;
+  }
+  if (state->next != NULL) {
+    state->next->prev = state->prev;
+  }
+  state->prev = NULL;
+  state->next = NULL;
+}
+
+// Attach per-query state to query_desc. Must run after standard_ExecutorStart
+// so that the EState (and its es_query_cxt) exists.
+static void QueryStateRemember(QueryDesc* query_desc, bool top_level, TimestampTz start_ts,
+                               const struct rusage* rusage_start, bool rusage_valid) {
+  EState* estate = query_desc->estate;
+  if (estate == NULL) {
+    return;
+  }
+
+  PschQueryState* state =
+      (PschQueryState*)MemoryContextAlloc(estate->es_query_cxt, sizeof(PschQueryState));
+  state->query_desc = query_desc;
+  state->estate = estate;
+  state->rusage_start = *rusage_start;
+  state->rusage_valid = rusage_valid;
+  state->top_level = top_level;
+  state->start_ts = start_ts;
+  state->prev = NULL;
+  state->next = query_states;
+  if (query_states != NULL) {
+    query_states->prev = state;
+  }
+  query_states = state;
+
+  state->cleanup_cb.func = QueryStateUnlink;
+  state->cleanup_cb.arg = state;
+  MemoryContextRegisterResetCallback(estate->es_query_cxt, &state->cleanup_cb);
+}
+
+static PschQueryState* QueryStateLookup(QueryDesc* query_desc) {
+  for (PschQueryState* state = query_states; state != NULL; state = state->next) {
+    if (state->query_desc == query_desc && state->estate == query_desc->estate) {
+      return state;
+    }
+  }
+  return NULL;
+}
+
+static uint64 QueryDurationUs(QueryDesc* query_desc, TimestampTz start_ts) {
   Instrumentation* instr = PschQueryInstr(query_desc);
   if (instr == NULL) {
-    return (uint64)(GetCurrentTimestamp() - query_start_ts);
+    return (uint64)(GetCurrentTimestamp() - start_ts);
   }
 #if PG_VERSION_NUM >= 190000
   return (uint64)(INSTR_TIME_GET_MICROSEC(instr->total));
@@ -379,17 +453,17 @@ static uint64 QueryDurationUs(QueryDesc* query_desc) {
 #endif
 }
 
-static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
+static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, TimestampTz start_ts,
+                                    bool top_level, uint64 duration_us, int64 cpu_user_us,
                                     int64 cpu_sys_us) {
-  InitBaseEvent(event, query_start_ts, current_query_is_top_level,
-                ConvertCmdType(query_desc->operation));
+  InitBaseEvent(event, start_ts, top_level, ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
   event->rows = query_desc->estate->es_processed;
   event->cpu_user_time_us = cpu_user_us;
   event->cpu_sys_time_us = cpu_sys_us;
 
   // Instrumentation data (duration, buffer, WAL)
-  event->duration_us = QueryDurationUs(query_desc);
+  event->duration_us = duration_us;
   Instrumentation* instr = PschQueryInstr(query_desc);
   if (instr != NULL) {
     CopyBufferUsage(event, &instr->bufusage);
@@ -460,19 +534,20 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     return;
   }
 
-  // Record if this is a top-level query (before nesting_level changes in Run)
-  if (nesting_level == 0) {
-    current_query_is_top_level = true;
-    query_start_ts = GetCurrentTimestamp();
-    // Capture CPU time baseline for top-level queries
-    if (psch_enabled) {
-      getrusage(RUSAGE_SELF, &rusage_start);
-    }
-  } else {
-    current_query_is_top_level = false;
+  bool track = psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0);
+
+  // Capture this query's own baseline before ExecutorStart so plan
+  // initialization is included. Recorded per QueryDesc below; nesting_level
+  // is read here, before ExecutorRun/Finish change it.
+  bool top_level = (nesting_level == 0);
+  TimestampTz start_ts = 0;
+  struct rusage rusage_start;
+  bool rusage_valid = false;
+  if (track) {
+    start_ts = GetCurrentTimestamp();
+    rusage_valid = (getrusage(RUSAGE_SELF, &rusage_start) == 0);
   }
 
-  bool track = psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0);
 #if PG_VERSION_NUM >= 190000
   if (track) {
     query_desc->query_instr_options |= INSTRUMENT_ALL;
@@ -492,6 +567,10 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     MemoryContextSwitchTo(oldcxt);
   }
 #endif
+
+  if (track) {
+    QueryStateRemember(query_desc, top_level, start_ts, &rusage_start, rusage_valid);
+  }
 }
 
 #if PG_VERSION_NUM >= 180000
@@ -579,8 +658,14 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 #endif
 
+  // State is missing only if tracking was off at ExecutorStart (e.g.
+  // pg_stat_ch.enabled flipped mid-query); fall back to no CPU data.
+  PschQueryState* state = QueryStateLookup(query_desc);
+  TimestampTz start_ts = state != NULL ? state->start_ts : GetCurrentTimestamp();
+  bool top_level = state != NULL ? state->top_level : (nesting_level == 0);
+
   // Compute duration early for sampling filter
-  uint64 duration_us = QueryDurationUs(query_desc);
+  uint64 duration_us = QueryDurationUs(query_desc, start_ts);
 
   if (!ShouldSampleEvent(duration_us)) {
     if (prev_executor_end != NULL) {
@@ -591,17 +676,19 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
     return;
   }
 
-  // Compute CPU time delta from getrusage
+  // CPU time used since this query's own ExecutorStart (inclusive of any
+  // nested queries it ran, like duration).
   int64 cpu_user_us = 0;
   int64 cpu_sys_us = 0;
   struct rusage rusage_end;
-  if (getrusage(RUSAGE_SELF, &rusage_end) == 0) {
-    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, rusage_start.ru_utime);
-    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, rusage_start.ru_stime);
+  if (state != NULL && state->rusage_valid && getrusage(RUSAGE_SELF, &rusage_end) == 0) {
+    cpu_user_us = TimeDiffMicrosec(rusage_end.ru_utime, state->rusage_start.ru_utime);
+    cpu_sys_us = TimeDiffMicrosec(rusage_end.ru_stime, state->rusage_start.ru_stime);
   }
 
   PschEvent event;
-  BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us);
+  BuildEventFromQueryDesc(query_desc, &event, start_ts, top_level, duration_us, cpu_user_us,
+                          cpu_sys_us);
   PschEnqueueEvent(&event);
 
   if (prev_executor_end != NULL) {
