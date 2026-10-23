@@ -657,7 +657,10 @@ bool ClickHouseExporter::EstablishNewConnection() {
     chc_posix_io_init(&posix_io_, &io_, fd_, PschChcCheckCancel, nullptr);
   }
 
+  // We send LZ4, but the server compresses responses with its own
+  // network_compression_method (ZSTD by default on newer ClickHouse).
   chc_lz4_codec_init(&codec_);
+  chc_zstd_codec_init(&codec_);
 
   chc_client_opts opts = {};
   opts.client_name = "pg_stat_ch";
