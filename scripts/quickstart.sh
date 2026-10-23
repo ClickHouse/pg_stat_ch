@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS quickstart_demo (id int);
 INSERT INTO quickstart_demo(id) VALUES (1), (2), (3);
 SELECT count(*) FROM quickstart_demo;
 SELECT 42;
-SELECT '${marker}'::text;
+SELECT 1 AS ${marker};
 SELECT pg_stat_ch_flush();
 SQL
 
