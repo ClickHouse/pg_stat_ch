@@ -23,13 +23,13 @@ To stop the stack:
 
 ## Production setup
 
-For production, apply the schema directly to your ClickHouse instance:
+For production, apply the migrations to your ClickHouse instance with [goose](https://github.com/pressly/goose):
 
 ```bash
-clickhouse-client < docker/init/00-schema.sql
+goose -dir schema/migrations clickhouse "tcp://HOST:9000?database=pg_stat_ch" up
 ```
 
-The schema file ([`docker/init/00-schema.sql`](https://github.com/ClickHouse/pg_stat_ch/blob/main/docker/init/00-schema.sql)) is the single source of truth. It creates:
+The migrations in [`schema/migrations/`](https://github.com/ClickHouse/pg_stat_ch/tree/main/schema/migrations) are the single source of truth. Create the `pg_stat_ch` database first if it doesn't exist. They create:
 
 - The `pg_stat_ch` database
 - The `events_raw` table with all columns

@@ -1,12 +1,12 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.1
+    build:
+      context: ../..
+      dockerfile: docker/clickhouse/Dockerfile
     container_name: psch-quickstart-ch
     ports:
       - "29000:9000"   # Native protocol
       - "28123:8123"   # HTTP interface
-    volumes:
-      - ../init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD", "clickhouse-client", "-q", "SELECT 1"]
       interval: 2s

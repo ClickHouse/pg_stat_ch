@@ -89,7 +89,7 @@ If no row appears:
     If the database or tables don't exist, apply the schema:
 
     ```bash
-    clickhouse-client < docker/init/00-schema.sql
+    goose -dir schema/migrations clickhouse "tcp://HOST:9000?database=pg_stat_ch" up
     ```
   </Step>
   <Step title="Check PostgreSQL logs">
