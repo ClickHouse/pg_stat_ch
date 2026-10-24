@@ -11,7 +11,11 @@
 
 #include <string.h>
 
+#if PG_VERSION_NUM >= 170000
+#include "common/hashfn_unstable.h"
+#else
 #include "common/hashfn.h"
+#endif
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/dsa.h"
@@ -105,7 +109,11 @@ static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const cha
   MemSet(key, 0, sizeof(*key));
   key->dbid = dbid;
   key->queryid = queryid;
+#if PG_VERSION_NUM >= 170000
+  key->query_hash = fasthash64(query, query_len, 0);
+#else
   key->query_hash = hash_any_extended((const unsigned char*)query, query_len, 0);
+#endif
   key->query_len = query_len;
 }
 
