@@ -8,7 +8,9 @@ services:
       - "29000:9000"   # Native protocol
       - "28123:8123"   # HTTP interface
     healthcheck:
-      test: ["CMD", "clickhouse-client", "-q", "SELECT 1"]
+      # Require the migrated schema: the init-time temp server answers SELECT 1
+      # before 10-goose.sh creates events_raw.
+      test: ["CMD", "clickhouse-client", "-q", "SELECT 1 FROM pg_stat_ch.events_raw LIMIT 0"]
       interval: 2s
       timeout: 5s
       retries: 10

@@ -26,10 +26,12 @@ To stop the stack:
 For production, apply the migrations to your ClickHouse instance with [goose](https://github.com/pressly/goose):
 
 ```bash
+clickhouse-client --host HOST --port 9000 --database default \
+  --query "CREATE DATABASE IF NOT EXISTS pg_stat_ch"
 goose -dir schema/migrations clickhouse "tcp://HOST:9000?database=pg_stat_ch" up
 ```
 
-The migrations in [`schema/migrations/`](https://github.com/ClickHouse/pg_stat_ch/tree/main/schema/migrations) are the single source of truth. Create the `pg_stat_ch` database first if it doesn't exist. They create:
+The migrations in [`schema/migrations/`](https://github.com/ClickHouse/pg_stat_ch/tree/main/schema/migrations) are the single source of truth. goose connects to the `pg_stat_ch` database, so create it first (shown above). They create:
 
 - The `pg_stat_ch` database
 - The `events_raw` table with all columns

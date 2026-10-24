@@ -89,6 +89,8 @@ If no row appears:
     If the database or tables don't exist, apply the schema:
 
     ```bash
+    clickhouse-client --host HOST --port 9000 --database default \
+      --query "CREATE DATABASE IF NOT EXISTS pg_stat_ch"
     goose -dir schema/migrations clickhouse "tcp://HOST:9000?database=pg_stat_ch" up
     ```
   </Step>
