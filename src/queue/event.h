@@ -167,7 +167,7 @@ typedef struct PschEvent {
   // Variable-length text fields — kept last so the fixed-size prefix can be
   // block-copied between PschEvent and PschRingEntry with a single memcpy.
   char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
-  char query[PSCH_MAX_QUERY_LEN];          // Query text (null-terminated)
+  char query[PSCH_MAX_QUERY_LEN];          // Query text, unterminated, see query_len
 } PschEvent;
 
 // Ensure the struct has expected size characteristics

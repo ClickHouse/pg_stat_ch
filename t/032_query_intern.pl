@@ -14,7 +14,7 @@
 #   2. Set `string_area_size = 8MB` (the minimum allowed) so the DSA pool is
 #      tight.  6000 × ~2KB unique copies would be ~12MB.
 #   3. PREPARE/EXECUTE a single long normalized query that clamps near the
-#      2047-byte truncation limit.
+#      2048-byte truncation limit.
 #   4. After many EXECUTEs, assert:
 #      - the queue actually filled with events (proves the path under test ran)
 #      - dsa_oom_count == 0 (proves storage was deduplicated, not duplicated)
@@ -50,11 +50,11 @@ $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');
 psch_reset_stats($node);
 
 # ---------------------------------------------------------------------------
-# Build a normalized query whose cached text clamps near 2047 bytes.
+# Build a normalized query whose cached text clamps near 2048 bytes.
 #
 # Each "relname != 'tN'" condition is roughly 18 bytes after normalization
 # (the literal becomes $N).  ~140 conditions takes the normalized form well
-# past 2KB so the cache clamps to PSCH_MAX_QUERY_LEN-1 = 2047 bytes — the
+# past 2KB so the cache clamps to PSCH_MAX_QUERY_LEN = 2048 bytes — the
 # worst case for per-event DSA cost.
 # ---------------------------------------------------------------------------
 my @conditions = map { "relname != 'table_$_'" } (1..140);

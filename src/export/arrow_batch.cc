@@ -449,7 +449,7 @@ struct ArrowBatchBuilder::Impl {
 
     std::string labels;
     if (track_labels) {
-      labels = QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN - 1);
+      labels = QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN);
       if (!AppendString(&labels_builder, labels, "Arrow labels append")) {
         return false;
       }

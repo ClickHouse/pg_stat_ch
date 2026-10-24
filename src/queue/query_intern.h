@@ -73,8 +73,8 @@ dsa_pointer PschQueryInternAcquire(const char* query, uint16 query_len);
 // `query_len` must be the length passed to PschQueryInternAcquire; the key is
 // rebuilt from it and the stored bytes.
 //
-// Copies up to `dst_size - 1` bytes of the interned query into `dst` and
-// null-terminates.  Sets `*out_len` to the number of bytes copied.  Then
+// Copies up to `dst_size` bytes of the interned query into `dst` without a
+// terminator.  Sets `*out_len` to the number of bytes copied.  Then
 // decrements the refcount; if the refcount reaches zero the entry is removed
 // from the HTAB and the DSA object is freed.
 //

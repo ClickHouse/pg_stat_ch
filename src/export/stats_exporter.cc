@@ -312,7 +312,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_query_text->Append(query_text);
 
     if (col_labels != nullptr) {
-      col_labels->Append(QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN - 1));
+      col_labels->Append(QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN));
     }
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);
