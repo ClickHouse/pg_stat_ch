@@ -129,7 +129,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   if (event->query_len > 0) {
     // Clamp the input length to what we'd have stored anyway, so the intern
     // key doesn't include trailing bytes the consumer would have truncated.
-    uint16 clamped_len = Min(event->query_len, (uint16)(PSCH_MAX_QUERY_LEN - 1));
+    uint16 clamped_len = Min(event->query_len, (uint16)PSCH_MAX_QUERY_LEN);
     query_dsa = PschQueryInternAcquire(event->query, clamped_len);
     if (!DsaPointerIsValid(query_dsa)) {
       slot->query_len = 0;

@@ -36,7 +36,7 @@ typedef struct PschQueryInternKey {
 
 // Hash-table entry stored in the shared HTAB.  `key` must be first so dynahash
 // can locate it from the entry pointer.  `object` points at the raw query
-// bytes in the DSA area, without header or terminator, so a 2047-byte text
+// bytes in the DSA area, without header or terminator, so a 2048-byte text
 // fits DSA's 2048-byte size class.
 typedef struct PschQueryInternEntry {
   PschQueryInternKey key;
@@ -257,8 +257,8 @@ static void ReleaseRef(dsa_pointer ref, uint16 query_len) {
 
 // Copy the resolved query bytes into the caller's buffer.  Pure read; does
 // not touch the refcount.  No-op when ref is invalid, output args are
-// unusable, or the DSA area is gone (caller's buffer is left as-is — the
-// public entry point zeroes it first).
+// unusable, or the DSA area is gone (public entry point zeroes `*out_len`
+// first).
 //
 // We hold a reference (the caller's slot), so the object cannot be freed
 // underneath us during the copy.  No partition lock is needed for the read.
@@ -276,9 +276,8 @@ static void ResolveInto(dsa_pointer ref, uint16 query_len, char* dst, uint16 dst
     return;
   }
 
-  copy_len = Min(query_len, (uint16)(dst_size - 1));
+  copy_len = Min(query_len, dst_size);
   memcpy(dst, dsa_get_address(dsa, ref), copy_len);
-  dst[copy_len] = '\0';
   *out_len = copy_len;
 }
 
@@ -290,9 +289,6 @@ void PschQueryInternResolveAndRelease(dsa_pointer ref, uint16 query_len, char* d
   // so passing degenerate output args still drops the reference.
   if (out_len != NULL) {
     *out_len = 0;
-  }
-  if (dst != NULL && dst_size > 0) {
-    dst[0] = '\0';
   }
 
   ResolveInto(ref, query_len, dst, dst_size, out_len);
