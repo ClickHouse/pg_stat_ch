@@ -304,7 +304,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_rows->Append(ev.rows);
 
     auto qlen = ClampFieldLen(ev.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
-    col_query_text->Append(std::string(ev.query, qlen));
+    col_query_text->Append(std::string_view(ev.query, qlen));
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);
@@ -346,14 +346,14 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_err_elevel->Append(ev.err_elevel);
     auto elen = ClampFieldLen(ev.err_message_len, static_cast<uint16>(PSCH_MAX_ERR_MSG_LEN),
                               "err_message_len");
-    col_err_message->Append(std::string(ev.err_message, elen));
+    col_err_message->Append(std::string_view(ev.err_message, elen));
 
     auto alen = ClampFieldLen(ev.application_name_len, static_cast<uint8>(PSCH_MAX_APP_NAME_LEN),
                               "app_name_len");
     auto clen = ClampFieldLen(ev.client_addr_len, static_cast<uint8>(PSCH_MAX_CLIENT_ADDR_LEN),
                               "client_addr_len");
     col_app->Append(std::string(ev.application_name, alen));
-    col_client_addr->Append(std::string(ev.client_addr, clen));
+    col_client_addr->Append(std::string_view(ev.client_addr, clen));
   }
   elog(DEBUG1, "pg_stat_ch: finished processing %zu events", events.size());
 }
