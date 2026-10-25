@@ -65,7 +65,7 @@ my $baseline = psch_get_stats($node);
 # preserved verbatim in the normalized form, so distinct K produces both a
 # distinct queryid (parse tree differs) and a distinct query_hash (bytes
 # differ).  100 aliases of average ~16 bytes plus boilerplate clamps each
-# normalized form near the 2047-byte PSCH_MAX_QUERY_LEN ceiling.
+# normalized form near the 2048-byte PSCH_MAX_QUERY_LEN ceiling.
 # ---------------------------------------------------------------------------
 my $distinct_count   = 6000;
 my $aliases_per_query = 100;

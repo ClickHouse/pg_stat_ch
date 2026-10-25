@@ -169,15 +169,10 @@ static void UnpackSqlState(int sql_state, char* buf) {
   buf[5] = '\0';
 }
 
-static int GetApplicationName(char* buf, int buf_size) {
-  // The application_name GUC is the authoritative live value (the beentry's
-  // st_appname is populated from it, never the other way around).
-  if (application_name != NULL && application_name[0] != '\0') {
-    return (int)(PschCopyTrimmed(buf, buf_size, application_name));
-  }
-
-  buf[0] = '\0';
-  return 0;
+// The application_name GUC is the authoritative live value (the beentry's
+// st_appname is populated from it, never the other way around).
+static int GetApplicationName(char* buf) {
+  return (int)(PschCopyTrimmed(buf, PSCH_MAX_APP_NAME_LEN, application_name));
 }
 
 static int GetClientAddress(char* buf, int buf_size) {
@@ -266,13 +261,10 @@ static void CopyWalUsage(PschEvent* event, const WalUsage* wal) {
 // Initialize PschEvent by zeroing only the fixed-size prefix instead of the full
 // struct (~4.5KB).  After the field reorder in event.h, everything before
 // err_message is fixed-size, so one memset covers the numeric fields, names,
-// client context, and stored lengths. The two large text buffers only need a
-// leading '\0'; later code either overwrites them or leaves len=0.
+// client context, and stored lengths. Text buffers are read by length alone.
 static void InitEventPartial(PschEvent* event) {
   const size_t fixed_prefix_size = offsetof(PschEvent, err_message);
   memset(event, 0, fixed_prefix_size);
-  event->err_message[0] = '\0';
-  event->query[0] = '\0';
 }
 
 static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level,
@@ -288,12 +280,11 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level
 }
 
 static void CopyClientContext(PschEvent* event) {
-  event->application_name_len =
-      (uint8)(GetApplicationName(event->application_name, sizeof(event->application_name)));
+  event->application_name_len = (uint8)(GetApplicationName(event->application_name));
 
   EnsureBackendCache();
   if (backend_state.initialized) {
-    memcpy(event->client_addr, backend_state.client_addr, backend_state.client_addr_len + 1);
+    memcpy(event->client_addr, backend_state.client_addr, backend_state.client_addr_len);
     event->client_addr_len = backend_state.client_addr_len;
   } else {
     event->client_addr_len =
@@ -320,9 +311,9 @@ static void ResolveNames(PschEvent* event) {
   EnsureBackendCache();
 
   if (backend_state.initialized) {
-    memcpy(event->datname, backend_state.datname, backend_state.datname_len + 1);
+    memcpy(event->datname, backend_state.datname, backend_state.datname_len);
     event->datname_len = backend_state.datname_len;
-    memcpy(event->username, backend_state.username, backend_state.username_len + 1);
+    memcpy(event->username, backend_state.username, backend_state.username_len);
     event->username_len = backend_state.username_len;
     return;
   }
@@ -430,23 +421,19 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, PschJumbleSta
   // statement before we either normalize literals or store the unchanged text.
   query_text = CleanQuerytext(query_text, &query_loc, &query_len);
 
-  // Allocate the normalized/trimmed text in CurrentMemoryContext (typically the
-  // query context). PschRememberNormalizedQuery copies it into the cache's own
-  // long-lived context, so this allocation can be short-lived.
-  char* exported_query = NULL;
+  // PschRememberNormalizedQuery copies into the cache's own long-lived context,
+  // so normalized text can be allocated in the short-lived query context
   if (jstate != NULL && jstate->clocations_count > 0) {
-    exported_query = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
-  } else {
-    exported_query = PschCopyTrimmedStatement(query_text, query_len);
-    if (exported_query != NULL) {
-      query_len = (int)(strlen(exported_query));
+    char* normalized = PschNormalizeQuery(query_text, query_loc, &query_len, jstate);
+    if (normalized != NULL) {
+      PschRememberNormalizedQuery(&backend_state.normalize_cache, query->queryId, normalized,
+                                  query_len);
+      pfree(normalized);
     }
-  }
-
-  if (exported_query != NULL) {
-    PschRememberNormalizedQuery(&backend_state.normalize_cache, query->queryId, exported_query,
+  } else if (query_text != NULL && query_len > 0) {
+    PschTrimStatement(&query_text, &query_len);
+    PschRememberNormalizedQuery(&backend_state.normalize_cache, query->queryId, query_text,
                                 query_len);
-    pfree(exported_query);
   }
 }
 

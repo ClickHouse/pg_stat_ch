@@ -122,7 +122,7 @@ pg_stat_ch.normalize_cache_max = 64
 # ---------------------------------------------------------------------------
 # Test 2: Query-length clamping — queries > 2048 bytes get truncated
 #
-# The cache clamps stored text to PSCH_MAX_CACHED_QUERY_LEN - 1 (2047)
+# The cache clamps stored text to PSCH_MAX_CACHED_QUERY_LEN (2048)
 # bytes. Generate a normalized query > 2048 bytes and verify the exported
 # text is truncated.
 # ---------------------------------------------------------------------------
@@ -169,8 +169,8 @@ subtest 'long normalized query is clamped to max export length' => sub {
     );
 
     ok(length($exported_query) > 0, 'Exported query is non-empty');
-    cmp_ok(length($exported_query), '<=', 2047,
-        "Exported query length (" . length($exported_query) . ") <= 2047");
+    is(length($exported_query), 2048,
+        'Exported query fills 2048-byte limit');
     like($exported_query, qr/^SELECT \* FROM pg_class WHERE relname != \$1/,
         'Exported query starts with expected prefix');
 

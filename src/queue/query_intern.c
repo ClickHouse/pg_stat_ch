@@ -26,37 +26,23 @@
 #include "queue/psch_dsa.h"
 #include "queue/query_intern.h"
 
-// Magic number stamped into every DSA-allocated query object.  Used purely
-// as a sanity check when resolving a dsa_pointer that came from a ring slot.
-#define PSCH_QUERY_INTERN_MAGIC 0x51544348u  // "QTCH"
-
-// Hash-table key.  Combining (dbid, queryid, query_hash, query_len) makes
-// accidental collisions exceedingly rare without requiring full text in the
-// key.  PostgreSQL usually assigns the same query_id to same-shaped queries
-// so most lookups hit by query_id alone; the extra fields harden the key.
+// Hash-table key, derived from text alone so identical text dedupes across
+// databases and queryids.  Hits are verified with memcmp, so a 64-bit hash
+// collision drops the text rather than exporting wrong SQL.
 typedef struct PschQueryInternKey {
-  Oid dbid;
-  uint64 queryid;
   uint64 query_hash;
   uint16 query_len;
 } PschQueryInternKey;
 
 // Hash-table entry stored in the shared HTAB.  `key` must be first so dynahash
-// can locate it from the entry pointer.  The variable-size query bytes live
-// in the DSA area; `object` points at a PschQueryInternObject there.
+// can locate it from the entry pointer.  `object` points at the raw query
+// bytes in the DSA area, without header or terminator, so a 2048-byte text
+// fits DSA's 2048-byte size class.
 typedef struct PschQueryInternEntry {
   PschQueryInternKey key;
   dsa_pointer object;
   uint32 refcount;
 } PschQueryInternEntry;
-
-// DSA-resident body.  Stamped with the magic + a copy of the key so the
-// bgworker can recover the lock partition from a bare dsa_pointer.
-typedef struct PschQueryInternObject {
-  PschQueryInternKey key;
-  uint32 magic;
-  char query[FLEXIBLE_ARRAY_MEMBER];
-} PschQueryInternObject;
 
 // Shared HTAB handle (process-local pointer to a struct that lives in shmem).
 static HTAB* psch_query_intern_htab = NULL;
@@ -103,26 +89,15 @@ void PschQueryInternShmemInit(LWLockPadded* lwlock_base) {
                                              &info, HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 }
 
-static void MakeKey(PschQueryInternKey* key, Oid dbid, uint64 queryid, const char* query,
-                    uint16 query_len) {
+static void MakeKey(PschQueryInternKey* key, const char* query, uint16 query_len) {
   // Zero pad bytes so HASH_BLOBS hashing is deterministic.
   MemSet(key, 0, sizeof(*key));
-  key->dbid = dbid;
-  key->queryid = queryid;
 #if PG_VERSION_NUM >= 170000
   key->query_hash = fasthash64(query, query_len, 0);
 #else
   key->query_hash = hash_any_extended((const unsigned char*)query, query_len, 0);
 #endif
   key->query_len = query_len;
-}
-
-static void CopyKeyFields(PschQueryInternKey* dst, const PschQueryInternKey* src) {
-  MemSet(dst, 0, sizeof(*dst));
-  dst->dbid = src->dbid;
-  dst->queryid = src->queryid;
-  dst->query_hash = src->query_hash;
-  dst->query_len = src->query_len;
 }
 
 // Partition lock index must come from dynahash's own hashcode (the low-order
@@ -135,47 +110,26 @@ static LWLock* PartitionLockFor(uint32 hashcode) {
   return &psch_query_intern_locks[idx].lock;
 }
 
-// Allocate a fresh DSA object holding the query text and key.
+// Allocate a fresh DSA object holding the query text.
 // Returns InvalidDsaPointer on DSA OOM (and bumps the OOM counter, mirroring
 // PschDsaAllocString).
-static dsa_pointer AllocInternObject(dsa_area* dsa, const PschQueryInternKey* key,
-                                     const char* query, uint16 query_len) {
-  Size alloc_size;
-  dsa_pointer dp;
-  PschQueryInternObject* obj;
-
-  alloc_size = offsetof(PschQueryInternObject, query) + query_len + 1;
-  dp = dsa_allocate_extended(dsa, alloc_size, DSA_ALLOC_NO_OOM);
+static dsa_pointer AllocInternObject(dsa_area* dsa, const char* query, uint16 query_len) {
+  dsa_pointer dp = dsa_allocate_extended(dsa, query_len, DSA_ALLOC_NO_OOM);
   if (!DsaPointerIsValid(dp)) {
     pg_atomic_fetch_add_u64(&psch_shared_state->dsa_oom_count, 1);
     return InvalidDsaPointer;
   }
-
-  obj = (PschQueryInternObject*)dsa_get_address(dsa, dp);
-  CopyKeyFields(&obj->key, key);
-  obj->magic = PSCH_QUERY_INTERN_MAGIC;
-  memcpy(obj->query, query, query_len);
-  obj->query[query_len] = '\0';
+  memcpy(dsa_get_address(dsa, dp), query, query_len);
   return dp;
 }
 
-// Compare a query text against the bytes already stored in an interned object.
-// Returns true if the existing object holds exactly the same text.  A false
-// here on a hash hit is a (dbid, queryid, query_hash, query_len) collision —
-// extremely unlikely but the caller must handle it.
+// Caller has matched the key, so lengths are equal.  A false here is a
+// (query_hash, query_len) collision, extremely unlikely but must be handled.
 static bool ObjectMatches(dsa_area* dsa, dsa_pointer dp, const char* query, uint16 query_len) {
-  PschQueryInternObject* obj = (PschQueryInternObject*)dsa_get_address(dsa, dp);
-
-  if (obj->magic != PSCH_QUERY_INTERN_MAGIC) {
-    return false;
-  }
-  if (obj->key.query_len != query_len) {
-    return false;
-  }
-  return memcmp(obj->query, query, query_len) == 0;
+  return memcmp(dsa_get_address(dsa, dp), query, query_len) == 0;
 }
 
-dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, uint16 query_len) {
+dsa_pointer PschQueryInternAcquire(const char* query, uint16 query_len) {
   PschQueryInternKey key;
   uint32 hashcode;
   LWLock* partition;
@@ -193,7 +147,7 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
     return InvalidDsaPointer;
   }
 
-  MakeKey(&key, dbid, queryid, query, query_len);
+  MakeKey(&key, query, query_len);
   hashcode = get_hash_value(psch_query_intern_htab, &key);
   partition = PartitionLockFor(hashcode);
 
@@ -217,7 +171,7 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
 
   // Miss: allocate the new object outside the partition lock so we don't
   // hold it across DSA work.
-  new_dp = AllocInternObject(dsa, &key, query, query_len);
+  new_dp = AllocInternObject(dsa, query, query_len);
   if (!DsaPointerIsValid(new_dp)) {
     return InvalidDsaPointer;
   }
@@ -259,9 +213,8 @@ dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, 
 
 // Drop one reference to `ref`.  Frees the DSA object when refcount hits zero.
 // Caller has already copied any data it needs out of the object.
-static void ReleaseRef(dsa_pointer ref) {
+static void ReleaseRef(dsa_pointer ref, uint16 query_len) {
   dsa_area* dsa;
-  PschQueryInternObject* obj;
   PschQueryInternKey key;
   uint32 hashcode;
   LWLock* partition;
@@ -277,14 +230,9 @@ static void ReleaseRef(dsa_pointer ref) {
     return;
   }
 
-  obj = (PschQueryInternObject*)dsa_get_address(dsa, ref);
-  if (obj->magic != PSCH_QUERY_INTERN_MAGIC) {
-    // Object was never an interned body (or was already freed).  Don't
-    // touch the HTAB; just leak the pointer — better than corrupting it.
-    return;
-  }
-
-  CopyKeyFields(&key, &obj->key);
+  // Rehash the bytes to rebuild the key.  A mismatched length misses below
+  // and leaks the object rather than corrupting the HTAB.
+  MakeKey(&key, dsa_get_address(dsa, ref), query_len);
   hashcode = get_hash_value(psch_query_intern_htab, &key);
   partition = PartitionLockFor(hashcode);
 
@@ -309,14 +257,14 @@ static void ReleaseRef(dsa_pointer ref) {
 
 // Copy the resolved query bytes into the caller's buffer.  Pure read; does
 // not touch the refcount.  No-op when ref is invalid, output args are
-// unusable, the DSA area is gone, or the object's magic doesn't match
-// (caller's buffer is left as-is — the public entry point zeroes it first).
+// unusable, or the DSA area is gone (public entry point zeroes `*out_len`
+// first).
 //
 // We hold a reference (the caller's slot), so the object cannot be freed
 // underneath us during the copy.  No partition lock is needed for the read.
-static void ResolveInto(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len) {
+static void ResolveInto(dsa_pointer ref, uint16 query_len, char* dst, uint16 dst_size,
+                        uint16* out_len) {
   dsa_area* dsa;
-  PschQueryInternObject* obj;
   uint16 copy_len;
 
   if (!DsaPointerIsValid(ref) || dst == NULL || dst_size == 0 || out_len == NULL) {
@@ -328,33 +276,21 @@ static void ResolveInto(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out
     return;
   }
 
-  obj = (PschQueryInternObject*)dsa_get_address(dsa, ref);
-  if (obj->magic != PSCH_QUERY_INTERN_MAGIC) {
-    return;
-  }
-
-  copy_len = obj->key.query_len;
-  if (copy_len >= dst_size) {
-    copy_len = dst_size - 1;
-  }
-  memcpy(dst, obj->query, copy_len);
-  dst[copy_len] = '\0';
+  copy_len = Min(query_len, dst_size);
+  memcpy(dst, dsa_get_address(dsa, ref), copy_len);
   *out_len = copy_len;
 }
 
-void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size,
+void PschQueryInternResolveAndRelease(dsa_pointer ref, uint16 query_len, char* dst, uint16 dst_size,
                                       uint16* out_len) {
   // Zero outputs first so callers see a consistent empty result on any
   // failure inside ResolveInto.  The release is independent of the resolve:
-  // ReleaseRef always runs and has its own guards for invalid ref / no DSA /
-  // bad magic, so passing degenerate output args still drops the reference.
+  // ReleaseRef always runs and has its own guards for invalid ref / no DSA,
+  // so passing degenerate output args still drops the reference.
   if (out_len != NULL) {
     *out_len = 0;
   }
-  if (dst != NULL && dst_size > 0) {
-    dst[0] = '\0';
-  }
 
-  ResolveInto(ref, dst, dst_size, out_len);
-  ReleaseRef(ref);
+  ResolveInto(ref, query_len, dst, dst_size, out_len);
+  ReleaseRef(ref, query_len);
 }
