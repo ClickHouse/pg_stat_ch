@@ -1,14 +1,16 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.1
+    build:
+      context: ..
+      dockerfile: docker/clickhouse/Dockerfile
     container_name: psch-clickhouse
     ports:
       - "19000:9000"   # Native protocol
       - "18123:8123"   # HTTP interface
-    volumes:
-      - ./init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD", "clickhouse-client", "-q", "SELECT 1"]
+      # Require the migrated schema: the init-time temp server answers SELECT 1
+      # before 10-goose.sh creates events_raw.
+      test: ["CMD", "clickhouse-client", "-q", "SELECT 1 FROM pg_stat_ch.events_raw LIMIT 0"]
       interval: 2s
       timeout: 5s
       retries: 10
