@@ -1,0 +1,105 @@
+-- Relations array collection.
+-- Actual captured VALUES (which relations landed in the array) can only be
+-- verified against ClickHouse -- see t/039_relations_export.pl. This
+-- regression test covers what pg_regress *can* check synchronously: the GUC,
+-- and that ExecutorCheckPerms_hook doesn't crash/error across the basic
+-- shapes a per-query relations capture needs to handle (plain tables,
+-- schema-qualified tables, self-joins, views).
+CREATE EXTENSION pg_stat_ch;
+SELECT pg_stat_ch_reset();
+ pg_stat_ch_reset 
+------------------
+ 
+(1 row)
+
+-- GUC: registered, default, and settable within its bounds.
+SHOW pg_stat_ch.relations_max_len;
+ pg_stat_ch.relations_max_len 
+------------------------------
+ 1023
+(1 row)
+
+SET pg_stat_ch.relations_max_len = 64;
+SHOW pg_stat_ch.relations_max_len;
+ pg_stat_ch.relations_max_len 
+------------------------------
+ 64
+(1 row)
+
+RESET pg_stat_ch.relations_max_len;
+-- The minimum (2 bytes -- just enough for the header) must still work
+-- without error; see PSCH_RELATIONS_HEADER_LEN.
+SET pg_stat_ch.relations_max_len = 2;
+SHOW pg_stat_ch.relations_max_len;
+ pg_stat_ch.relations_max_len 
+------------------------------
+ 2
+(1 row)
+
+RESET pg_stat_ch.relations_max_len;
+CREATE TABLE rel_foo1(a int);
+CREATE TABLE rel_foo2(b int);
+CREATE SCHEMA rel_sch1;
+CREATE TABLE rel_sch1.foo3(c int);
+CREATE VIEW rel_v1 AS SELECT * FROM rel_foo1;
+-- Plain tables, schema-qualified table, self-join, view. Only checking
+-- these execute without error; see the TAP test for the actual captured
+-- relations values.
+SELECT * FROM rel_foo1;
+ a 
+---
+(0 rows)
+
+SELECT * FROM rel_foo1, rel_foo2;
+ a | b 
+---+---
+(0 rows)
+
+SELECT * FROM rel_sch1.foo3, rel_foo1;
+ c | a 
+---+---
+(0 rows)
+
+SELECT * FROM rel_foo1 AS a, rel_foo1 AS b;
+ a | a 
+---+---
+(0 rows)
+
+SELECT * FROM rel_v1;
+ a 
+---
+(0 rows)
+
+-- A query touching more relations than a tiny budget allows must not error --
+-- truncation, not failure.
+SET pg_stat_ch.relations_max_len = 8;
+SELECT * FROM rel_foo1, rel_foo2, rel_sch1.foo3;
+ a | b | c 
+---+---+---
+(0 rows)
+
+RESET pg_stat_ch.relations_max_len;
+-- Disabled collection must not crash.
+SET pg_stat_ch.relations_enabled = off;
+SELECT * FROM rel_foo1, rel_foo2;
+ a | b 
+---+---
+(0 rows)
+
+RESET pg_stat_ch.relations_enabled;
+SELECT enqueued_events > 0 AS has_enqueued_events FROM pg_stat_ch_stats();
+ has_enqueued_events 
+---------------------
+ t
+(1 row)
+
+SELECT dsa_oom_count = 0 AS has_no_dsa_ooms FROM pg_stat_ch_stats();
+ has_no_dsa_ooms 
+-----------------
+ t
+(1 row)
+
+DROP VIEW rel_v1;
+DROP TABLE rel_foo1, rel_foo2, rel_sch1.foo3;
+DROP SCHEMA rel_sch1;
+DROP EXTENSION pg_stat_ch;

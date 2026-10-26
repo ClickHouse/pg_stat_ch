@@ -30,6 +30,19 @@ The table is partitioned by date (`toDate(ts_start)`) and ordered by `ts_start` 
 Query normalization replaces literals with placeholders (`$N`). This means `SELECT * FROM users WHERE id = 42` becomes `SELECT * FROM users WHERE id = $1`. No passwords, tokens, or PII are exported in query text.
 </Note>
 
+## Relations
+
+| Column | Type | Description |
+|---|---|---|
+| `relation_namespaces` | `Array(LowCardinality(String))` | Schema name of each distinct table/view/materialized view/foreign table/partitioned table the query touched, positionally parallel to `relation_names` and `relation_kinds`. |
+| `relation_names` | `Array(LowCardinality(String))` | Relation name of each distinct relation the query touched. |
+| `relation_kinds` | `Array(FixedString(1))` | `pg_class.relkind` for each entry: `r` (table), `v` (view), `m` (materialized view), `f` (foreign table), `p` (partitioned table), etc. |
+| `relations_truncated` | `Bool` | `true` if the query touched more relations than fit within `pg_stat_ch.relations_max_len`; the arrays above are incomplete for that event. |
+
+<Note>
+All three relation arrays are empty for utility statements and for queries that touch no relations. See [`pg_stat_ch.relations_max_len`](/reference/configuration#pg_stat_chrelations_max_len) for the truncation budget and [`pg_stat_ch.relations_enabled`](/reference/configuration#pg_stat_chrelations_enabled) to disable collection entirely.
+</Note>
+
 ## Shared buffer usage
 
 These columns show how queries interact with PostgreSQL's `shared_buffers` cache. The cache hit ratio for a query is `shared_blks_hit / (shared_blks_hit + shared_blks_read)`. Target above 99% for OLTP workloads.

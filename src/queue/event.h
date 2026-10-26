@@ -16,10 +16,8 @@
 // 4. FAST COPY: memcpy() of 2KB is ~20ns on modern CPUs with cache. Variable-length
 //    would require copying arbitrary amounts of data under lock.
 //
-// ALTERNATIVE CONSIDERED: pg_stat_monitor uses DSA (Dynamic Shared Area) for
-// variable-length query text. This allows unlimited query length but adds complexity
-// with DSA allocation, OOM handling, and pointer management. For telemetry/metrics,
-// 2KB query text is sufficient - we don't need full query text for aggregation.
+// Each cap below also bounds how much of PschRingEntry's shared DSA pool one
+// query can consume, so no single query can starve others.
 #ifndef PG_STAT_CH_SRC_QUEUE_EVENT_H_
 #define PG_STAT_CH_SRC_QUEUE_EVENT_H_
 
@@ -44,6 +42,10 @@ extern "C" {
 
 // Maximum error message length (truncated if longer)
 #define PSCH_MAX_ERR_MSG_LEN 2048
+
+// Maximum length of the relations blob (layout in hooks.c, CollectRelations),
+// truncated on overflow like query text -- truncation is self-flagged.
+#define PSCH_MAX_RELATIONS_LEN 1024
 
 // Maximum application name length
 #define PSCH_MAX_APP_NAME_LEN (NAMEDATALEN - 1)
@@ -163,11 +165,19 @@ typedef struct PschEvent {
   char client_addr[46];        // Client IP address (INET6_ADDRSTRLEN=46)
   uint8 client_addr_len;       // Actual length
   uint16 query_len;            // Actual length of query text
+  uint16 relations_len;        // Actual length of relations blob (0 for utility statements)
+  // Keeps the fixed prefix's tail 8-byte aligned so it stays byte-identical
+  // to PschRingEntry's (dsa_pointer needs 8-byte alignment; char[] doesn't).
+  uint8 _padding4[6];
 
   // Variable-length text fields — kept last so the fixed-size prefix can be
   // block-copied between PschEvent and PschRingEntry with a single memcpy.
+  // All copied as raw bytes with no encoding conversion -- assumes UTF-8.
+  // A real fix needs pg_do_encoding_conversion() per field plus a test
+  // matrix across non-UTF-8/ICU locales; left as a documented gap for now.
   char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
   char query[PSCH_MAX_QUERY_LEN];          // Query text (null-terminated)
+  char relations[PSCH_MAX_RELATIONS_LEN];  // See CollectRelations in hooks.c for layout.
 } PschEvent;
 
 // Ensure the struct has expected size characteristics

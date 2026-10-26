@@ -129,6 +129,44 @@ ALTER SYSTEM SET pg_stat_ch.sample_rate = 0.0;
 SELECT pg_reload_conf();
 ```
 
+## Relations
+
+### `pg_stat_ch.relations_enabled`
+
+Collect the relations array (tables/views a query touches).
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `on` |
+| **Context** | suset |
+
+Toggling this off skips the catalog lookups entirely, not just the storage -- useful for isolating this feature's hot-path cost from pg_stat_ch's baseline overhead. In a synthetic benchmark across join widths of 1/5/10/20 tables, the added CPU cost measured between +0.05us and +1.75us per query.
+
+```sql
+-- Disable relations collection (e.g. to A/B the hot-path cost)
+SET pg_stat_ch.relations_enabled = off;
+```
+
+### `pg_stat_ch.relations_max_len`
+
+Maximum encoded size, in bytes, of the per-query relations blob.
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Default** | `1023` |
+| **Min** | `2` (just enough room for the 2-byte header) |
+| **Max** | `1023` |
+| **Context** | suset |
+
+Queries touching enough distinct relations to exceed this budget are truncated: `relations_truncated` is set to `true` for that event, and the relation arrays contain only as many entries as fit. Lower this if you want to bound the per-event ClickHouse payload size further; it cannot be raised above the compiled-in maximum.
+
+```sql
+-- Lower the budget, e.g. to bound payload size more aggressively
+SET pg_stat_ch.relations_max_len = 256;
+```
+
 ## Queue
 
 The shared-memory ring buffer sits between the foreground hooks and the background worker. These settings control its size and drain behavior.

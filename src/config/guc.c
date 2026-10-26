@@ -7,6 +7,7 @@
 #include <limits.h>
 
 #include "config/guc.h"
+#include "hooks/relations_budget.h"
 
 // GUC variable storage
 bool psch_enabled = true;
@@ -39,6 +40,8 @@ bool psch_use_unified_arrow_exporter = false;
 int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB (max: 16 MiB)
 char* psch_extra_attributes = NULL;
 char* psch_debug_arrow_dump_dir = NULL;
+int psch_relations_max_len = 1023;  // bytes, leaves room for the NUL in PSCH_MAX_RELATIONS_LEN=1024
+bool psch_relations_enabled = true;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
 // clang-format off
@@ -406,6 +409,32 @@ void PschInitGuc(void) {
       &psch_debug_arrow_dump_dir,
       "",
       PGC_SIGHUP,
+      0,
+      NULL, NULL, NULL);
+
+  DefineCustomIntVariable(
+      "pg_stat_ch.relations_max_len",
+      "Maximum bytes for the encoded list of tables/views a query touches.",
+      "Mirrors the query-text truncation pattern: the relations blob is a fixed "
+      "backend-local buffer, truncated (not grown) when a query touches enough "
+      "distinct relations to exceed this budget.",
+      &psch_relations_max_len,
+      1023,                              // bootValue
+      PSCH_RELATIONS_HEADER_LEN,         // min -- the header alone must still fit
+      1023,                              // max (PSCH_MAX_RELATIONS_LEN - 1, room for the NUL)
+      PGC_SUSET,
+      0,
+      NULL, NULL, NULL);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.relations_enabled",
+      "Collect the relations array (tables/views a query touches).",
+      "Toggling this off skips ExecutorCheckPerms_hook's catalog lookups "
+      "entirely, not just the storage -- useful for isolating this "
+      "feature's hot-path cost from pg_stat_ch's baseline overhead.",
+      &psch_relations_enabled,
+      true,
+      PGC_SUSET,
       0,
       NULL, NULL, NULL);
 
