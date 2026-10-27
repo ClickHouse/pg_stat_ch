@@ -195,6 +195,7 @@ class OTelArrowExporter : public StatsExporter {
   // -- Lifecycle --
   void BeginBatch() final;
   void BeginRow() final;
+  bool EndRow() final;
   bool CommitBatch() final;
 
   // Transport pass-through to the inner OTelExporter.
@@ -472,18 +473,6 @@ void OTelArrowExporter::BeginBatch() {
 }
 
 void OTelArrowExporter::BeginRow() {
-  if (batch_failed_) {
-    return;
-  }
-  // Mid-batch flush at the row boundary: only safe between rows (column
-  // builders are row-aligned), and only meaningful once at least one row is
-  // already accumulated.
-  if (row_count_ > 0 && bytes_estimate_ >= max_block_bytes_) {
-    if (!Flush()) {
-      batch_failed_ = true;
-      return;
-    }
-  }
   ++row_count_;
   // Synthesized columns fire here so the call site doesn't need to know
   // about them.
@@ -496,6 +485,16 @@ void OTelArrowExporter::BeginRow() {
   svc_ver_->Append(service_version_val_);
   host_id_->Append(host_id_val_);
   pod_name_->Append(pod_name_val_);
+}
+
+// Mid-batch flush at the row boundary: only safe between rows (column
+// builders are row-aligned)
+bool OTelArrowExporter::EndRow() {
+  if (bytes_estimate_ >= max_block_bytes_ && !Flush()) {
+    batch_failed_ = true;
+    return false;
+  }
+  return true;
 }
 
 bool OTelArrowExporter::CommitBatch() {

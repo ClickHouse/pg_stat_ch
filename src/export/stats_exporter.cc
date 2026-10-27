@@ -12,7 +12,6 @@ extern "C" {
 #include <exception>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "config/guc.h"
 #include "export/arrow_batch.h"
@@ -96,18 +95,6 @@ LenT ClampFieldLen(LenT len, LenT max, const char* field_name) {
   return max;
 }
 
-// Dequeue events from the shared memory queue
-std::vector<PschEvent> DequeueEvents(int max_events) {
-  std::vector<PschEvent> events;
-  events.reserve(std::min<size_t>(static_cast<size_t>(max_events), PschQueueDepth()));
-
-  PschEvent event;
-  while (events.size() < static_cast<size_t>(max_events) && PschDequeueEvent(&event)) {
-    events.push_back(event);
-  }
-  return events;
-}
-
 void MaybeDumpArrowBatch(const uint8_t* data, size_t len) {
   if (data == nullptr || len == 0 || psch_debug_arrow_dump_dir == nullptr ||
       *psch_debug_arrow_dump_dir == '\0') {
@@ -143,7 +130,8 @@ void MaybeDumpArrowBatch(const uint8_t* data, size_t len) {
   }
 }
 
-int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+// `event` holds first dequeued event and is reused as dequeue buffer
+int ExportEventsAsArrowInternal(PschEvent* event, int max_events, StatsExporter* exporter) {
   ArrowBatchBuilder builder;
   if (!builder.Init(psch_extra_attributes, PG_STAT_CH_VERSION)) {
     LogExporterWarning("Arrow init", "failed to initialize Arrow batch builder");
@@ -176,8 +164,9 @@ int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExpor
     return true;
   };
 
-  for (const auto& event : events) {
-    if (!builder.Append(event)) {
+  int dequeued = 0;
+  do {
+    if (!builder.Append(*event)) {
       export_failed = true;
       break;
     }
@@ -188,7 +177,7 @@ int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExpor
       }
       builder.Reset();
     }
-  }
+  } while (++dequeued < max_events && PschDequeueEvent(event));
 
   if (!export_failed && builder.NumRows() > 0 && !flush_builder()) {
     export_failed = true;
@@ -219,9 +208,9 @@ int ExportEventsAsArrowInternal(const std::vector<PschEvent>& events, StatsExpor
 // Exception barrier: Arrow + protobuf + ZSTD allocate via ::operator new and
 // throw std::bad_alloc on OOM. Catching here keeps the bgworker from unwinding
 // across PostgreSQL's PG_TRY/longjmp frames.
-int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+int ExportEventsAsArrow(PschEvent* event, int max_events, StatsExporter* exporter) {
   try {
-    return ExportEventsAsArrowInternal(events, exporter);
+    return ExportEventsAsArrowInternal(event, max_events, exporter);
   } catch (const std::bad_alloc&) {
     LogExporterWarning("Arrow export", "out of memory");
     RecordExporterFailure("Arrow export OOM");
@@ -233,10 +222,9 @@ int ExportEventsAsArrow(const std::vector<PschEvent>& events, StatsExporter* exp
   }
 }
 
-// Build and export stats (records, metrics, ClickHouse rows) from events
-void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporter* exporter) {
-  elog(DEBUG1, "pg_stat_ch: ExportEventStatsInternal() called with %zu events", events.size());
-
+// Build and export stats (records, metrics, ClickHouse rows) from events dequeued directly into
+// exporter columns. `event` holds first dequeued event and is reused as dequeue buffer
+void ExportEventStatsInternal(PschEvent* event, int max_events, StatsExporter* exporter) {
   exporter->BeginBatch();
 
   auto col_ts = exporter->StatTimestamp("ts");
@@ -291,7 +279,9 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   auto col_app = exporter->StatLCString("app");
   auto col_client_addr = exporter->StatHCString("client_addr");
 
-  for (const auto& ev : events) {
+  int dequeued = 0;
+  do {
+    const PschEvent& ev = *event;
     exporter->BeginRow();
 
     col_ts->Append(ev.ts_start + kPostgresEpochOffsetUs);
@@ -354,17 +344,18 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
                               "client_addr_len");
     col_app->Append(std::string(ev.application_name, alen));
     col_client_addr->Append(std::string_view(ev.client_addr, clen));
-  }
-  elog(DEBUG1, "pg_stat_ch: finished processing %zu events", events.size());
+    // Flush before dequeuing so failure leaves remaining events queued for next batch
+  } while (++dequeued < max_events && exporter->EndRow() && PschDequeueEvent(event));
+  elog(DEBUG1, "pg_stat_ch: finished processing %d events", dequeued);
 }
 
 // Exception barrier: protobuf arena, column factories, and per-row appends can
 // throw std::bad_alloc. Catching here prevents the throw from crossing the
 // bgworker's PG_TRY frame. Returns false on failure so the caller skips
 // CommitBatch and avoids flushing partial / stale exporter state.
-bool ExportEventStats(const std::vector<PschEvent>& events, StatsExporter* exporter) {
+bool ExportEventStats(PschEvent* event, int max_events, StatsExporter* exporter) {
   try {
-    ExportEventStatsInternal(events, exporter);
+    ExportEventStatsInternal(event, max_events, exporter);
     return true;
   } catch (const std::bad_alloc&) {
     LogExporterWarning("event stats export", "out of memory");
@@ -436,9 +427,9 @@ bool PschExporterInit(void) {
   }
 }
 
-// Exception barrier: DequeueEvents grows a std::vector of queued events and can
-// throw std::bad_alloc. Catching here prevents C++ exceptions from escaping this
-// extern "C" entry point or crossing PostgreSQL C frames.
+// Exception barrier: exporter setup and column appends can throw std::bad_alloc.
+// Catching here prevents C++ exceptions from escaping this extern "C" entry point
+// or crossing PostgreSQL C frames.
 int PschExportBatch(void) {
   try {
     elog(DEBUG1, "pg_stat_ch: PschExportBatch() called");
@@ -454,8 +445,9 @@ int PschExportBatch(void) {
 
     const int batch_max = PschEffectiveBatchMax();
     elog(DEBUG1, "pg_stat_ch: dequeuing events (max=%d)", batch_max);
-    std::vector<PschEvent> events = DequeueEvents(batch_max);
-    if (events.empty()) {
+    // Stream events into exporter columns, buffering a batch costs batch_max * sizeof(PschEvent)
+    PschEvent event;
+    if (!PschDequeueEvent(&event)) {
       elog(DEBUG1, "pg_stat_ch: no events to export");
       return 0;
     }
@@ -467,23 +459,15 @@ int PschExportBatch(void) {
     // when its GUC is on we skip the bypass and fall through to
     // ExportEventStats.
     if (psch_use_otel && psch_otel_arrow_passthrough && !psch_use_unified_arrow_exporter) {
-      elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events as Arrow IPC (legacy)",
-           events.size());
-      return ExportEventsAsArrow(events, exporter);
+      elog(DEBUG1, "pg_stat_ch: exporting events as Arrow IPC (legacy)");
+      return ExportEventsAsArrow(&event, batch_max, exporter);
     }
 
-    elog(DEBUG1, "pg_stat_ch: exporting batch of %zu events", events.size());
-    if (!ExportEventStats(events, exporter)) {
+    elog(DEBUG1, "pg_stat_ch: exporting events");
+    if (!ExportEventStats(&event, batch_max, exporter)) {
       return 0;
     }
 
-    // INVARIANT: `events` (std::vector<PschEvent>) and any other C++ RAII
-    // object in this scope must not be live across a PG call that can longjmp.
-    // CommitBatch, pg_atomic_fetch_add_u64, and PschRecordExportSuccess do not
-    // longjmp today, but if you add a PG call (e.g. elog(ERROR), table_open)
-    // here, narrow the scope of `events` to a nested {} block first or move
-    // the call below this point.  A longjmp through these frames skips
-    // destructors and leaks the events buffer (heap, not palloc).
     // Report 0 on commit failure: NumExported() still counts the staged rows,
     // and a full count tells the drain loop to keep going instead of backing off.
     if (!exporter->CommitBatch()) {

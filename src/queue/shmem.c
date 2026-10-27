@@ -454,23 +454,9 @@ bool PschDequeueEvent(PschEvent* event) {
   return true;
 }
 
-// Events waiting in the ring buffer.  Producers advance head concurrently, so
-// callers must treat the result as a sizing hint, not an exact count.
-uint32 PschQueueDepth(void) {
-  if (psch_shared_state == NULL) {
-    return 0;
-  }
-
-  uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-  pg_read_barrier();
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  uint64 depth = head - tail;
-  return Min((uint32)depth, psch_shared_state->capacity);
-}
-
 // A batch above queue_capacity is unreachable: one drain pass cannot yield more
 // events than the ring holds.  Clamping keeps the bgworker drain loop's
-// partial-batch test meaningful and bounds the dequeue buffer.
+// partial-batch test meaningful.
 int PschEffectiveBatchMax(void) {
   uint32 capacity =
       psch_shared_state != NULL ? psch_shared_state->capacity : (uint32)psch_queue_capacity;

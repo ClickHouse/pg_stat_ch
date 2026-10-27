@@ -203,8 +203,8 @@ void PschBgworkerMain(Datum main_arg pg_attribute_unused()) {
   // Store our PID for signaling (used by pg_stat_ch_flush())
   PschSetBgworkerPid(MyProcPid);
 
-  // Attach in this C frame: an attach ERROR raised inside DequeueEvents would
-  // longjmp past its std::vector destructor
+  // Attach in this C frame: an attach ERROR raised inside PschExportBatch would
+  // longjmp past C++ destructors
   PschDsaAttach();
 
   elog(LOG, "pg_stat_ch: background worker started (pid=%d)", MyProcPid);
