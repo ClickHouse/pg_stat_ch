@@ -71,7 +71,7 @@ pg_stat_ch.otel_arrow_passthrough = on
 pg_stat_ch.use_unified_arrow_exporter = on
 pg_stat_ch.debug_arrow_dump_dir = '$dump_dir'
 pg_stat_ch.hostname = 'unified-arrow-e2e-host'
-pg_stat_ch.extra_attributes = 'instance_ubid:test-instance;server_role:primary;region:test-region;cell:test-cell;read_replica_type:none'
+pg_stat_ch.extra_attributes = 'instance_ubid:test-instance;instance_uuid:01234567-89ab-8ad0-9234-56789abcdef0;server_role:primary;region:test-region;cell:test-cell;read_replica_type:none'
 });
 $node->start();
 $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_ch');
@@ -180,10 +180,10 @@ like($marker, qr/marker_select/,        "marker SELECT preserved query_text");
 
 # Envelope columns from extra_attributes were threaded through.
 my $envelope = psch_query_clickhouse(
-    "SELECT DISTINCT instance_ubid, server_role, region, cell, read_replica_type " .
+    "SELECT DISTINCT instance_ubid, instance_uuid, server_role, region, cell, read_replica_type " .
     "FROM pg_stat_ch.events_raw WHERE instance_ubid != '' LIMIT 1 FORMAT TSV");
 chomp $envelope;
-is($envelope, "test-instance\tprimary\ttest-region\ttest-cell\tnone",
+is($envelope, "test-instance\t01234567-89ab-8ad0-9234-56789abcdef0\tprimary\ttest-region\ttest-cell\tnone",
    "envelope columns populated from extra_attributes");
 
 $node->stop();
