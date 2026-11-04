@@ -1,8 +1,21 @@
 #include "export/sqlcommenter_parse.h"
 
+#include <cctype>
 #include <charconv>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace {
+
+// Tag length limits, in decoded bytes.
+constexpr size_t kMaxKeyLen = 65;
+constexpr size_t kMaxValueLen = 1024;
+
+struct Label {
+  std::string key;    // Decoded
+  std::string value;  // Decoded
+};
 
 int DecodeHexByte(char hi, char lo) {
   char buf[2] = {hi, lo};
@@ -13,125 +26,49 @@ int DecodeHexByte(char hi, char lo) {
   return static_cast<int>(value);
 }
 
-bool IsWhitespace(char c) {
-  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+bool IsSpace(char c) {
+  return std::isspace(static_cast<unsigned char>(c)) != 0;
 }
 
 bool IsKeyTerminator(char c) {
-  return c == '=' || c == ',' || IsWhitespace(c);
+  return c == '=' || c == ',' || IsSpace(c);
 }
 
-bool NeedsDecode(std::string_view sv) {
-  return sv.find('%') != std::string_view::npos || sv.find('\\') != std::string_view::npos;
+// [\w\-./:,] in ASCII, the allowed tag characters. None of them needs
+// escaping in JSON.
+bool IsTagChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+         c == '-' || c == '.' || c == '/' || c == ':' || c == ',';
 }
 
-// Meta-unescape (\' -> ') and URL-decode (%XX) in a single pass.
-// Per sqlcommenter spec, meta unescaping happens before URL decoding,
-// but the two transforms don't overlap so a combined pass is equivalent.
-size_t MetaUnescapeAndUrlDecode(std::string_view src, char* dst, size_t max_len) {
-  size_t written = 0;
-  size_t i = 0;
-  while (i < src.size() && written < max_len) {
-    if (src[i] == '\\' && i + 1 < src.size() && src[i + 1] == '\'') {
-      dst[written++] = '\'';
-      i += 2;
-    } else if (src[i] == '%' && i + 2 < src.size()) {
+bool IsValidTagField(std::string_view s, size_t max_len) {
+  if (s.empty() || s.size() > max_len)
+    return false;
+  for (char c : s) {
+    if (!IsTagChar(c))
+      return false;
+  }
+  return true;
+}
+
+// URL-decode %XX escapes; a '%' without two hex digits is kept as is. The
+// sqlcommenter meta-unescape (\' -> ') is skipped: neither ' nor \ is a tag
+// character, so a field that needs it is dropped either way.
+std::string UrlDecode(std::string_view src) {
+  std::string decoded;
+  decoded.reserve(src.size());
+  for (size_t i = 0; i < src.size(); ++i) {
+    if (src[i] == '%' && i + 2 < src.size()) {
       int byte = DecodeHexByte(src[i + 1], src[i + 2]);
       if (byte >= 0) {
-        dst[written++] = static_cast<char>(byte);
-        i += 3;
+        decoded.push_back(static_cast<char>(byte));
+        i += 2;
         continue;
       }
-      dst[written++] = src[i++];
-    } else {
-      dst[written++] = src[i++];
     }
+    decoded.push_back(src[i]);
   }
-  return written;
-}
-
-// Decode a raw field (meta-unescape + URL-decode) into buf, or truncate if no decoding needed.
-std::string_view DecodeField(std::string_view raw, char* buf, size_t max_len) {
-  if (NeedsDecode(raw)) {
-    size_t len = MetaUnescapeAndUrlDecode(raw, buf, max_len);
-    return {buf, len};
-  }
-  return raw.substr(0, max_len);
-}
-
-// Length of the valid UTF-8 sequence starting at s[i], or 0 if it is invalid
-// (bad lead byte, missing continuation, overlong form, surrogate, > U+10FFFF).
-size_t Utf8SequenceLen(std::string_view s, size_t i) {
-  auto b = [&](size_t k) { return static_cast<unsigned char>(s[k]); };
-  unsigned char c = b(i);
-  size_t len;
-  unsigned char lo = 0x80, hi = 0xBF;  // allowed range of the second byte
-  if (c < 0x80) {
-    return 1;
-  } else if (c >= 0xC2 && c <= 0xDF) {
-    len = 2;
-  } else if (c >= 0xE0 && c <= 0xEF) {
-    len = 3;
-    if (c == 0xE0)
-      lo = 0xA0;
-    if (c == 0xED)
-      hi = 0x9F;
-  } else if (c >= 0xF0 && c <= 0xF4) {
-    len = 4;
-    if (c == 0xF0)
-      lo = 0x90;
-    if (c == 0xF4)
-      hi = 0x8F;
-  } else {
-    return 0;
-  }
-  if (i + len > s.size() || b(i + 1) < lo || b(i + 1) > hi)
-    return 0;
-  for (size_t k = 2; k < len; ++k) {
-    if (b(i + k) < 0x80 || b(i + k) > 0xBF)
-      return 0;
-  }
-  return len;
-}
-
-// Append s as a quoted JSON string. URL decoding can produce arbitrary bytes,
-// so invalid UTF-8 bytes become U+FFFD to keep the output valid JSON.
-void AppendJsonString(std::string_view s, std::string* out) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  out->push_back('"');
-  for (size_t i = 0; i < s.size();) {
-    unsigned char c = static_cast<unsigned char>(s[i]);
-    size_t len = Utf8SequenceLen(s, i);
-    if (len == 0) {
-      out->append("\xEF\xBF\xBD");
-      ++i;
-      continue;
-    }
-    if (len > 1) {
-      out->append(s.substr(i, len));
-    } else if (c == '"' || c == '\\') {
-      out->push_back('\\');
-      out->push_back(static_cast<char>(c));
-    } else if (c == '\b') {
-      out->append("\\b");
-    } else if (c == '\f') {
-      out->append("\\f");
-    } else if (c == '\n') {
-      out->append("\\n");
-    } else if (c == '\r') {
-      out->append("\\r");
-    } else if (c == '\t') {
-      out->append("\\t");
-    } else if (c < 0x20) {
-      out->append("\\u00");
-      out->push_back(kHex[c >> 4]);
-      out->push_back(kHex[c & 0xF]);
-    } else {
-      out->push_back(static_cast<char>(c));
-    }
-    i += len;
-  }
-  out->push_back('"');
+  return decoded;
 }
 
 // Lightweight scanner for walking through a sqlcommenter comment.
@@ -142,7 +79,7 @@ struct Scanner {
   bool AtEnd() const { return pos >= text.size(); }
 
   void SkipWhitespace() {
-    while (!AtEnd() && IsWhitespace(text[pos]))
+    while (!AtEnd() && IsSpace(text[pos]))
       ++pos;
   }
 
@@ -164,8 +101,9 @@ struct Scanner {
 
   // Scan a single-quoted value, handling \' escapes per sqlcommenter spec.
   // Assumes the opening quote was already consumed.
-  // Returns the raw content (before decoding). Sets *ok = false on unterminated quote.
-  std::string_view ScanQuotedValue(bool* ok) {
+  // Returns the raw content (before decoding), or a view with data() == nullptr
+  // on an unterminated quote.
+  std::string_view ScanQuotedValue() {
     size_t start = pos;
     while (!AtEnd()) {
       if (text[pos] == '\\' && pos + 1 < text.size() && text[pos + 1] == '\'') {
@@ -173,98 +111,120 @@ struct Scanner {
       } else if (text[pos] == '\'') {
         auto val = text.substr(start, pos - start);
         ++pos;
-        *ok = true;
         return val;
       } else {
         ++pos;
       }
     }
-    *ok = false;
     return {};
   }
 };
 
-}  // namespace
-
+// Find the /* ... */ comment that ends the query text and return its content
+// between the delimiters, or empty if the query does not end with one.
 std::string_view ExtractLastComment(std::string_view query) {
-  auto end_pos = query.rfind("*/");
-  if (end_pos == std::string_view::npos)
+  size_t end = query.size();
+  while (end > 0 && IsSpace(query[end - 1]))
+    --end;
+  if (end < 2 || query.substr(end - 2, 2) != "*/")
     return {};
+  size_t end_pos = end - 2;
 
   auto start_pos = query.rfind("/*", end_pos);
   if (start_pos == std::string_view::npos)
     return {};
 
+  // A "--" on the comment's line, before it or inside it, means the final
+  // "*/" may sit in a line comment: the block comment is commented out, or its
+  // "/*" was inside a quoted identifier or string. A harmless "--" there is
+  // rejected too, which only drops labels and never invents them. Like the
+  // PostgreSQL scanner, treat both CR and LF as line ends.
+  auto line_start = query.find_last_of("\r\n", start_pos);
+  line_start = line_start == std::string_view::npos ? 0 : line_start + 1;
+  if (query.substr(line_start, end_pos - line_start).find("--") != std::string_view::npos)
+    return {};
+
   size_t content_start = start_pos + 2;
   if (content_start >= end_pos)
     return {};
-  return query.substr(content_start, end_pos - content_start);
+  std::string_view content = query.substr(content_start, end_pos - content_start);
+  // PostgreSQL ends a comment at its first "*/", so one inside means the query
+  // really ends in something else, such as a line comment or the outer part
+  // of a nested comment.
+  if (content.find("*/") != std::string_view::npos)
+    return {};
+  return content;
 }
 
-ParseResult ParseSqlcommenter(std::string_view comment) {
-  ParseResult result;
+// Parse sqlcommenter format: key1='value1',key2='value2'. Malformed syntax
+// yields no labels; a well-formed pair that breaks the tag rules is dropped.
+// A repeated key keeps its first position and takes the last value.
+std::vector<Label> ParseSqlcommenter(std::string_view comment) {
+  std::vector<Label> labels;
+  std::unordered_map<std::string, size_t> index_by_key;
   Scanner scan{comment};
 
-  while (!scan.AtEnd() && result.count < kMaxLabels) {
-    scan.SkipWhitespace();
-
+  scan.SkipWhitespace();
+  while (!scan.AtEnd()) {
     auto raw_key = scan.ScanKey();
-    if (raw_key.empty()) {
-      if (!scan.AtEnd())
-        ++scan.pos;
-      continue;
-    }
-
     scan.SkipWhitespace();
-    if (!scan.Consume('='))
-      continue;
+    if (raw_key.empty() || !scan.Consume('='))
+      return {};
     scan.SkipWhitespace();
     if (!scan.Consume('\''))
-      continue;
+      return {};
+    auto raw_value = scan.ScanQuotedValue();
+    if (raw_value.data() == nullptr)
+      return {};
 
-    bool ok = false;
-    auto raw_value = scan.ScanQuotedValue(&ok);
-    if (!ok)
+    std::string key = UrlDecode(raw_key);
+    std::string value = UrlDecode(raw_value);
+    if (IsValidTagField(key, kMaxKeyLen) && IsValidTagField(value, kMaxValueLen)) {
+      auto [it, inserted] = index_by_key.try_emplace(key, labels.size());
+      if (inserted)
+        labels.push_back({std::move(key), std::move(value)});
+      else
+        labels[it->second].value = std::move(value);
+    }
+
+    scan.SkipWhitespace();
+    if (scan.AtEnd())
       break;
-
-    Label& label = result.labels[result.count++];
-    label.key = DecodeField(raw_key, label.decoded_key, kMaxKeyLen);
-    label.value = DecodeField(raw_value, label.decoded_value, kMaxValueLen);
-
+    if (!scan.Consume(','))
+      return {};
     scan.SkipWhitespace();
-    scan.Consume(',');
+    if (scan.AtEnd())
+      return {};  // trailing comma
   }
 
-  if (result.count == kMaxLabels) {
-    scan.SkipWhitespace();
-    if (!scan.AtEnd())
-      result.truncated = true;
-  }
-
-  return result;
+  return labels;
 }
 
-std::string SerializeLabelsJson(const ParseResult& result) {
+// Serialize labels to JSON: {"key1":"val1","key2":"val2"}, or "{}" when empty.
+std::string SerializeLabelsJson(const std::vector<Label>& labels) {
   std::string out = "{";
-  for (int i = 0; i < result.count; ++i) {
-    std::string_view key = result.labels[i].key;
-    // Duplicate keys keep the first position and the last value.
-    bool seen = false;
-    for (int j = 0; j < i && !seen; ++j)
-      seen = result.labels[j].key == key;
-    if (seen)
-      continue;
-    std::string_view value = result.labels[i].value;
-    for (int j = i + 1; j < result.count; ++j) {
-      if (result.labels[j].key == key)
-        value = result.labels[j].value;
-    }
+  for (const Label& label : labels) {
     if (out.size() > 1)
       out += ',';
-    AppendJsonString(key, &out);
-    out += ':';
-    AppendJsonString(value, &out);
+    out += '"';
+    out += label.key;
+    out += "\":\"";
+    out += label.value;
+    out += '"';
   }
   out += '}';
   return out;
+}
+
+}  // namespace
+
+std::string QueryLabelsJson(std::string_view query_text, size_t max_stored_len) {
+  // The cut can land right after a comment from the middle of the query,
+  // which would then look like it ends the query.
+  if (query_text.size() >= max_stored_len)
+    return "{}";
+  std::string_view comment = ExtractLastComment(query_text);
+  if (comment.empty())
+    return "{}";
+  return SerializeLabelsJson(ParseSqlcommenter(comment));
 }

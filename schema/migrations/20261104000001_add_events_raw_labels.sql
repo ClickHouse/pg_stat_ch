@@ -1,8 +1,8 @@
 -- Add the labels column for sqlcommenter query labels.
 --
--- The bgworker parses the last /* key='value' */ comment in each query and
--- exports the pairs as a JSON object string. Events without labels, and
--- producers older than this column, store '{}'.
+-- With pg_stat_ch.track_labels on, the bgworker parses the /* key='value' */
+-- comment that ends each query and exports the pairs as a JSON object string.
+-- Events without labels, and producers that don't send the column, store '{}'.
 
 -- +goose Up
 
@@ -15,6 +15,7 @@ ALTER TABLE pg_stat_ch.events_raw
 
 -- +goose Down
 
--- +goose StatementBegin
-ALTER TABLE pg_stat_ch.events_raw DROP COLUMN IF EXISTS labels;
--- +goose StatementEnd
+-- Keep the column on rollback: ClickHouse refuses to drop it while
+-- events_recent_1h's SELECT * depends on it, and producers that don't send it
+-- still insert.
+SELECT 1;

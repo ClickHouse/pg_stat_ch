@@ -249,7 +249,9 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   auto col_db_operation = exporter->DbOperationColumn();
   auto col_rows = exporter->StatHCUInt64("rows");
   auto col_query_text = exporter->DbQueryTextColumn();
-  auto col_labels = exporter->StatHCString("labels");
+  // Only declared when label tracking is on, so inserts keep the old column
+  // set until the destination schema has `labels`.
+  auto col_labels = psch_track_labels ? exporter->StatHCString("labels") : nullptr;
 
   auto col_shared_blks_hit = exporter->StatHCInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->StatHCInt64("shared_blks_read");
@@ -309,13 +311,9 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     std::string_view query_text(ev.query, qlen);
     col_query_text->Append(query_text);
 
-    ParseResult labels;
-    if (psch_track_labels) {
-      std::string_view comment = ExtractLastComment(query_text);
-      if (!comment.empty())
-        labels = ParseSqlcommenter(comment);
+    if (col_labels != nullptr) {
+      col_labels->Append(QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN - 1));
     }
-    col_labels->Append(SerializeLabelsJson(labels));
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);

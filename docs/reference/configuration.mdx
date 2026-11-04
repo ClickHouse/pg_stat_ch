@@ -136,10 +136,10 @@ Extract [sqlcommenter](https://google.github.io/sqlcommenter/) labels from query
 | | |
 |---|---|
 | **Type** | boolean |
-| **Default** | `on` |
-| **Context** | sighup |
+| **Default** | `off` |
+| **Context** | postmaster |
 
-When enabled, the background worker parses the last `/* key='value' */` comment in each query and exports the pairs as a JSON object in the `labels` column (the `labels` attribute in OpenTelemetry). When disabled, `labels` is `{}`.
+When enabled, the background worker parses the `/* key='value' */` comment that ends each query and exports the pairs as a JSON object in the `labels` column (the `labels` attribute in OpenTelemetry). When disabled, no `labels` column is sent, so ClickHouse stores its `{}` default. Apply the `labels` schema migration before enabling it.
 
 ## Queue
 
