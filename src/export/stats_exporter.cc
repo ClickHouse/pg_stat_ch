@@ -20,6 +20,7 @@ extern "C" {
 #include "export/exporter_interface.h"
 #include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
+#include "export/sqlcommenter_parse.h"
 #include "export/stats_exporter.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -248,6 +249,7 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
   auto col_db_operation = exporter->DbOperationColumn();
   auto col_rows = exporter->StatHCUInt64("rows");
   auto col_query_text = exporter->DbQueryTextColumn();
+  auto col_labels = exporter->StatHCString("labels");
 
   auto col_shared_blks_hit = exporter->StatHCInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->StatHCInt64("shared_blks_read");
@@ -304,7 +306,16 @@ void ExportEventStatsInternal(const std::vector<PschEvent>& events, StatsExporte
     col_rows->Append(ev.rows);
 
     auto qlen = ClampFieldLen(ev.query_len, static_cast<uint16>(PSCH_MAX_QUERY_LEN), "query_len");
-    col_query_text->Append(std::string_view(ev.query, qlen));
+    std::string_view query_text(ev.query, qlen);
+    col_query_text->Append(query_text);
+
+    ParseResult labels;
+    if (psch_track_labels) {
+      std::string_view comment = ExtractLastComment(query_text);
+      if (!comment.empty())
+        labels = ParseSqlcommenter(comment);
+    }
+    col_labels->Append(SerializeLabelsJson(labels));
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);
     col_shared_blks_read->Append(ev.shared_blks_read);

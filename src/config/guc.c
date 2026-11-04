@@ -30,6 +30,7 @@ int psch_otel_log_batch_size = 8192;
 int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 MiB
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
+bool psch_track_labels = true;
 bool psch_debug_force_locked_overflow = false;
 int psch_min_duration_us = 0;
 int psch_normalize_cache_max = 32768;
@@ -405,6 +406,17 @@ void PschInitGuc(void) {
       "being sent through OTLP. Intended for test validation and debugging only.",
       &psch_debug_arrow_dump_dir,
       "",
+      PGC_SIGHUP,
+      0,
+      NULL, NULL, NULL);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.track_labels",
+      "Extract sqlcommenter labels from query comments.",
+      "When enabled, the background worker parses /* key='value' */ comments "
+      "and exports them as a JSON labels column (attribute in OTel).",
+      &psch_track_labels,
+      true,
       PGC_SIGHUP,
       0,
       NULL, NULL, NULL);

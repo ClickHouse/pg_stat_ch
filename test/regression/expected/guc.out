@@ -31,9 +31,10 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.queue_capacity
  pg_stat_ch.sample_rate
  pg_stat_ch.string_area_size
+ pg_stat_ch.track_labels
  pg_stat_ch.use_otel
  pg_stat_ch.use_unified_arrow_exporter
-(30 rows)
+(31 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 
@@ -94,6 +95,13 @@ SHOW pg_stat_ch.normalize_cache_max;
  pg_stat_ch.normalize_cache_max 
 --------------------------------
  32768
+(1 row)
+
+-- Test track_labels GUC (PGC_SIGHUP: can't SET, only ALTER SYSTEM + reload)
+SHOW pg_stat_ch.track_labels;
+ pg_stat_ch.track_labels 
+-------------------------
+ on
 (1 row)
 
 -- Test that clickhouse_password is hidden from non-superusers (issue #3)
