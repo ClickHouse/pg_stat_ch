@@ -127,7 +127,7 @@ Error fields are populated when a query produces an error or warning (captured v
 |---|---|---|
 | `err_sqlstate` | `FixedString(5)` | 5-character SQLSTATE error code. See [common SQLSTATE codes](#common-sqlstate-codes) below. |
 | `err_elevel` | `UInt8` | Error severity: 0 = success, 19 = WARNING, 21 = ERROR, 22 = FATAL, 23 = PANIC. Filter `err_elevel >= 21` for actual errors. |
-| `err_message` | `String` | Human-readable error description, truncated to 2 KB. |
+| `err_message` | `String` | Untranslated message format string, e.g. `invalid input syntax for type %s: "%s"`, truncated to 2 KB. Argument values are omitted. PL/pgSQL `RAISE` with a message exports `%s`. Empty for errors rethrown from parallel workers, which have no format string. |
 
 The minimum captured severity is controlled by [`pg_stat_ch.log_min_elevel`](/reference/configuration#pg_stat_chlog_min_elevel) (default: `warning`).
 

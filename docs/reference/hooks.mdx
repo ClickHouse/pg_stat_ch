@@ -128,6 +128,7 @@ See the [events schema reference](/reference/events-schema#error-level-values) f
 |-------|-------------|-------------|
 | `sqlerrcode` | SQLSTATE code (packed) | `err_sqlstate` (unpacked to 5-char) |
 | `elevel` | Error severity | `err_elevel` |
+| `message_id` | Untranslated message format string | `err_message` |
 
 **Example SQLSTATE codes:**
 - `42P01` - Undefined table

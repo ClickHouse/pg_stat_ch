@@ -780,7 +780,7 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // debug_query_string and cursor position, not the exact statement identity used
 // by ExecutorEnd/ProcessUtility, so reconstructing normalized SQL required
 // fuzzy matching and extra backend-local state. Error events still carry the
-// message, SQLSTATE, and client/session metadata.
+// message format string, SQLSTATE, and client/session metadata.
 // This runs inside errfinish (via PschEmitLogHook), which holds the recursion
 // guard and wraps us in PG_TRY: if anything here throws (e.g. the catalog
 // fallback in ResolveNames failing to allocate under OOM), the nested error is
@@ -792,9 +792,15 @@ static void CaptureLogEvent(ErrorData* edata) {
   UnpackSqlState(edata->sqlerrcode, event.err_sqlstate);
   event.err_elevel = (uint8)(edata->elevel);
 
-  if (edata->message != NULL) {
+  // edata->message has argument values substituted in. These are often user
+  // data, such as input values, query fragments, and key values. Export
+  // message_id, the untranslated format string, to drop every argument and
+  // group the same error regardless of lc_messages. PL/pgSQL RAISE, PL/Python,
+  // and FDW remote errors pass their whole message through "%s". Errors
+  // rethrown from parallel workers have no message_id and export no message.
+  if (edata->message_id != NULL) {
     event.err_message_len =
-        (uint16)(PschCopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
+        (uint16)(PschCopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message_id));
   }
 
   CopyClientContext(&event);
