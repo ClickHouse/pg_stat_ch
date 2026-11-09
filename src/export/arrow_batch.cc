@@ -26,8 +26,10 @@ extern "C" {
 #include <utility>
 #include <vector>
 
+#include "config/guc.h"
 #include "export/arrow_batch.h"
 #include "export/exporter_interface.h"
+#include "export/sqlcommenter_parse.h"
 
 namespace {
 
@@ -199,9 +201,11 @@ struct ArrowBatchBuilder::Impl {
   DictBuilder service_version_builder;
   arrow::StringBuilder host_id_builder;
   arrow::StringBuilder pod_name_builder;
+  arrow::StringBuilder labels_builder;
 
   std::unordered_map<std::string, std::string> extra_attrs;
   std::string service_version;
+  bool track_labels = false;
   int num_rows = 0;
   size_t estimated_bytes = 0;
 
@@ -210,7 +214,8 @@ struct ArrowBatchBuilder::Impl {
   bool Init(const char* extra_attrs_input, const char* service_version_input) {
     service_version = service_version_input != nullptr ? service_version_input : "";
     ParseExtraAttributes(extra_attrs_input != nullptr ? extra_attrs_input : "");
-    schema = arrow::schema({
+    track_labels = psch_track_labels;
+    arrow::FieldVector fields = {
         arrow::field("ts", TimestampType()),
         arrow::field("severity", DictionaryUtf8Type()),
         arrow::field("body", arrow::utf8()),
@@ -267,7 +272,13 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("service_version", DictionaryUtf8Type()),
         arrow::field("host_id", arrow::utf8()),
         arrow::field("pod_name", arrow::utf8()),
-    });
+    };
+    // Only present when label tracking is on, so producers keep the old wire
+    // shape until the downstream table has the column.
+    if (track_labels) {
+      fields.push_back(arrow::field("labels", arrow::utf8()));
+    }
+    schema = arrow::schema(std::move(fields));
     Reset();
     return true;
   }
@@ -436,8 +447,16 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    estimated_bytes += kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() +
-                       client_addr.size() + query_text.size() + err_message.size() +
+    std::string labels;
+    if (track_labels) {
+      labels = QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN - 1);
+      if (!AppendString(&labels_builder, labels, "Arrow labels append")) {
+        return false;
+      }
+    }
+
+    estimated_bytes += labels.size() + kFixedBytesPerRow + db_name.size() + db_user.size() +
+                       app.size() + client_addr.size() + query_text.size() + err_message.size() +
                        err_sqlstate.size() + service_version.size() +
                        ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
                        ExtraAttr("server_role").size() + ExtraAttr("read_replica_type").size() +
@@ -529,7 +548,8 @@ struct ArrowBatchBuilder::Impl {
         !add_dict_array(&cell_builder, "Arrow cell finish") ||
         !add_dict_array(&service_version_builder, "Arrow service_version finish") ||
         !add_array(&host_id_builder, "Arrow host_id finish") ||
-        !add_array(&pod_name_builder, "Arrow pod_name finish")) {
+        !add_array(&pod_name_builder, "Arrow pod_name finish") ||
+        (track_labels && !add_array(&labels_builder, "Arrow labels finish"))) {
       return {};
     }
 
@@ -637,6 +657,7 @@ struct ArrowBatchBuilder::Impl {
     service_version_builder.ResetFull();
     host_id_builder.Reset();
     pod_name_builder.Reset();
+    labels_builder.Reset();
     num_rows = 0;
     estimated_bytes = kIpcEnvelopeBytes;
   }
