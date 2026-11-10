@@ -83,6 +83,7 @@ class StatsExporter {
 
   virtual void BeginBatch() = 0;
   virtual void BeginRow() = 0;
+  virtual bool EndRow() = 0;
   virtual bool CommitBatch() = 0;
 
   virtual bool EstablishNewConnection() = 0;
@@ -126,6 +127,7 @@ void RecordExporterFailure(const char* message);
 //     exporter->BeginRow(); // no-op or initialize tag map
 //     col_user->Append(ev.username);
 //     col_rows->Append(ev.rows);
+//     if (!exporter->EndRow()) break; // false after failed mid-batch flush
 //   }
 //
 //   exporter->CommitBatch();  // Inserts or collects stats

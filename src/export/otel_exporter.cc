@@ -134,19 +134,20 @@ class OTelExporter : public StatsExporter {
   }
 
   void BeginRow() final {
-    if (batch_failed_) {
-      return;
-    }
-    if (ChunkFull()) {
-      if (!FlushChunk()) {
-        batch_failed_ = true;
-        return;
-      }
-      ResetChunk();
-    }
     current_record_ = scope_logs_->add_log_records();
     ++chunk_count_;
     chunk_bytes_ += kLogRecordOverheadBytes;
+  }
+
+  bool EndRow() final {
+    if (ChunkFull()) {
+      if (!FlushChunk()) {
+        batch_failed_ = true;
+        return false;
+      }
+      ResetChunk();
+    }
+    return true;
   }
 
   bool CommitBatch() final;

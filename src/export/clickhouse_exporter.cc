@@ -198,6 +198,7 @@ class ClickHouseExporter : public StatsExporter {
     exported_count_ = 0;
   }
   void BeginRow() final { ++exported_count_; }
+  bool EndRow() final { return true; }
   bool CommitBatch() final;
 
   bool EstablishNewConnection() final;
