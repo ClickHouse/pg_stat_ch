@@ -50,10 +50,7 @@ static void EnsureCacheInitialized(PschNormalizedQueryCache* cache) {
 }
 
 static int ClampCachedQueryLen(int normalized_len) {
-  if (normalized_len >= PSCH_MAX_CACHED_QUERY_LEN)
-    return PSCH_MAX_CACHED_QUERY_LEN - 1;
-
-  return normalized_len;
+  return Min(normalized_len, PSCH_MAX_CACHED_QUERY_LEN);
 }
 
 static void PushEntryToMru(PschNormalizedQueryCache* cache, PschNormalizeCacheEntry* entry) {
@@ -69,18 +66,15 @@ static char* CopyQueryText(PschNormalizedQueryCache* cache, const char* normaliz
                            int normalized_len) {
   char* copy;
 
-  copy = (char*)MemoryContextAlloc(cache->mcxt, normalized_len + 1);
+  copy = (char*)MemoryContextAlloc(cache->mcxt, normalized_len);
   memcpy(copy, normalized_query, normalized_len);
-  copy[normalized_len] = '\0';
   return copy;
 }
 
 static uint16 CopyEntryText(const PschNormalizeCacheEntry* entry, char* dst, Size dst_size) {
-  Size len;
+  Size len = Min((Size)entry->normalized_len, dst_size);
 
-  len = Min((Size)entry->normalized_len, dst_size - 1);
   memcpy(dst, entry->normalized_query, len);
-  dst[len] = '\0';
   return (uint16)len;
 }
 

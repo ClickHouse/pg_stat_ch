@@ -295,7 +295,7 @@ subtest 'text at the length cap' => sub {
 
     my $head = 'SELECT /*';
     my $tail = "*/ /* truncmark='x' */";
-    my $pad = 'p' x (2047 - length($head) - length($tail));
+    my $pad = 'p' x (2048 - length($head) - length($tail));
     $node->safe_psql('postgres', "$head$pad$tail current_user");
     $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
 
@@ -304,7 +304,7 @@ subtest 'text at the length cap' => sub {
     my $len = psch_query_clickhouse(
         "SELECT length(query_text) FROM pg_stat_ch.events_raw "
         . "WHERE query_text LIKE '%truncmark%' LIMIT 1");
-    is($len, '2047', 'stored text was cut right after the comment');
+    is($len, '2048', 'stored text was cut right after the comment');
 };
 
 # Test 13: A block comment inside a trailing line comment is not parsed

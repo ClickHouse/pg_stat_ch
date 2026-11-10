@@ -6,9 +6,9 @@
 // pool well before the queue fills.
 //
 // The interner deduplicates query text across queued events: each distinct
-// (dbid, queryid, query_hash, query_len) tuple maps to a single DSA-allocated
-// `PschQueryInternObject`.  Queue slots store a `dsa_pointer` to that object
-// and a refcount-managed shared HTAB tracks lifetime.  Live DSA usage drops to
+// text maps to a single DSA allocation holding just its bytes.  Queue slots
+// store a `dsa_pointer` to it and a refcount-managed shared HTAB, keyed by
+// (query_hash, query_len), tracks lifetime.  Live DSA usage drops to
 // `distinct_live_query_texts * query_len`.
 //
 // Layout in shared memory:
@@ -66,23 +66,26 @@ void PschQueryInternShmemInit(LWLockPadded* lwlock_base);
 //
 // Attaches lazily via PschDsaAttach; returns InvalidDsaPointer if DSA is
 // unavailable.
-dsa_pointer PschQueryInternAcquire(Oid dbid, uint64 queryid, const char* query, uint16 query_len);
+dsa_pointer PschQueryInternAcquire(const char* query, uint16 query_len);
 
 // Resolve `ref` into the caller's buffer and drop one reference.
 //
-// Copies up to `dst_size - 1` bytes of the interned query into `dst` and
-// null-terminates.  Sets `*out_len` to the number of bytes copied.  Then
+// `query_len` must be the length passed to PschQueryInternAcquire; the key is
+// rebuilt from it and the stored bytes.
+//
+// Copies up to `dst_size` bytes of the interned query into `dst` without a
+// terminator.  Sets `*out_len` to the number of bytes copied.  Then
 // decrements the refcount; if the refcount reaches zero the entry is removed
 // from the HTAB and the DSA object is freed.
 //
-// The two halves are independent.  The release runs whenever `ref` is valid
-// and points at one of ours, regardless of whether `dst`/`out_len` are
-// usable; passing NULL/zero output args just makes the resolve a no-op.  If
-// `ref` is InvalidDsaPointer both halves are no-ops (output zeroed, nothing
-// to release).
+// The two halves are independent.  The release runs whenever `ref` is valid,
+// regardless of whether `dst`/`out_len` are usable; passing NULL/zero output
+// args just makes the resolve a no-op.  If `ref` is InvalidDsaPointer both
+// halves are no-ops (output zeroed, nothing to release).
 //
 // Called by the bgworker (single consumer) on every dequeued event.
-void PschQueryInternResolveAndRelease(dsa_pointer ref, char* dst, uint16 dst_size, uint16* out_len);
+void PschQueryInternResolveAndRelease(dsa_pointer ref, uint16 query_len, char* dst, uint16 dst_size,
+                                      uint16* out_len);
 
 #ifdef __cplusplus
 }
