@@ -30,6 +30,20 @@ The table is partitioned by date (`toDate(ts_start)`) and ordered by `ts_start` 
 Query normalization replaces literals with placeholders (`$N`). This means `SELECT * FROM users WHERE id = 42` becomes `SELECT * FROM users WHERE id = $1`. No passwords, tokens, or PII are exported in query text.
 </Note>
 
+## Query labels
+
+| Column | Type | Description |
+|---|---|---|
+| `labels` | `String DEFAULT '{}'` | Key-value labels extracted from [sqlcommenter](https://google.github.io/sqlcommenter/) comments appended to the query, as a JSON object. For example, `/* controller='users',action='show' */` produces `{"controller":"users","action":"show"}`. Read one label with `JSONExtractString(labels, 'controller')`. Empty `{}` when no labels are present. |
+
+<Note>
+Labels are parsed only from a `/* */` comment at the **end** of the query text, with no `--` on its line before it or inside it. The comment must be well-formed sqlcommenter `key='value'` pairs separated by commas; otherwise no labels are recorded. Keys and values are URL-decoded. A pair is kept only if its decoded key and value use letters, digits and `_ - . / : ,`, with keys up to 65 bytes and values up to 1024 bytes; other pairs are dropped. Controlled by the [`pg_stat_ch.track_labels`](/reference/configuration) GUC (default: `off`).
+
+Query text is cut at 2,047 bytes, and text that reaches that length gets no labels. Error events carry no query text, so they have no labels. `events_recent_1h` keeps the columns it was created with, so it has no `labels` column.
+
+Label values are exported as written by the application. Don't put PII, tokens, or secrets in sqlcommenter comments.
+</Note>
+
 ## Shared buffer usage
 
 These columns show how queries interact with PostgreSQL's `shared_buffers` cache. The cache hit ratio for a query is `shared_blks_hit / (shared_blks_hit + shared_blks_read)`. Target above 99% for OLTP workloads.

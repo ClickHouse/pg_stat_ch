@@ -129,6 +129,18 @@ ALTER SYSTEM SET pg_stat_ch.sample_rate = 0.0;
 SELECT pg_reload_conf();
 ```
 
+### `pg_stat_ch.track_labels`
+
+Extract [sqlcommenter](https://google.github.io/sqlcommenter/) labels from query comments.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `off` |
+| **Context** | postmaster |
+
+When enabled, the background worker parses the `/* key='value' */` comment that ends each query and exports the pairs as a JSON object in the `labels` column (the `labels` attribute in OpenTelemetry). When disabled, no `labels` column is sent, so ClickHouse stores its `{}` default. Apply the `labels` schema migration before enabling it.
+
 ## Queue
 
 The shared-memory ring buffer sits between the foreground hooks and the background worker. These settings control its size and drain behavior.

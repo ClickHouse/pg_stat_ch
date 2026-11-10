@@ -17,6 +17,8 @@ SET pg_stat_ch.normalize_cache_max = 128;
 SHOW pg_stat_ch.normalize_cache_max;
 RESET pg_stat_ch.normalize_cache_max;
 SHOW pg_stat_ch.normalize_cache_max;
+-- Test track_labels GUC (PGC_POSTMASTER, default off)
+SHOW pg_stat_ch.track_labels;
 -- Test that clickhouse_password is hidden from non-superusers (issue #3)
 CREATE ROLE psch_test_user LOGIN;
 SET ROLE psch_test_user;

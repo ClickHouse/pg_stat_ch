@@ -30,6 +30,7 @@ int psch_otel_log_batch_size = 8192;
 int psch_otel_log_max_bytes = 3 * 1024 * 1024;  // 3 MiB: gRPC default max is 4 MiB
 int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
+bool psch_track_labels = false;
 bool psch_debug_force_locked_overflow = false;
 int psch_min_duration_us = 0;
 int psch_normalize_cache_max = 32768;
@@ -406,6 +407,20 @@ void PschInitGuc(void) {
       &psch_debug_arrow_dump_dir,
       "",
       PGC_SIGHUP,
+      0,
+      NULL, NULL, NULL);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.track_labels",
+      "Extract sqlcommenter labels from query comments.",
+      "When enabled, the background worker parses the /* key='value' */ comment "
+      "that ends each query and exports the pairs as a JSON labels column "
+      "(attribute in OTel). Requires the labels column downstream. "
+      "PGC_POSTMASTER: the ClickHouse exporter keeps its column set for the "
+      "life of the bgworker, so a runtime change would leave a stale column.",
+      &psch_track_labels,
+      false,
+      PGC_POSTMASTER,
       0,
       NULL, NULL, NULL);
 
