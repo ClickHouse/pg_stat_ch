@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 usage() {
     echo "Usage: $0 <PG_VERSION|PG_PATH> [test_type] [test_filter]"
-    echo "  PG_VERSION:  PostgreSQL version (16, 17, 18) - uses mise"
+    echo "  PG_VERSION:  PostgreSQL version (16, 17, 18, 19) - uses mise"
     echo "  PG_PATH:     Path to local PostgreSQL installation"
     echo "  test_type:   regress, tap, isolation, stress, clickhouse, otel, or all (default: all)"
     echo "  test_filter: (tap only) pattern to match test files, e.g., '021' for t/*021*.pl"
