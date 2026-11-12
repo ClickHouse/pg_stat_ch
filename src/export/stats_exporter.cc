@@ -19,6 +19,7 @@ extern "C" {
 #include "export/exporter_interface.h"
 #include "export/otel_arrow_exporter.h"
 #include "export/otel_exporter.h"
+#include "export/relations_decode.h"
 #include "export/sqlcommenter_parse.h"
 #include "export/stats_exporter.h"
 #include "queue/event.h"
@@ -240,6 +241,16 @@ void ExportEventStatsInternal(PschEvent* event, int max_events, StatsExporter* e
   // Only declared when label tracking is on, so inserts keep the old column
   // set until the destination schema has `labels`.
   auto col_labels = psch_track_labels ? exporter->StatHCString("labels") : nullptr;
+  // Only declared when relations tracking is on, so inserts keep the old
+  // column set until the destination schema has these columns.
+  auto col_relation_namespaces =
+      psch_relations_enabled ? exporter->StatHCStringArray("relation_namespaces") : nullptr;
+  auto col_relation_names =
+      psch_relations_enabled ? exporter->StatHCStringArray("relation_names") : nullptr;
+  auto col_relation_kinds =
+      psch_relations_enabled ? exporter->StatHCStringArray("relation_kinds") : nullptr;
+  auto col_relations_truncated =
+      psch_relations_enabled ? exporter->StatLCUInt8("relations_truncated") : nullptr;
 
   auto col_shared_blks_hit = exporter->StatHCInt64("shared_blks_hit");
   auto col_shared_blks_read = exporter->StatHCInt64("shared_blks_read");
@@ -303,6 +314,16 @@ void ExportEventStatsInternal(PschEvent* event, int max_events, StatsExporter* e
 
     if (col_labels != nullptr) {
       col_labels->Append(QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN));
+    }
+
+    if (col_relation_namespaces != nullptr) {
+      auto rlen = ClampFieldLen(ev.relations_len, static_cast<uint16>(PSCH_MAX_RELATIONS_LEN),
+                                "relations_len");
+      auto decoded = DecodeRelations(ev.relations, rlen);
+      col_relation_namespaces->Append(decoded.namespaces);
+      col_relation_names->Append(decoded.names);
+      col_relation_kinds->Append(decoded.kinds);
+      col_relations_truncated->Append(decoded.truncated ? 1 : 0);
     }
 
     col_shared_blks_hit->Append(ev.shared_blks_hit);

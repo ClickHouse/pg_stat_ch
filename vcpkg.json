@@ -14,6 +14,7 @@
     },
     "lz4",
     "openssl",
-    "zstd"
+    "zstd",
+    "gtest"
   ]
 }

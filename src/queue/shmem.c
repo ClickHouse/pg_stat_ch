@@ -40,6 +40,7 @@
 
 #include "config/guc.h"
 #include "hooks/hooks.h"
+#include "hooks/relations_budget.h"
 #include "queue/local_batch.h"
 #include "queue/psch_dsa.h"
 #include "queue/query_intern.h"
@@ -112,13 +113,21 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(slot, event, kFixedPrefixSize);
 
-  // 2. Allocate DSA for err_message and query text.  Store pointers in slot
-  //    only right before head advances, so slots outside [tail, head) never
-  //    hold references
+  // 2. Allocate DSA for err_message, relations, and query text.  Store
+  //    pointers in slot only right before head advances, so slots outside
+  //    [tail, head) never hold references
   dsa_pointer err_message_dsa =
       PschDsaAllocString(event->err_message, event->err_message_len, PSCH_MAX_ERR_MSG_LEN);
   if (event->err_message_len > 0 && !DsaPointerIsValid(err_message_dsa)) {
     slot->err_message_len = 0;  // Lost string on OOM — numeric data preserved
+  }
+
+  // Relations: plain per-event DSA allocation, same as err_message (not
+  // interned, unlike the query text below).
+  dsa_pointer relations_dsa =
+      PschDsaAllocString(event->relations, event->relations_len, PSCH_MAX_RELATIONS_LEN);
+  if (event->relations_len > 0 && !DsaPointerIsValid(relations_dsa)) {
+    slot->relations_len = PSCH_RELATIONS_OOM_LEN;
   }
 
   // Query text goes through the shared interner so repeated identical
@@ -139,6 +148,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   }
 
   slot->err_message_dsa = err_message_dsa;
+  slot->relations_dsa = relations_dsa;
   slot->query_dsa = query_dsa;
 
   // CRITICAL: Memory barrier ensures the event data is written to shared memory
@@ -174,14 +184,14 @@ static Size PschSharedBlockSize(void) {
 
 Size PschShmemSize(void) {
   // Total shmem requested from the postmaster: the shared block plus the
-  // interner HTAB (which ShmemInitHash carves out of the same pool).
+  // query-text interner HTAB (carved from the same pool by ShmemInitHash).
   return add_size(PschSharedBlockSize(), PschQueryInternShmemSize());
 }
 
 static void RequestSharedResources(void) {
   RequestAddinShmemSpace(PschShmemSize());
-  // 1 main queue lock + N partition locks for the query-text interner, all
-  // in the single "pg_stat_ch" named tranche so we read them as a contiguous
+  // 1 main queue lock + N query-text interner partition locks, all in the
+  // single "pg_stat_ch" named tranche so we read them as a contiguous
   // LWLockPadded[] from GetNamedLWLockTranche().
   RequestNamedLWLockTranche("pg_stat_ch", 1 + PschQueryInternLockCount());
 }
@@ -257,7 +267,8 @@ static void PschShmemStartupHook(void) {
     InitializeSharedState();
   }
 
-  // Initialize (or attach to) the query intern HTAB. All backends get same handle.
+  // Initialize (or attach to) the query intern HTAB. All backends get the
+  // same handle.
   LWLockPadded* lwlocks = GetNamedLWLockTranche("pg_stat_ch");
   PschQueryInternShmemInit(&lwlocks[1]);
 
@@ -442,6 +453,13 @@ bool PschDequeueEvent(PschEvent* event) {
   slot->err_message_dsa = InvalidDsaPointer;
   PschDsaResolveString(err_message_dsa, event->err_message_len, event->err_message,
                        PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
+
+  dsa_pointer relations_dsa = slot->relations_dsa;
+  slot->relations_dsa = InvalidDsaPointer;
+  if (event->relations_len != PSCH_RELATIONS_OOM_LEN) {
+    PschDsaResolveString(relations_dsa, event->relations_len, event->relations,
+                         PSCH_MAX_RELATIONS_LEN, &event->relations_len);
+  }
 
   dsa_pointer query_dsa = slot->query_dsa;
   slot->query_dsa = InvalidDsaPointer;

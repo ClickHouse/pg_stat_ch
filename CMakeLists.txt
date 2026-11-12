@@ -146,3 +146,25 @@ install(FILES pg_stat_ch.control DESTINATION ${PostgreSQLServer_SHARE_DIR}/exten
 file(GLOB SQL_FILES sql/pg_stat_ch--*.sql)
 install(FILES ${SQL_FILES} DESTINATION ${PostgreSQLServer_SHARE_DIR}/extension)
 
+# Unit tests for plain C++ helpers that don't need a running Postgres (see
+# test/unit/). Separate from the pg_regress/TAP suites, which do. Off by
+# default for image builds that COPY a .dockerignore-filtered context
+# without test/ -- those only need the pg_stat_ch target, never this one.
+option(PSCH_BUILD_UNIT_TESTS "Build the GoogleTest C++ unit tests" ON)
+if(PSCH_BUILD_UNIT_TESTS)
+  enable_testing()
+  find_package(GTest CONFIG REQUIRED)
+  add_executable(pg_stat_ch_unittests
+    test/unit/relations_decode_test.cc
+    test/unit/relations_budget_test.cc
+    test/unit/relations_nesting_test.cc
+    test/unit/otel_string_array_attr_test.cc
+  )
+  target_compile_features(pg_stat_ch_unittests PRIVATE cxx_std_17)
+  target_include_directories(pg_stat_ch_unittests PRIVATE src include)
+  target_link_libraries(pg_stat_ch_unittests PRIVATE GTest::gtest GTest::gtest_main
+    opentelemetry-cpp::otlp_grpc_log_record_exporter)
+  include(GoogleTest)
+  gtest_discover_tests(pg_stat_ch_unittests)
+endif()
+
