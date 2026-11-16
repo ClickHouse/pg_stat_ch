@@ -2,7 +2,7 @@
 -- Actual captured VALUES (which relations landed in the array) can only be
 -- verified against ClickHouse -- see t/039_relations_export.pl. This
 -- regression test covers what pg_regress *can* check synchronously: the GUC,
--- and that ExecutorCheckPerms_hook doesn't crash/error across the basic
+-- and that collection at ExecutorEnd doesn't crash/error across the basic
 -- shapes a per-query relations capture needs to handle (plain tables,
 -- schema-qualified tables, self-joins, views).
 CREATE EXTENSION pg_stat_ch;

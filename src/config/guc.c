@@ -430,8 +430,8 @@ void PschInitGuc(void) {
   DefineCustomBoolVariable(
       "pg_stat_ch.relations_enabled",
       "Collect the relations array (tables/views a query touches).",
-      "When enabled, the background worker resolves each query's touched "
-      "relations via ExecutorCheckPerms_hook and exports them as the "
+      "When enabled, each backend resolves a query's touched relations from "
+      "its plan's range table at ExecutorEnd and exports them as the "
       "relation_namespaces/relation_names/relation_kinds/relations_truncated "
       "columns. Apply the relations schema migrations before enabling. "
       "PGC_POSTMASTER: the ClickHouse exporter keeps its column set for the "

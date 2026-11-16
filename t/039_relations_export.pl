@@ -129,6 +129,28 @@ subtest 'view reports relkind v' => sub {
     like($names, qr/'foo1'/, "underlying base table also present (got: $names)");
 };
 
+subtest 'UNION ALL view reports both branches alongside the view' => sub {
+    $node->safe_psql('postgres', 'CREATE TABLE ua1(a int)');
+    $node->safe_psql('postgres', 'CREATE TABLE ua2(a int)');
+    $node->safe_psql('postgres',
+        'CREATE VIEW v_union_all AS SELECT * FROM ua1 UNION ALL SELECT * FROM ua2');
+
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $node->safe_psql('postgres', 'SELECT * FROM v_union_all');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE 'SELECT * FROM v_union_all%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'v_union_all'/, "view itself present (got: $names)");
+    like($names, qr/'ua1'/, "first UNION ALL branch's table present (got: $names)");
+    like($names, qr/'ua2'/, "second UNION ALL branch's table present (got: $names)");
+};
+
 subtest 'truncation over budget is flagged and does not error' => sub {
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
@@ -318,6 +340,182 @@ subtest 'all relkinds are reported distinctly' => sub {
             unless $has_fdw eq '1';
         like($kinds, qr/'f'/, "foreign table reports relkind 'f' (got: $kinds)");
     }
+};
+
+subtest 'runtime-pruned partition children collapse into the parent' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $node->safe_psql('postgres', 'CREATE TABLE gp_part(id int, val text) PARTITION BY RANGE (id)');
+    for my $i (0 .. 4) {
+        my $lo = $i * 100;
+        my $hi = $lo + 100;
+        $node->safe_psql('postgres',
+            "CREATE TABLE gp_part_$i PARTITION OF gp_part FOR VALUES FROM ($lo) TO ($hi)");
+    }
+    $node->safe_psql('postgres', 'CREATE TABLE gp_other(id int)');
+
+    $node->safe_psql('postgres', <<'SQL');
+SET plan_cache_mode = force_generic_plan;
+PREPARE gp_q(int) AS SELECT count(*) FROM gp_part JOIN gp_other USING (id) WHERE gp_part.id = $1;
+EXECUTE gp_q(5);
+SQL
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE '%gp_part%gp_other%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'gp_part'/, "parent reported (got: $names)");
+    like($names, qr/'gp_other'/, "unrelated joined table reported (got: $names)");
+    unlike($names, qr/'gp_part_\d'/, "pruned children not reported (got: $names)");
+};
+
+subtest 'multilevel (subpartitioned) hierarchy collapses leaves into the root' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $node->safe_psql('postgres', 'CREATE TABLE sp_root(id int, val text) PARTITION BY RANGE (id)');
+    $node->safe_psql('postgres',
+        'CREATE TABLE sp_mid PARTITION OF sp_root FOR VALUES FROM (0) TO (1000) PARTITION BY RANGE (id)');
+    for my $i (0 .. 4) {
+        my $lo = $i * 100;
+        my $hi = $lo + 100;
+        $node->safe_psql('postgres',
+            "CREATE TABLE sp_leaf_$i PARTITION OF sp_mid FOR VALUES FROM ($lo) TO ($hi)");
+    }
+    $node->safe_psql('postgres', 'CREATE TABLE sp_other(id int)');
+
+    $node->safe_psql('postgres', <<'SQL');
+SET plan_cache_mode = force_generic_plan;
+PREPARE sp_q(int) AS SELECT count(*) FROM sp_root JOIN sp_other USING (id) WHERE sp_root.id = $1;
+EXECUTE sp_q(5);
+SQL
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE '%sp_root%sp_other%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'sp_root'/, "root reported (got: $names)");
+    like($names, qr/'sp_other'/, "unrelated joined table reported (got: $names)");
+    unlike($names, qr/'sp_mid'/, "subpartitioned intermediate not reported (got: $names)");
+    unlike($names, qr/'sp_leaf_\d'/, "leaves two levels down not reported (got: $names)");
+};
+
+subtest 'subpartitioned hierarchy past the old 1024-relation seen-set cap collapses correctly' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    # 600 (mid, leaf) pairs plus the root exceed PSCH_MAX_RELATIONS_LEN (1024)
+    # distinct relations in one range table -- regression test for the
+    # fixed-size Oid[1024] `seen` array this used to overflow into.
+    $node->safe_psql('postgres', 'CREATE TABLE big_root(id int, val text) PARTITION BY RANGE (id)');
+    $node->safe_psql('postgres', <<'SQL');
+DO $do$
+DECLARE
+  i int;
+  lo int;
+  hi int;
+BEGIN
+  FOR i IN 0..599 LOOP
+    lo := i * 20;
+    hi := lo + 20;
+    EXECUTE format(
+      'CREATE TABLE big_mid_%s PARTITION OF big_root FOR VALUES FROM (%s) TO (%s) PARTITION BY RANGE (id)',
+      i, lo, hi);
+    EXECUTE format(
+      'CREATE TABLE big_leaf_%s PARTITION OF big_mid_%s FOR VALUES FROM (%s) TO (%s)',
+      i, i, lo, hi);
+  END LOOP;
+END
+$do$;
+SQL
+    $node->safe_psql('postgres', 'CREATE TABLE big_other(id int)');
+
+    $node->safe_psql('postgres', <<'SQL');
+SET plan_cache_mode = force_generic_plan;
+PREPARE big_q(int) AS SELECT count(*) FROM big_root JOIN big_other USING (id) WHERE big_root.id = $1;
+EXECUTE big_q(11999);
+SQL
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE '%big_root%big_other%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'big_root'/, "root reported (got: $names)");
+    like($names, qr/'big_other'/, "unrelated joined table reported (got: $names)");
+    unlike($names, qr/'big_mid_599'/, "subpartitioned intermediate past the old cap not reported (got: $names)");
+    unlike($names, qr/'big_leaf_599'/, "leaf past the old cap not reported (got: $names)");
+};
+
+subtest 'partition queried directly, with no parent in the range table, still reports' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $node->safe_psql('postgres', 'SELECT * FROM gp_part_0');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE 'SELECT * FROM gp_part_0%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'gp_part_0'/, "directly-queried partition still reported (got: $names)");
+};
+
+subtest 'partition named explicitly alongside its parent is reported regardless of FROM order' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $node->safe_psql('postgres',
+        'SELECT * FROM ONLY gp_part CROSS JOIN gp_part_0 /* parent_first */');
+    $node->safe_psql('postgres',
+        'SELECT * FROM gp_part_0 CROSS JOIN ONLY gp_part /* child_first */');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $parent_first = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE '%parent_first%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($parent_first, qr/'gp_part'/, "parent reported, parent-first order (got: $parent_first)");
+    like($parent_first, qr/'gp_part_0'/,
+        "explicit child reported, parent-first order (got: $parent_first)");
+
+    my $child_first = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE '%child_first%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($child_first, qr/'gp_part'/, "parent reported, child-first order (got: $child_first)");
+    like($child_first, qr/'gp_part_0'/,
+        "explicit child reported, child-first order (got: $child_first)");
+};
+
+subtest 'partition collapsed in one branch is still reported via an unflattened explicit reference' =>
+    sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    # The OFFSET 0 subquery blocks flattening, so gp_part_0 gets its own
+    # real RTE here, distinct from the one the gp_part scan's partition
+    # expansion collapses into gp_part in the same range table.
+    $node->safe_psql('postgres',
+        'SELECT * FROM gp_part CROSS JOIN (SELECT * FROM gp_part_0 OFFSET 0) c');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE '%gp_part CROSS JOIN%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'gp_part'/, "parent reported (got: $names)");
+    like($names, qr/'gp_part_0'/, "explicitly-referenced partition still reported (got: $names)");
 };
 
 subtest 'maximum-length identifier round-trips intact' => sub {
@@ -691,8 +889,7 @@ subtest 'nesting depth recovers after many distinct failed-cursor fetches' => su
     $node->safe_psql('postgres', 'CREATE TABLE cursor_leak_t(a int)');
 
     # 20 distinct failed-cursor/savepoint sequences used to exhaust all 16
-    # nesting slots; must run in one session (psql, on_error_stop => 0),
-    # since relations_nesting_table is per-backend state.
+    # nesting slots; must run in one session (psql, on_error_stop => 0).
     my $sql = "BEGIN;\n";
     for my $i (1 .. 20) {
         $sql .= "DECLARE cursor_leak_cur_$i NO SCROLL CURSOR FOR SELECT * FROM cursor_leak_t;\n";

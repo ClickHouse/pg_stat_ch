@@ -80,8 +80,8 @@ TEST(DecodeRelations, TruncatedFlagIsReported) {
 }
 
 TEST(DecodeRelations, TruncatedWithZeroCountYieldsEmptyButTruncated) {
-  // The blob hooks.c emits when a query never got a nesting slot at all
-  // (table full) -- must read as truncated, not as "zero relations".
+  // The blob CollectRelations emits when the budget is too small to fit even
+  // one entry -- must read as truncated, not as "zero relations".
   auto blob = Blob({1, 0});
   auto out = DecodeRelations(blob.data(), static_cast<uint16_t>(blob.size()));
   EXPECT_TRUE(out.truncated);
