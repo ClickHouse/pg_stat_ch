@@ -10,7 +10,6 @@ pg_stat_ch uses PostgreSQL's extensibility hooks to capture query telemetry with
 | Hook | Purpose | When Called |
 |------|---------|-------------|
 | `ExecutorStart_hook` | Initialize instrumentation | Before query execution begins |
-| `ExecutorCheckPerms_hook` | Collect touched relations | During permission checking, early in executor startup |
 | `ExecutorRun_hook` | Track nesting level | During query execution |
 | `ExecutorFinish_hook` | Track nesting level | After execution, before cleanup |
 | `ExecutorEnd_hook` | Capture metrics and enqueue event | After query completes |
@@ -32,20 +31,6 @@ The executor hooks work together to capture metrics for optimizable queries (SEL
 3. Captures the query start timestamp
 4. Initializes CPU time baseline via `getrusage()`
 5. Enables instrumentation to collect buffer/timing stats
-
-### ExecutorCheckPerms_hook
-
-**Called:** During permission checking, as part of `ExecutorStart` -- PostgreSQL hands every relation in the query's range table to this hook before deciding whether the current role may access it.
-
-**What pg_stat_ch does:**
-
-1. Skips parallel workers (the leader already captures this)
-2. Walks the range table, resolving each distinct relation to its schema-qualified name and `pg_class.relkind`
-3. Encodes the result into a length-prefixed binary buffer, bounded by `pg_stat_ch.relations_max_len`; queries that exceed the budget are truncated and flagged via `relations_truncated`
-4. Stages the buffer in a per-nesting-level slot rather than a single shared buffer, so a nested executor invocation (a non-inlined SQL function, PL/pgSQL, dynamic `EXECUTE`, a trigger, SPI) can't clobber the outer statement's already-collected relations
-5. Defers to the previous hook (or allows by default) for the actual permission decision -- this hook only observes, it never denies access
-
-Collection is skipped entirely (not just discarded afterward) when `pg_stat_ch.relations_enabled` is off.
 
 ### ExecutorRun_hook
 
@@ -74,7 +59,8 @@ This hook is used purely for nesting level tracking. The actual metric capture h
 1. Finalizes instrumentation (`InstrEndLoop`)
 2. Computes CPU time delta from `getrusage()`
 3. Extracts all metrics from `QueryDesc`
-4. Builds a `PschEvent` and enqueues it to shared memory
+4. If `pg_stat_ch.relations_enabled` is on, walks `query_desc->plannedstmt->rtable`, resolving each distinct relation to its schema-qualified name and `pg_class.relkind` into a length-prefixed buffer bounded by `pg_stat_ch.relations_max_len` (queries that exceed the budget are truncated and flagged via `relations_truncated`)
+5. Builds a `PschEvent` and enqueues it to shared memory
 
 ## Metrics Captured from QueryDesc
 
@@ -190,9 +176,6 @@ Parallel workers execute portions of a query plan. pg_stat_ch:
 │    ├─ Record start time, CPU baseline                           │
 │    └─ Enable instrumentation                                    │
 │                                                                 │
-│  ExecutorCheckPerms_hook                                        │
-│    └─ Collect touched relations (schema, name, relkind)         │
-│                                                                 │
 │  ExecutorRun_hook / ExecutorFinish_hook                         │
 │    └─ Track nesting level                                       │
 │                                                                 │
@@ -200,6 +183,7 @@ Parallel workers execute portions of a query plan. pg_stat_ch:
 │    ├─ Finalize instrumentation                                  │
 │    ├─ Compute CPU delta                                         │
 │    ├─ Extract metrics from QueryDesc                            │
+│    ├─ Collect touched relations (schema, name, relkind)         │
 │    └─ Enqueue PschEvent to shared memory                        │
 │                                                                 │
 │  ProcessUtility_hook                                            │

@@ -8,6 +8,7 @@
 #include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "commands/dbcommands.h"
+#include "common/hashfn.h"
 #include "common/ip.h"
 #include "common/pg_prng.h"
 #include "executor/executor.h"
@@ -16,8 +17,10 @@
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
+#include "nodes/pathnodes.h"
 #include "nodes/queryjumble.h"
 #include "parser/analyze.h"
+#include "parser/parsetree.h"
 #include "postmaster/bgworker.h"
 #include "storage/proc.h"
 #include "tcop/utility.h"
@@ -29,10 +32,9 @@
 #include "compat.h"
 #include "config/guc.h"
 #include "hooks/hooks.h"
-#include "hooks/relations_budget.h"
-#include "hooks/relations_nesting.h"
 #include "hooks/query_normalize.h"
 #include "hooks/query_normalize_state.h"
+#include "hooks/relations_budget.h"
 #include "hooks/string_utils.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -43,7 +45,6 @@ static ExecutorStart_hook_type prev_executor_start = NULL;
 static ExecutorRun_hook_type prev_executor_run = NULL;
 static ExecutorFinish_hook_type prev_executor_finish = NULL;
 static ExecutorEnd_hook_type prev_executor_end = NULL;
-static ExecutorCheckPerms_hook_type prev_executor_check_perms = NULL;
 static ProcessUtility_hook_type prev_process_utility = NULL;
 static emit_log_hook_type prev_emit_log_hook = NULL;
 
@@ -67,25 +68,6 @@ static bool system_init = false;
 
 static int GetClientAddress(char* buf, int buf_size);
 static void ResolveNames(PschEvent* event);
-
-// Relations collection spans two hooks: ExecutorCheckPerms_hook stages a
-// query's touched tables into one of these buffers, ExecutorEnd_hook reads
-// and frees it. Buffers are keyed by QueryDesc* rather than call depth, and
-// freed on transaction/subtransaction abort as well as normal completion --
-// see PschRelationsNestingXactCallback and PopRelationsNestingLevel for why.
-#define PSCH_RELATIONS_MAX_NESTING_DEPTH 16
-// Zero-initialized by static storage duration, so a fresh slot's .data is
-// NULL until PschExecutorCheckPerms calls initStringInfo on it.
-static StringInfoData relations_bufs[PSCH_RELATIONS_MAX_NESTING_DEPTH];
-static PschRelationsNestingEntry relations_nesting_table[PSCH_RELATIONS_MAX_NESTING_DEPTH];
-static bool relations_nesting_callbacks_registered = false;
-
-// ExecutorCheckPerms_hook only receives the range table, not the QueryDesc;
-// PschExecutorStart supplies this (see CallExecutorStartChain). NULL outside
-// CallExecutorStartChain's call to standard_ExecutorStart -- that's what
-// distinguishes a real ExecutorCheckPerms_hook call from COPY/RI_Initial_Check
-// calling it directly, with no QueryDesc to key a reservation on.
-static QueryDesc* relations_active_query_desc = NULL;
 
 // Cache for session-stable values to avoid repeated catalog lookups on every query.
 // Following pg_stat_monitor's pattern of caching client IP (pg_stat_monitor.c:73-96).
@@ -323,58 +305,22 @@ static void CopyQueryText(PschEvent* event, uint64 query_id) {
                             sizeof(event->query), &event->query_len);
 }
 
-// Free reservations an aborting (sub)transaction never released itself; a
-// WITH HOLD cursor surviving a commit is reparented to level 0, same reason
-// as PschRelationsNestingReparentCommitted's subxact-level callers.
-static void PschRelationsNestingXactCallback(XactEvent event, void* arg pg_attribute_unused()) {
-  if (event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT) {
-    PschRelationsNestingAbortTo(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH, 1);
-  } else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PARALLEL_COMMIT) {
-    PschRelationsNestingReparentCommitted(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH, 1);
-  }
-}
-
-static void PschRelationsNestingSubXactCallback(SubXactEvent event,
-                                                SubTransactionId my_subid pg_attribute_unused(),
-                                                SubTransactionId parent_subid pg_attribute_unused(),
-                                                void* arg pg_attribute_unused()) {
-  if (event == SUBXACT_EVENT_ABORT_SUB) {
-    PschRelationsNestingAbortTo(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH,
-                                GetCurrentTransactionNestLevel());
-  } else if (event == SUBXACT_EVENT_COMMIT_SUB) {
-    PschRelationsNestingReparentCommitted(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH,
-                                          GetCurrentTransactionNestLevel());
-  }
-}
-
-static void EnsureRelationsNestingCallbacksRegistered(void) {
-  if (relations_nesting_callbacks_registered) {
-    return;
-  }
-  RegisterXactCallback(PschRelationsNestingXactCallback, NULL);
-  RegisterSubXactCallback(PschRelationsNestingSubXactCallback, NULL);
-  relations_nesting_callbacks_registered = true;
-}
-
-// Must run unconditionally on every ExecutorEnd call.
-static int PopRelationsNestingLevel(QueryDesc* query_desc) {
-  return PschRelationsNestingPop(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH,
-                                 query_desc);
-}
-
-// slot < 0 means the nesting table was genuinely full (relations_enabled=off
-// still reserves a slot, see PschExecutorCheckPerms).
-static void CopyRelations(PschEvent* event, int slot) {
-  if (slot < 0) {
-    event->relations[0] = 1;  // truncated
-    event->relations[1] = 0;  // count
-    event->relations_len = PSCH_RELATIONS_HEADER_LEN;
+static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos);
+static void CopyRelations(PschEvent* event, QueryDesc* query_desc) {
+  if (!psch_relations_enabled) {
+    event->relations_len = 0;
     return;
   }
 
-  Assert(relations_bufs[slot].len <= (int)sizeof(event->relations));
-  memcpy(event->relations, relations_bufs[slot].data, relations_bufs[slot].len);
-  event->relations_len = (uint16)relations_bufs[slot].len;
+  MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
+  StringInfoData buf;
+  initStringInfo(&buf);
+  CollectRelations(&buf, query_desc->plannedstmt->rtable, query_desc->plannedstmt->appendRelations);
+  Assert(buf.len <= (int)sizeof(event->relations));
+  event->relations_len = (uint16)Min(buf.len, (int)sizeof(event->relations));
+  memcpy(event->relations, buf.data, event->relations_len);
+  pfree(buf.data);
+  MemoryContextSwitchTo(oldcxt);
 }
 
 // Resolve database and user names, using the session cache when available.
@@ -444,7 +390,7 @@ static uint64 QueryDurationUs(QueryDesc* query_desc) {
 }
 
 static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int64 cpu_user_us,
-                                    int64 cpu_sys_us, int relations_slot) {
+                                    int64 cpu_sys_us) {
   InitBaseEvent(event, query_start_ts, current_query_is_top_level,
                 ConvertCmdType(query_desc->operation));
   event->queryid = query_desc->plannedstmt->queryId;
@@ -466,7 +412,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
   CopyParallelWorkerInfo(event, query_desc);
   CopyClientContext(event);
   CopyQueryText(event, query_desc->plannedstmt->queryId);
-  CopyRelations(event, relations_slot);
+  CopyRelations(event, query_desc);
 }
 
 // post_parse_analyze_hook — decide query text at parse time.
@@ -512,28 +458,13 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, PschJumbleSta
   }
 }
 
-// PG_FINALLY restores both fields even if the chain errors.
-static void CallExecutorStartChain(QueryDesc* query_desc, int eflags) {
-  QueryDesc* prev_active_query_desc = relations_active_query_desc;
-  relations_active_query_desc = query_desc;
-  PG_TRY();
-  {
+static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
+  if (IsParallelWorker()) {
     if (prev_executor_start != NULL) {
       prev_executor_start(query_desc, eflags);
     } else {
       standard_ExecutorStart(query_desc, eflags);
     }
-  }
-  PG_FINALLY();
-  {
-    relations_active_query_desc = prev_active_query_desc;
-  }
-  PG_END_TRY();
-}
-
-static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
-  if (IsParallelWorker()) {
-    CallExecutorStartChain(query_desc, eflags);
     return;
   }
 
@@ -556,7 +487,11 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
   }
 #endif
 
-  CallExecutorStartChain(query_desc, eflags);
+  if (prev_executor_start != NULL) {
+    prev_executor_start(query_desc, eflags);
+  } else {
+    standard_ExecutorStart(query_desc, eflags);
+  }
 
 #if PG_VERSION_NUM < 190000
   if (track && query_desc->totaltime == NULL) {
@@ -590,12 +525,6 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
     return;
   }
 
-  // Marks this query's reservation (if any) as used at the current level --
-  // unconditional like Pop, so toggling psch_enabled mid-session can't orphan it.
-  int prev_active_level = PschRelationsNestingTouch(relations_nesting_table,
-                                                     PSCH_RELATIONS_MAX_NESTING_DEPTH, query_desc,
-                                                     GetCurrentTransactionNestLevel());
-
   nesting_level++;
   PG_TRY();
   {
@@ -612,11 +541,6 @@ static void PschExecutorRun(QueryDesc* query_desc, ScanDirection direction, uint
       standard_ExecutorRun(query_desc, direction, count, execute_once);
     }
 #endif
-    // Only on success -- an error skips this, leaving active_level raised.
-    if (prev_active_level >= 0) {
-      PschRelationsNestingSetActiveLevel(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH,
-                                         query_desc, prev_active_level);
-    }
   }
   PG_FINALLY();
   { nesting_level--; }
@@ -648,9 +572,6 @@ static void PschExecutorFinish(QueryDesc* query_desc) {
 }
 
 static void PschExecutorEnd(QueryDesc* query_desc) {
-  // Unconditional: must run even on paths below that skip the export itself.
-  int relations_slot = PopRelationsNestingLevel(query_desc);
-
   if (!psch_enabled || IsParallelWorker() || query_desc->plannedstmt->queryId == UINT64CONST(0)) {
     if (prev_executor_end != NULL) {
       prev_executor_end(query_desc);
@@ -688,7 +609,7 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 
   PschEvent event;
-  BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us, relations_slot);
+  BuildEventFromQueryDesc(query_desc, &event, cpu_user_us, cpu_sys_us);
   PschEnqueueEvent(&event);
 
   if (prev_executor_end != NULL) {
@@ -946,39 +867,53 @@ bool PschSuppressErrorCapture(bool suppress) {
   return prev;
 }
 
-// True if relid is already in seen[0..nseen).
-static bool AlreadySeen(const Oid* seen, int nseen, Oid relid) {
-  for (int i = 0; i < nseen; i++) {
-    if (seen[i] == relid) {
-      return true;
-    }
-  }
-  return false;
-}
+// Oid set for CollectRelations' dedup/collapse below. Created fresh per call
+// in the caller's es_query_cxt -- sized to the range table itself, not the
+// relations_buf byte budget, since a collapsed partition consumes a slot
+// here without consuming any budget bytes.
+typedef struct PschRelidSeenEntry {
+  Oid relid;
+  char status;
+} PschRelidSeenEntry;
 
-// Builds the relations blob: [truncated:u8][count:u8]{[ns_len:u8][ns][name_len:u8][name][relkind:u8]}*count.
-static void CollectRelations(StringInfo buf, List* rt) {
-  // Sized to PSCH_MAX_RELATIONS_LEN, not an arbitrary smaller constant: every
-  // entry consumes at least 1 byte of the relations_buf budget, so nseen can
-  // never exceed the byte budget (<= PSCH_MAX_RELATIONS_LEN - 1) before the
-  // WouldExceedBudget break below fires. A smaller cap here would let nseen
-  // saturate while relations_buf still has room, silently disabling dedup
-  // for later relations without disabling appends -- so a table referenced
-  // twice past that point would show up twice.
-  Oid seen[PSCH_MAX_RELATIONS_LEN];
-  int nseen = 0;
+#define SH_PREFIX            psch_relid_seen
+#define SH_ELEMENT_TYPE      PschRelidSeenEntry
+#define SH_KEY_TYPE          Oid
+#define SH_KEY               relid
+#define SH_HASH_KEY(tb, key) murmurhash32((uint32)(key))
+#define SH_EQUAL(tb, a, b)   ((a) == (b))
+#define SH_SCOPE             static inline
+#define SH_DECLARE
+#define SH_DEFINE
+#include "lib/simplehash.h"
+
+// Builds the relations blob:
+// [truncated:u8][count:u8]{[ns_len:u8][ns][name_len:u8][name][relkind:u8]}*count.
+static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos) {
+  int nrt = list_length(rt);
+  psch_relid_seen_hash* seen = psch_relid_seen_create(CurrentMemoryContext, Max(nrt, 1), NULL);
   uint8 count = 0;
   bool truncated = false;
+  int rti = 0;
   ListCell* lc;
 
   // Defense in depth -- the GUC's own min bound (guc.c) already enforces this.
   Assert(psch_relations_max_len >= PSCH_RELATIONS_HEADER_LEN);
+
+  Index* parent_of_rti = palloc0(sizeof(Index) * (nrt + 1));
+  ListCell* alc;
+  foreach (alc, append_rel_infos) {
+    AppendRelInfo* appinfo = (AppendRelInfo*)lfirst(alc);
+    Assert(appinfo->child_relid >= 1 && (int)appinfo->child_relid <= nrt);
+    parent_of_rti[appinfo->child_relid] = appinfo->parent_relid;
+  }
 
   // Reserve the header now; patched with real values once known.
   appendStringInfoChar(buf, 0);
   appendStringInfoChar(buf, 0);
 
   foreach (lc, rt) {
+    rti++;
     RangeTblEntry* rte = (RangeTblEntry*)lfirst(lc);
 
     // Plain tables, plus view-expansion artifacts: the rewriter turns a
@@ -986,19 +921,24 @@ static void CollectRelations(StringInfo buf, List* rt) {
     // stamps relkind='v' on that entry so it's still identifiable as a view.
     // RTE_RELATION alone already covers every other relkind (matview,
     // partitioned, foreign table) uniformly -- unaffected by that work.
-    // Partition scans surface the scanned child partitions here, not the
-    // declared parent -- that's the planner's own range table, not this.
+    // Partition scans surface both the parent and every child the planner
+    // considered, including ones pruned only at execution time.
     if (rte->rtekind != RTE_RELATION && rte->relkind != RELKIND_VIEW) {
       continue;
     }
 
-    if (AlreadySeen(seen, nseen, rte->relid)) {
+    // Collapse planner-generated children before deduplicating relation OIDs,
+    // so a later explicit reference to the same partition is still reported.
+    Index parent_rti = parent_of_rti[rti];
+    if (parent_rti != 0 && rt_fetch(parent_rti, rt)->rtekind == RTE_RELATION) {
       continue;
     }
-    if (nseen < (int)(lengthof(seen))) {
-      seen[nseen++] = rte->relid;
+
+    bool found;
+    psch_relid_seen_insert(seen, rte->relid, &found);
+    if (found) {
+      continue;
     }
-    Assert(nseen <= (int)(lengthof(seen)));
 
     const char* namespace_name = get_namespace_name(get_rel_namespace(rte->relid));
     const char* relation_name = get_rel_name(rte->relid);
@@ -1013,8 +953,9 @@ static void CollectRelations(StringInfo buf, List* rt) {
     Assert(ns_len < NAMEDATALEN);
     Assert(name_len < NAMEDATALEN);
 
+    // No separator byte to account for -- every entry is self-delimiting.
     int entry_len = (int)(1 + ns_len + 1 + name_len + 1);
-    if (PschRelationsWouldExceedBudget(buf->len, entry_len, psch_relations_max_len)) {
+    if (buf->len + entry_len > psch_relations_max_len) {
       truncated = true;
       break;  // Budget exhausted -- truncate, same as query text does.
     }
@@ -1029,56 +970,7 @@ static void CollectRelations(StringInfo buf, List* rt) {
 
   buf->data[0] = truncated ? 1 : 0;
   buf->data[1] = (char)count;
-}
-
-// Releases the slot on query-context teardown -- catches portal failures
-// that happen before ExecutorRun, which level-based sweeps can miss.
-typedef struct PschRelationsNestingReleaseCallback {
-  MemoryContextCallback cb;
-  const void* key;
-} PschRelationsNestingReleaseCallback;
-
-static void PschRelationsNestingReleaseOnContextTeardown(void* arg) {
-  const PschRelationsNestingReleaseCallback* release_cb = (const PschRelationsNestingReleaseCallback*)arg;
-  PschRelationsNestingPop(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH, release_cb->key);
-}
-
-// ExecutorCheckPerms_hook -- collects relations, then defers the actual
-// permission decision to the previous hook (or the standard "allow" default).
-static bool PschExecutorCheckPerms(List* rt, List* rp, bool ereport_on_violation) {
-  // Reservation is gated on relations_active_query_desc only, not
-  // relations_enabled, which instead decides whether to actually collect.
-  if (psch_enabled && !IsParallelWorker() && relations_active_query_desc != NULL) {
-    EnsureRelationsNestingCallbacksRegistered();
-    int slot = PschRelationsNestingPush(relations_nesting_table, PSCH_RELATIONS_MAX_NESTING_DEPTH,
-                                        relations_active_query_desc,
-                                        GetCurrentTransactionNestLevel());
-    if (slot >= 0) {
-      PschRelationsNestingReleaseCallback* release_cb =
-          MemoryContextAlloc(CurrentMemoryContext, sizeof(*release_cb));
-      release_cb->cb.func = PschRelationsNestingReleaseOnContextTeardown;
-      release_cb->cb.arg = release_cb;
-      release_cb->key = relations_active_query_desc;
-      MemoryContextRegisterResetCallback(CurrentMemoryContext, &release_cb->cb);
-
-      if (relations_bufs[slot].data == NULL) {
-        MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-        initStringInfo(&relations_bufs[slot]);
-        MemoryContextSwitchTo(oldcxt);
-      } else {
-        resetStringInfo(&relations_bufs[slot]);
-      }
-
-      if (psch_relations_enabled) {
-        CollectRelations(&relations_bufs[slot], rt);
-      }
-    }
-  }
-
-  if (prev_executor_check_perms != NULL) {
-    return prev_executor_check_perms(rt, rp, ereport_on_violation);
-  }
-  return true;
+  psch_relid_seen_destroy(seen);
 }
 
 void PschInstallHooks(void) {
@@ -1098,9 +990,6 @@ void PschInstallHooks(void) {
 
   prev_executor_end = ExecutorEnd_hook;
   ExecutorEnd_hook = PschExecutorEnd;
-
-  prev_executor_check_perms = ExecutorCheckPerms_hook;
-  ExecutorCheckPerms_hook = PschExecutorCheckPerms;
 
   prev_process_utility = ProcessUtility_hook;
   ProcessUtility_hook = PschProcessUtility;

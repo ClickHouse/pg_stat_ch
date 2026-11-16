@@ -156,8 +156,6 @@ if(PSCH_BUILD_UNIT_TESTS)
   find_package(GTest CONFIG REQUIRED)
   add_executable(pg_stat_ch_unittests
     test/unit/relations_decode_test.cc
-    test/unit/relations_budget_test.cc
-    test/unit/relations_nesting_test.cc
     test/unit/otel_string_array_attr_test.cc
   )
   target_compile_features(pg_stat_ch_unittests PRIVATE cxx_std_17)
