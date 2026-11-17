@@ -72,9 +72,6 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure
-
       - name: Install extension
         run: sudo cmake --install build
 

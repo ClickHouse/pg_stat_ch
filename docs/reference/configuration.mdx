@@ -153,7 +153,7 @@ Collect the relations array (tables/views a query touches).
 | **Default** | `off` |
 | **Context** | postmaster |
 
-When enabled, pg_stat_ch resolves each query's touched relations (tables, views, materialized views, foreign tables, partitioned tables) and exports them as three parallel arrays -- `relation_namespaces`/`relation_names`/`relation_kinds` -- plus a `relations_truncated` flag. Toggling this off skips the catalog lookups entirely, not just the storage -- useful for isolating this feature's hot-path cost from pg_stat_ch's baseline overhead. In a synthetic benchmark across join widths of 1/5/10/20 tables, the added CPU cost measured between +0.05us and +1.75us per query.
+When enabled, pg_stat_ch resolves each query's touched relations (tables, views, materialized views, foreign tables, partitioned tables) and exports them as three parallel arrays -- `relation_namespaces`/`relation_names`/`relation_kinds` -- plus a `relations_truncated` flag. Toggling this off skips the catalog lookups entirely, not just the storage -- useful for isolating this feature's hot-path cost from pg_stat_ch's baseline overhead.
 
 PGC_POSTMASTER: the ClickHouse exporter keeps its column set for the life of the bgworker, so changing this requires a restart. Apply the relations schema migrations before enabling it.
 

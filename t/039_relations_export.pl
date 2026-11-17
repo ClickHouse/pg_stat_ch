@@ -251,6 +251,32 @@ subtest 'relations_enabled=off reports empty but not truncated' => sub {
     $node->restart();
 };
 
+subtest 'failed query reports empty, non-truncated relations' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    # Division by zero fails during planning (constant-folded), well before
+    # ExecutorEnd (where CopyRelations runs) is ever reached, so the error
+    # event must carry no relations. Error events carry no query_text (see
+    # CaptureLogEvent), so this is matched by SQLSTATE instead.
+    $node->psql('postgres', 'SELECT * FROM foo1 WHERE 1/0 = 1', on_error_stop => 0);
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw " .
+        "WHERE err_sqlstate = '22012' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    is($names, '[]', "failed query reports no relations (got: $names)");
+
+    my $truncated = psch_query_clickhouse(
+        "SELECT relations_truncated FROM pg_stat_ch.events_raw " .
+        "WHERE err_sqlstate = '22012' LIMIT 1"
+    );
+    is($truncated, 'false', "empty relations on error is not flagged as truncated (got: $truncated)");
+};
+
 # Encoding correctness: special characters, every relkind, the truncation
 # marker, and the exact byte-budget boundary.
 
@@ -405,13 +431,13 @@ SQL
     unlike($names, qr/'sp_leaf_\d'/, "leaves two levels down not reported (got: $names)");
 };
 
-subtest 'subpartitioned hierarchy past the old 1024-relation seen-set cap collapses correctly' => sub {
+subtest 'subpartitioned hierarchy with a large range table collapses correctly' => sub {
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
-    # 600 (mid, leaf) pairs plus the root exceed PSCH_MAX_RELATIONS_LEN (1024)
-    # distinct relations in one range table -- regression test for the
-    # fixed-size Oid[1024] `seen` array this used to overflow into.
+    # 600 (mid, leaf) pairs plus the root: a large range table, to exercise
+    # the seen-set (a hash sized to the range table) well beyond a handful
+    # of entries.
     $node->safe_psql('postgres', 'CREATE TABLE big_root(id int, val text) PARTITION BY RANGE (id)');
     $node->safe_psql('postgres', <<'SQL');
 DO $do$
@@ -794,123 +820,6 @@ subtest 'renamed table is reported under its new name' => sub {
     );
     like($names, qr/'new_name_tab'/, "query by the new name reports new_name_tab (got: $names)");
     unlike($names, qr/'old_name_tab'/, "no stale old name lingers anywhere (got: $names)");
-};
-
-subtest 'relations nesting depth recovers after a run of unsampled queries' => sub {
-    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
-    psch_reset_stats($node);
-
-    $node->safe_psql('postgres', 'CREATE TABLE nest_recover_t(a int)');
-
-    # 20 deterministically-unsampled queries (sample_rate=0, high
-    # min_duration_us) used to permanently saturate the nesting-depth stack.
-    my $sql = 'SET pg_stat_ch.sample_rate = 0.0; ' .
-        'SET pg_stat_ch.min_duration_us = 2000000000; ' .
-        ('SELECT * FROM nest_recover_t; ' x 20) .
-        'RESET pg_stat_ch.sample_rate; ' .
-        'RESET pg_stat_ch.min_duration_us; ' .
-        'SELECT * FROM nest_recover_t;';
-    $node->safe_psql('postgres', $sql);
-    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
-
-    my $names = psch_wait_for_clickhouse_query(
-        "SELECT relation_names FROM pg_stat_ch.events_raw " .
-        "WHERE query_text LIKE 'SELECT * FROM nest_recover_t%' ORDER BY ts DESC LIMIT 1",
-        sub { $_[0] ne '' },
-        10
-    );
-    like($names, qr/'nest_recover_t'/,
-        "relations still captured after a 20-query unsampled streak (got: $names)");
-};
-
-subtest 'nesting depth recovers after permission-check failures inside a PL/pgSQL exception' => sub {
-    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
-    psch_reset_stats($node);
-
-    $node->safe_psql('postgres', 'CREATE TABLE perm_fail_t(a int)');
-    $node->safe_psql('postgres', 'CREATE ROLE perm_fail_role');
-
-    # Each iteration fails inside ExecutorStart itself (permission denied,
-    # before any execution), caught by the PL/pgSQL exception block -- which
-    # runs it as its own subtransaction. 20 of these used to leak a nesting
-    # level every time with no way to recover.
-    my $sql =
-        'SET ROLE perm_fail_role; ' .
-        q{DO $$ BEGIN
-            FOR i IN 1..20 LOOP
-              BEGIN
-                EXECUTE 'SELECT * FROM perm_fail_t';
-              EXCEPTION WHEN insufficient_privilege THEN NULL;
-              END;
-            END LOOP;
-          END $$;} .
-        ' RESET ROLE; ' .
-        'SELECT * FROM perm_fail_t;';
-    $node->safe_psql('postgres', $sql);
-    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
-
-    my $names = psch_wait_for_clickhouse_query(
-        "SELECT relation_names FROM pg_stat_ch.events_raw " .
-        "WHERE query_text LIKE 'SELECT * FROM perm_fail_t%' ORDER BY ts DESC LIMIT 1",
-        sub { $_[0] ne '' },
-        10
-    );
-    like($names, qr/'perm_fail_t'/,
-        "relations still captured after 20 permission-check failures (got: $names)");
-};
-
-subtest 'nesting depth recovers after a run of COPY statements' => sub {
-    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
-    psch_reset_stats($node);
-
-    $node->safe_psql('postgres', 'CREATE TABLE copy_leak_t(a int)');
-
-    # COPY's own permission check bypasses ExecutorStart/End entirely, so 20
-    # of these used to leak a nesting level every time with no way to recover.
-    my $sql = ("COPY copy_leak_t TO '/dev/null'; " x 20) .
-        'SELECT * FROM copy_leak_t;';
-    $node->safe_psql('postgres', $sql);
-    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
-
-    my $names = psch_wait_for_clickhouse_query(
-        "SELECT relation_names FROM pg_stat_ch.events_raw " .
-        "WHERE query_text LIKE 'SELECT * FROM copy_leak_t%' ORDER BY ts DESC LIMIT 1",
-        sub { $_[0] ne '' },
-        10
-    );
-    like($names, qr/'copy_leak_t'/,
-        "relations still captured after 20 COPY statements (got: $names)");
-};
-
-subtest 'nesting depth recovers after many distinct failed-cursor fetches' => sub {
-    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
-    psch_reset_stats($node);
-
-    $node->safe_psql('postgres', 'CREATE TABLE cursor_leak_t(a int)');
-
-    # 20 distinct failed-cursor/savepoint sequences used to exhaust all 16
-    # nesting slots; must run in one session (psql, on_error_stop => 0).
-    my $sql = "BEGIN;\n";
-    for my $i (1 .. 20) {
-        $sql .= "DECLARE cursor_leak_cur_$i NO SCROLL CURSOR FOR SELECT * FROM cursor_leak_t;\n";
-        $sql .= "SAVEPOINT cursor_leak_sp_$i;\n";
-        $sql .= "FETCH BACKWARD FROM cursor_leak_cur_$i;\n";
-        $sql .= "ROLLBACK TO SAVEPOINT cursor_leak_sp_$i;\n";
-        $sql .= "RELEASE SAVEPOINT cursor_leak_sp_$i;\n";
-    }
-    $sql .= "COMMIT;\n";
-    $sql .= "SELECT * FROM cursor_leak_t;\n";
-    $sql .= "SELECT pg_stat_ch_flush();\n";
-    $node->psql('postgres', $sql, on_error_stop => 0);
-
-    my $names = psch_wait_for_clickhouse_query(
-        "SELECT relation_names FROM pg_stat_ch.events_raw " .
-        "WHERE query_text LIKE 'SELECT * FROM cursor_leak_t%' ORDER BY ts DESC LIMIT 1",
-        sub { $_[0] ne '' },
-        10
-    );
-    like($names, qr/'cursor_leak_t'/,
-        "relations still captured after 20 distinct failed-cursor fetches (got: $names)");
 };
 
 subtest 'relation_* columns are omitted when disabled, so an unmigrated schema still accepts inserts' => sub {

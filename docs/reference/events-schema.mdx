@@ -48,7 +48,7 @@ Label values are exported as written by the application. Don't put PII, tokens, 
 
 | Column | Type | Description |
 |---|---|---|
-| `relation_namespaces` | `Array(LowCardinality(String))` | Schema name of each distinct table/view/materialized view/foreign table/partitioned table the query touched, positionally parallel to `relation_names` and `relation_kinds`. |
+| `relation_namespaces` | `Array(LowCardinality(String))` | Schema name of each distinct table/view/materialized view/foreign table/partitioned table the query touched, positionally parallel to `relation_names` and `relation_kinds`. Partitions and inheritance children are reported through their parent, not individually (for example, `SELECT * FROM inh_p` lists only `inh_p`). Recorded only for queries that complete; error events have empty relation arrays. |
 | `relation_names` | `Array(LowCardinality(String))` | Relation name of each distinct relation the query touched. |
 | `relation_kinds` | `Array(FixedString(1))` | `pg_class.relkind` for each entry: `r` (table), `v` (view), `m` (materialized view), `f` (foreign table), `p` (partitioned table), etc. |
 | `relations_truncated` | `Bool` | `true` if the query touched more relations than fit within `pg_stat_ch.relations_max_len`; the arrays above are incomplete for that event. |
