@@ -43,8 +43,9 @@ extern "C" {
 // Maximum error message length (truncated if longer)
 #define PSCH_MAX_ERR_MSG_LEN 2048
 
-// Maximum length of the relations blob (layout in hooks.c, CollectRelations),
-// truncated on overflow like query text -- truncation is self-flagged.
+// Maximum length of the relations blob (layout in relations_collect.c,
+// CollectRelations), truncated on overflow like query text -- truncation is
+// self-flagged.
 #define PSCH_MAX_RELATIONS_LEN 1024
 
 // Maximum application name length

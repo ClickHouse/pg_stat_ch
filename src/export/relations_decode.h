@@ -1,4 +1,5 @@
-// Pure C++, no PostgreSQL headers: decodes the relations blob built by CollectRelations in hooks.c.
+// Pure C++, no PostgreSQL headers: decodes the relations blob built by
+// CollectRelations in relations_collect.c.
 #ifndef PG_STAT_CH_SRC_EXPORT_RELATIONS_DECODE_H_
 #define PG_STAT_CH_SRC_EXPORT_RELATIONS_DECODE_H_
 
@@ -8,7 +9,7 @@
 
 #include "hooks/relations_budget.h"
 
-// Decoded form of the relations blob built by CollectRelations in hooks.c:
+// Decoded form of the relations blob built by CollectRelations in relations_collect.c:
 // [truncated:u8][count:u8]{[ns_len:u8][ns][name_len:u8][name][relkind:u8]}*count
 struct DecodedRelations {
   bool truncated = false;
