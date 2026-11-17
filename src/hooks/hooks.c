@@ -306,6 +306,12 @@ static void CopyQueryText(PschEvent* event, uint64 query_id) {
 }
 
 static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos);
+// Relations are collected only here, at ExecutorEnd, so only queries that run
+// to completion carry them. A query that errors out (including failures before
+// execution starts, e.g. permission denied) never reaches ExecutorEnd, and its
+// error event (built from ErrorData in CaptureLogEvent) has relations_len = 0.
+// That reads as empty arrays with relations_truncated = false, so an empty list
+// on an error event means "not recorded", not "touched nothing".
 static void CopyRelations(PschEvent* event, QueryDesc* query_desc) {
   if (!psch_relations_enabled) {
     event->relations_len = 0;
@@ -921,8 +927,8 @@ static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos) {
     // stamps relkind='v' on that entry so it's still identifiable as a view.
     // RTE_RELATION alone already covers every other relkind (matview,
     // partitioned, foreign table) uniformly -- unaffected by that work.
-    // Partition scans surface both the parent and every child the planner
-    // considered, including ones pruned only at execution time.
+    // Partition and inheritance children are collapsed into their parent
+    // below: the parent is reported, planner-generated children are not.
     if (rte->rtekind != RTE_RELATION && rte->relkind != RELKIND_VIEW) {
       continue;
     }
