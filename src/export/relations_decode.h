@@ -1,5 +1,4 @@
-// Pure C++, no PostgreSQL headers -- kept separate from stats_exporter.cc so
-// it's unit-testable in isolation (see test/unit/relations_decode_test.cc).
+// Pure C++, no PostgreSQL headers: decodes the relations blob built by CollectRelations in hooks.c.
 #ifndef PG_STAT_CH_SRC_EXPORT_RELATIONS_DECODE_H_
 #define PG_STAT_CH_SRC_EXPORT_RELATIONS_DECODE_H_
 
