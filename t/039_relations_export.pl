@@ -494,6 +494,25 @@ subtest 'partition queried directly, with no parent in the range table, still re
     like($names, qr/'gp_part_0'/, "directly-queried partition still reported (got: $names)");
 };
 
+subtest 'inheritance children collapse into the parent' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    psch_reset_stats($node);
+
+    $node->safe_psql('postgres', 'CREATE TABLE inh_parent(a int)');
+    $node->safe_psql('postgres', 'CREATE TABLE inh_child1() INHERITS (inh_parent)');
+    $node->safe_psql('postgres', 'CREATE TABLE inh_child2() INHERITS (inh_parent)');
+    $node->safe_psql('postgres', 'SELECT * FROM inh_parent');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $names = psch_wait_for_clickhouse_query(
+        "SELECT relation_names FROM pg_stat_ch.events_raw WHERE query_text LIKE 'SELECT * FROM inh_parent%' LIMIT 1",
+        sub { $_[0] ne '' },
+        10
+    );
+    like($names, qr/'inh_parent'/, "inheritance parent reported (got: $names)");
+    unlike($names, qr/'inh_child/, "inheritance children collapsed into the parent (got: $names)");
+};
+
 subtest 'partition named explicitly alongside its parent is reported regardless of FROM order' => sub {
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);

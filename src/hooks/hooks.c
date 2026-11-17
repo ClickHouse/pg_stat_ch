@@ -869,10 +869,10 @@ bool PschSuppressErrorCapture(bool suppress) {
   return prev;
 }
 
-// Oid set for CollectRelations' dedup/collapse below. Created fresh per call
-// in the caller's es_query_cxt -- sized to the range table itself, not the
-// relations_buf byte budget, since a collapsed partition consumes a slot
-// here without consuming any budget bytes.
+// Oid set for CollectRelations' dedup below. Created fresh per call in the
+// caller's es_query_cxt. Planner-generated partition/inheritance children are
+// skipped before they reach this set, so it stays small: it is bounded by the
+// byte budget, not by the range-table length.
 typedef struct PschRelidSeenEntry {
   Oid relid;
   char status;
@@ -893,7 +893,9 @@ typedef struct PschRelidSeenEntry {
 // [truncated:u8][count:u8]{[ns_len:u8][ns][name_len:u8][name][relkind:u8]}*count.
 static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos) {
   int nrt = list_length(rt);
-  psch_relid_seen_hash* seen = psch_relid_seen_create(CurrentMemoryContext, Max(nrt, 1), NULL);
+  // Starting size only: simplehash grows on demand, and the byte budget caps
+  // this set at roughly 200 relations, so don't scale it with the range table.
+  psch_relid_seen_hash* seen = psch_relid_seen_create(CurrentMemoryContext, 64, NULL);
   uint8 count = 0;
   bool truncated = false;
   int rti = 0;

@@ -1,6 +1,4 @@
 // Builds an array-valued OTLP attribute for any HC string-array stat.
-// Separate from otel_exporter.cc so it's unit-testable without a live
-// gRPC channel (test/unit/otel_string_array_attr_test.cc).
 #ifndef PG_STAT_CH_SRC_EXPORT_OTEL_STRING_ARRAY_ATTR_H_
 #define PG_STAT_CH_SRC_EXPORT_OTEL_STRING_ARRAY_ATTR_H_
 
