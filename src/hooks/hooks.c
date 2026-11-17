@@ -6,9 +6,7 @@
 
 #include "access/parallel.h"
 #include "access/xact.h"
-#include "catalog/pg_class.h"
 #include "commands/dbcommands.h"
-#include "common/hashfn.h"
 #include "common/ip.h"
 #include "common/pg_prng.h"
 #include "executor/executor.h"
@@ -17,16 +15,13 @@
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
-#include "nodes/pathnodes.h"
 #include "nodes/queryjumble.h"
 #include "parser/analyze.h"
-#include "parser/parsetree.h"
 #include "postmaster/bgworker.h"
 #include "storage/proc.h"
 #include "tcop/utility.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
-#include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 
 #include "compat.h"
@@ -34,7 +29,7 @@
 #include "hooks/hooks.h"
 #include "hooks/query_normalize.h"
 #include "hooks/query_normalize_state.h"
-#include "hooks/relations_budget.h"
+#include "hooks/relations_collect.h"
 #include "hooks/string_utils.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -310,7 +305,6 @@ static void CopyQueryText(PschEvent* event, uint64 query_id) {
                             sizeof(event->query), &event->query_len);
 }
 
-static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos);
 // Relations are collected only here, at ExecutorEnd, so only queries that run
 // to completion carry them. A query that errors out (including failures before
 // execution starts, e.g. permission denied) never reaches ExecutorEnd, and its
@@ -867,114 +861,6 @@ bool PschSuppressErrorCapture(bool suppress) {
   bool prev = disable_error_capture;
   disable_error_capture = suppress;
   return prev;
-}
-
-// Oid set for CollectRelations' dedup below. Created fresh per call in the
-// caller's es_query_cxt. Planner-generated partition/inheritance children are
-// skipped before they reach this set, so it stays small: it is bounded by the
-// byte budget, not by the range-table length.
-typedef struct PschRelidSeenEntry {
-  Oid relid;
-  char status;
-} PschRelidSeenEntry;
-
-#define SH_PREFIX            psch_relid_seen
-#define SH_ELEMENT_TYPE      PschRelidSeenEntry
-#define SH_KEY_TYPE          Oid
-#define SH_KEY               relid
-#define SH_HASH_KEY(tb, key) murmurhash32((uint32)(key))
-#define SH_EQUAL(tb, a, b)   ((a) == (b))
-#define SH_SCOPE             static inline
-#define SH_DECLARE
-#define SH_DEFINE
-#include "lib/simplehash.h"
-
-// Builds the relations blob:
-// [truncated:u8][count:u8]{[ns_len:u8][ns][name_len:u8][name][relkind:u8]}*count.
-static void CollectRelations(StringInfo buf, List* rt, List* append_rel_infos) {
-  int nrt = list_length(rt);
-  // Starting size only: simplehash grows on demand, and the byte budget caps
-  // this set at roughly 200 relations, so don't scale it with the range table.
-  psch_relid_seen_hash* seen = psch_relid_seen_create(CurrentMemoryContext, 64, NULL);
-  uint8 count = 0;
-  bool truncated = false;
-  int rti = 0;
-  ListCell* lc;
-
-  // Defense in depth -- the GUC's own min bound (guc.c) already enforces this.
-  Assert(psch_relations_max_len >= PSCH_RELATIONS_HEADER_LEN);
-
-  Index* parent_of_rti = palloc0(sizeof(Index) * (nrt + 1));
-  ListCell* alc;
-  foreach (alc, append_rel_infos) {
-    AppendRelInfo* appinfo = (AppendRelInfo*)lfirst(alc);
-    Assert(appinfo->child_relid >= 1 && (int)appinfo->child_relid <= nrt);
-    parent_of_rti[appinfo->child_relid] = appinfo->parent_relid;
-  }
-
-  // Reserve the header now; patched with real values once known.
-  appendStringInfoChar(buf, 0);
-  appendStringInfoChar(buf, 0);
-
-  foreach (lc, rt) {
-    rti++;
-    RangeTblEntry* rte = (RangeTblEntry*)lfirst(lc);
-
-    // Plain tables, plus view-expansion artifacts: the rewriter turns a
-    // referenced view into an RTE_SUBQUERY wrapping its definition, but
-    // stamps relkind='v' on that entry so it's still identifiable as a view.
-    // RTE_RELATION alone already covers every other relkind (matview,
-    // partitioned, foreign table) uniformly -- unaffected by that work.
-    // Partition and inheritance children are collapsed into their parent
-    // below: the parent is reported, planner-generated children are not.
-    if (rte->rtekind != RTE_RELATION && rte->relkind != RELKIND_VIEW) {
-      continue;
-    }
-
-    // Collapse planner-generated children before deduplicating relation OIDs,
-    // so a later explicit reference to the same partition is still reported.
-    Index parent_rti = parent_of_rti[rti];
-    if (parent_rti != 0 && rt_fetch(parent_rti, rt)->rtekind == RTE_RELATION) {
-      continue;
-    }
-
-    bool found;
-    psch_relid_seen_insert(seen, rte->relid, &found);
-    if (found) {
-      continue;
-    }
-
-    const char* namespace_name = get_namespace_name(get_rel_namespace(rte->relid));
-    const char* relation_name = get_rel_name(rte->relid);
-    if (namespace_name == NULL || relation_name == NULL) {
-      continue;  // Relation dropped concurrently; skip rather than crash.
-    }
-
-    // NAMEDATALEN-1 (63) max per Postgres identifier rules, so these always
-    // fit in a uint8 length prefix.
-    size_t ns_len = strlen(namespace_name);
-    size_t name_len = strlen(relation_name);
-    Assert(ns_len < NAMEDATALEN);
-    Assert(name_len < NAMEDATALEN);
-
-    // No separator byte to account for -- every entry is self-delimiting.
-    int entry_len = (int)(1 + ns_len + 1 + name_len + 1);
-    if (buf->len + entry_len > psch_relations_max_len) {
-      truncated = true;
-      break;  // Budget exhausted -- truncate, same as query text does.
-    }
-
-    appendStringInfoChar(buf, (char)ns_len);
-    appendBinaryStringInfo(buf, namespace_name, (int)ns_len);
-    appendStringInfoChar(buf, (char)name_len);
-    appendBinaryStringInfo(buf, relation_name, (int)name_len);
-    appendStringInfoChar(buf, (char)rte->relkind);
-    count++;
-  }
-
-  buf->data[0] = truncated ? 1 : 0;
-  buf->data[1] = (char)count;
-  psch_relid_seen_destroy(seen);
 }
 
 void PschInstallHooks(void) {
