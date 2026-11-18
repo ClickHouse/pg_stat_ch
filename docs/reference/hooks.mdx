@@ -59,7 +59,8 @@ This hook is used purely for nesting level tracking. The actual metric capture h
 1. Finalizes instrumentation (`InstrEndLoop`)
 2. Computes CPU time delta from `getrusage()`
 3. Extracts all metrics from `QueryDesc`
-4. Builds a `PschEvent` and enqueues it to shared memory
+4. If `pg_stat_ch.relations_enabled` is on, walks `query_desc->plannedstmt->rtable`, resolving each distinct relation to its schema-qualified name and `pg_class.relkind` into a length-prefixed buffer bounded by `pg_stat_ch.relations_max_len` (queries that exceed the budget are truncated and flagged via `relations_truncated`)
+5. Builds a `PschEvent` and enqueues it to shared memory
 
 ## Metrics Captured from QueryDesc
 
@@ -182,6 +183,7 @@ Parallel workers execute portions of a query plan. pg_stat_ch:
 │    ├─ Finalize instrumentation                                  │
 │    ├─ Compute CPU delta                                         │
 │    ├─ Extract metrics from QueryDesc                            │
+│    ├─ Collect touched relations (schema, name, relkind)         │
 │    └─ Enqueue PschEvent to shared memory                        │
 │                                                                 │
 │  ProcessUtility_hook                                            │

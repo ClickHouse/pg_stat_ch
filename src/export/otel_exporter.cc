@@ -17,6 +17,7 @@
 
 #include "config/guc.h"
 #include "export/exporter_interface.h"
+#include "export/otel_string_array_attr.h"
 
 #include <google/protobuf/arena.h>
 #include <grpcpp/grpcpp.h>
@@ -181,6 +182,9 @@ class OTelExporter : public StatsExporter {
   shared_ptr<Column<uint64_t>> StatHCUInt64(string_view name) final {
     return MakeIntCol<uint64_t>(name);
   }
+  shared_ptr<Column<std::vector<string_view>>> StatHCStringArray(string_view name) final {
+    return MakeArrayStrCol(name);
+  }
 
   shared_ptr<Column<int64_t>> StatTimestamp(string_view name) final {
     return MakeDateTimeCol(name);
@@ -232,6 +236,22 @@ class OTelExporter : public StatsExporter {
       }
       SetString(AddAttr(exp_->current_record_), name_, v);
       exp_->chunk_bytes_ += EstimateStringAttrBytes(name_, v);
+    }
+
+   private:
+    OTelExporter* exp_;
+    string name_;
+  };
+
+  class ArrayStrColumn : public Column<std::vector<string_view>> {
+   public:
+    ArrayStrColumn(OTelExporter* e, string_view n) : exp_(e), name_(n) {}
+    void Append(const std::vector<string_view>& v) final {
+      if (exp_->current_record_ == nullptr) {
+        return;
+      }
+      psch::SetStringArrayAttr(AddAttr(exp_->current_record_), name_, v);
+      exp_->chunk_bytes_ += psch::EstimateStringArrayAttrBytes(name_, v);
     }
 
    private:
@@ -299,6 +319,10 @@ class OTelExporter : public StatsExporter {
 
   shared_ptr<Column<string_view>> MakeSvCol(string_view name) {
     return std::make_shared<SvColumn>(this, name);
+  }
+
+  shared_ptr<Column<std::vector<string_view>>> MakeArrayStrCol(string_view name) {
+    return std::make_shared<ArrayStrColumn>(this, name);
   }
 
   shared_ptr<Column<string>> MakeStringCol(string_view name) {
