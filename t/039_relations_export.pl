@@ -435,9 +435,10 @@ subtest 'subpartitioned hierarchy with a large range table collapses correctly' 
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
-    # 600 (mid, leaf) pairs plus the root: a large range table, to exercise
-    # the seen-set (a hash sized to the range table) well beyond a handful
-    # of entries.
+    # 600 (mid, leaf) pairs plus the root: a large range table (1201 RTEs),
+    # to exercise the parent-of-rti map and collapsing logic at scale -- not
+    # the seen-set, which stays at 1 entry here since every partition
+    # collapses into big_root before reaching it.
     $node->safe_psql('postgres', 'CREATE TABLE big_root(id int, val text) PARTITION BY RANGE (id)');
     $node->safe_psql('postgres', <<'SQL');
 DO $do$
@@ -475,8 +476,8 @@ SQL
     );
     like($names, qr/'big_root'/, "root reported (got: $names)");
     like($names, qr/'big_other'/, "unrelated joined table reported (got: $names)");
-    unlike($names, qr/'big_mid_599'/, "subpartitioned intermediate past the old cap not reported (got: $names)");
-    unlike($names, qr/'big_leaf_599'/, "leaf past the old cap not reported (got: $names)");
+    unlike($names, qr/'big_mid_599'/, "subpartitioned intermediate collapsed into its parent, not reported (got: $names)");
+    unlike($names, qr/'big_leaf_599'/, "leaf partition collapsed into its parent, not reported (got: $names)");
 };
 
 subtest 'partition queried directly, with no parent in the range table, still reports' => sub {
@@ -603,12 +604,12 @@ subtest 'identifier made entirely of quote characters round-trips intact' => sub
     like($names, qr/\Q$quote_name\E/, "all-quote-character name survives intact, 63 raw bytes (got: $names)");
 };
 
-subtest 'exactly 7 max-length relations fit the 1023-byte budget, the 8th is dropped' => sub {
+subtest 'exactly 7 max-length relations fit the 1024-byte budget, the 8th is dropped' => sub {
     psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
     psch_reset_stats($node);
 
     # Worst-case per-relation cost: 1(ns_len) + 63(ns) + 1(name_len) +
-    # 63(name) + 1(relkind) = 129 bytes. (1023 - 2-byte header) / 129 = 7.9,
+    # 63(name) + 1(relkind) = 129 bytes. (1024 - 2-byte header) / 129 = 7.9,
     # so 7 fit and an 8th must be dropped with the truncated flag set.
     my $ns63 = 'n' x 63;
     $node->safe_psql('postgres', "CREATE SCHEMA $ns63");
@@ -626,7 +627,7 @@ subtest 'exactly 7 max-length relations fit the 1023-byte budget, the 8th is dro
         sub { $_[0] ne '' },
         10
     );
-    is($count, '7', "exactly 7 of 8 max-length relations fit the 1023-byte budget (got: $count)");
+    is($count, '7', "exactly 7 of 8 max-length relations fit the 1024-byte budget (got: $count)");
 
     my $truncated = psch_query_clickhouse(
         "SELECT relations_truncated FROM pg_stat_ch.events_raw WHERE length(relation_names) > 0 ORDER BY ts DESC LIMIT 1"

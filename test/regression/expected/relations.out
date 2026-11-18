@@ -16,7 +16,7 @@ SELECT pg_stat_ch_reset();
 SHOW pg_stat_ch.relations_max_len;
  pg_stat_ch.relations_max_len 
 ------------------------------
- 1023
+ 1024
 (1 row)
 
 SET pg_stat_ch.relations_max_len = 64;

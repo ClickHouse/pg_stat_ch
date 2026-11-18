@@ -165,7 +165,8 @@ typedef struct PschEvent {
   char client_addr[PSCH_MAX_CLIENT_ADDR_LEN];
   uint8 client_addr_len;  // Actual length
   uint16 query_len;       // Actual length of query text
-  uint16 relations_len;  // Actual length of relations blob (0 for utility statements)
+  uint16 relations_len;   // Actual length of relations blob (0 if not recorded:
+                          // feature off, utility statement, or error event)
   // Keeps the fixed prefix's tail 8-byte aligned so it stays byte-identical
   // to PschRingEntry's (dsa_pointer needs 8-byte alignment; char[] doesn't).
   uint8 _padding4[6];
@@ -177,7 +178,7 @@ typedef struct PschEvent {
   // matrix across non-UTF-8/ICU locales; left as a documented gap for now.
   char err_message[PSCH_MAX_ERR_MSG_LEN];  // Error message text (truncated if necessary)
   char query[PSCH_MAX_QUERY_LEN];          // Query text, unterminated, see query_len
-  char relations[PSCH_MAX_RELATIONS_LEN];  // See CollectRelations in hooks.c for layout.
+  char relations[PSCH_MAX_RELATIONS_LEN];  // See CollectRelations in relations_collect.c for layout.
 } PschEvent;
 
 // Ensure the struct has expected size characteristics

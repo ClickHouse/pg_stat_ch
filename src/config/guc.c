@@ -42,7 +42,7 @@ bool psch_use_unified_arrow_exporter = false;
 int psch_otel_max_block_bytes = 3 * 1024 * 1024;  // 3 MiB (max: 16 MiB)
 char* psch_extra_attributes = NULL;
 char* psch_debug_arrow_dump_dir = NULL;
-int psch_relations_max_len = 1023;  // bytes, leaves room for the NUL in PSCH_MAX_RELATIONS_LEN=1024
+int psch_relations_max_len = 1024;  // bytes; not NUL-terminated, so this can equal PSCH_MAX_RELATIONS_LEN
 bool psch_relations_enabled = false;
 
 // Log level options (matches PostgreSQL's server_message_level_options pattern)
@@ -417,13 +417,14 @@ void PschInitGuc(void) {
   DefineCustomIntVariable(
       "pg_stat_ch.relations_max_len",
       "Maximum bytes for the encoded list of tables/views a query touches.",
-      "Mirrors the query-text truncation pattern: the relations blob is a fixed "
-      "backend-local buffer, truncated (not grown) when a query touches enough "
-      "distinct relations to exceed this budget.",
+      "Mirrors the query-text truncation pattern: the encoded list is truncated "
+      "(not grown) when a query touches enough distinct relations to exceed "
+      "this budget. Built in a per-query StringInfo (es_query_cxt), not a "
+      "fixed backend-local buffer.",
       &psch_relations_max_len,
-      1023,                              // bootValue
+      1024,                              // bootValue (PSCH_MAX_RELATIONS_LEN)
       PSCH_RELATIONS_HEADER_LEN,         // min -- the header alone must still fit
-      1023,                              // max (PSCH_MAX_RELATIONS_LEN - 1, room for the NUL)
+      1024,                              // max (PSCH_MAX_RELATIONS_LEN -- not NUL-terminated, no byte to reserve)
       PGC_SUSET,
       0,
       NULL, NULL, NULL);

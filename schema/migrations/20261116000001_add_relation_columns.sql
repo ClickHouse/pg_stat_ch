@@ -1,5 +1,5 @@
 -- Adds structured relation columns: namespace, name, and relkind kept as
--- separate parallel arrays. Collected in src/hooks/hooks.c at ExecutorEnd.
+-- separate parallel arrays. Collected in src/hooks/relations_collect.c at ExecutorEnd.
 
 -- +goose Up
 
