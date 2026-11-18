@@ -184,14 +184,14 @@ static Size PschSharedBlockSize(void) {
 
 Size PschShmemSize(void) {
   // Total shmem requested from the postmaster: the shared block plus the
-  // query-text interner HTAB (carved from the same pool by ShmemInitHash).
+  // interner HTAB (which ShmemInitHash carves out of the same pool).
   return add_size(PschSharedBlockSize(), PschQueryInternShmemSize());
 }
 
 static void RequestSharedResources(void) {
   RequestAddinShmemSpace(PschShmemSize());
-  // 1 main queue lock + N query-text interner partition locks, all in the
-  // single "pg_stat_ch" named tranche so we read them as a contiguous
+  // 1 main queue lock + N partition locks for the query-text interner, all
+  // in the single "pg_stat_ch" named tranche so we read them as a contiguous
   // LWLockPadded[] from GetNamedLWLockTranche().
   RequestNamedLWLockTranche("pg_stat_ch", 1 + PschQueryInternLockCount());
 }
@@ -267,8 +267,7 @@ static void PschShmemStartupHook(void) {
     InitializeSharedState();
   }
 
-  // Initialize (or attach to) the query intern HTAB. All backends get the
-  // same handle.
+  // Initialize (or attach to) the query intern HTAB. All backends get same handle.
   LWLockPadded* lwlocks = GetNamedLWLockTranche("pg_stat_ch");
   PschQueryInternShmemInit(&lwlocks[1]);
 
