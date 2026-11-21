@@ -14,6 +14,7 @@ extern "C" {
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 
 #ifndef PG_SIG_IGN
 #define PG_SIG_IGN SIG_IGN
@@ -24,6 +25,13 @@ extern "C" {
 typedef const JumbleState PschJumbleState;
 #else
 typedef JumbleState PschJumbleState;
+#endif
+
+// Syscache callbacks take enum cache id on PG19+
+#if PG_VERSION_NUM >= 190000
+typedef SysCacheIdentifier PschSysCacheId;
+#else
+typedef int PschSysCacheId;
 #endif
 
 static inline int PschLWLockNewTrancheId(const char* name) {

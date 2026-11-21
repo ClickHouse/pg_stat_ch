@@ -179,6 +179,105 @@ subtest 'stats accuracy' => sub {
         "exported_events ($stats->{exported}) ~ ClickHouse count ($ch_count)");
 };
 
+# Syntax error never reaches parse or executor hooks, so this relies on
+# ClientAuthentication_hook setup
+subtest 'first statement error' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    $node->psql('postgres', 'SELEC 1');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $row = psch_wait_for_clickhouse_query(
+        "SELECT db_name, db_user, err_message FROM pg_stat_ch.events_raw "
+            . "WHERE err_sqlstate = '42601' FORMAT TSV",
+        sub { $_[0] ne '' },
+        10
+    );
+    my $user = $node->safe_psql('postgres', 'SELECT current_user');
+    is($row, "postgres\t$user\tsyntax error at or near \"SELEC\"",
+        'Strings and names exported');
+};
+
+# Unsampled SET ROLE, and COMMIT restoring a role, run no hook before error
+subtest 'error after role change' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    $node->safe_psql('postgres',
+        'CREATE ROLE psch_set; CREATE ROLE psch_local; CREATE ROLE psch_old');
+    $node->psql('postgres', q{
+SET pg_stat_ch.min_duration_us = 1000000000;
+SET pg_stat_ch.sample_rate = 0;
+SET ROLE psch_set;
+SELEC 1;
+RESET ROLE;
+BEGIN;
+SET LOCAL ROLE psch_local;
+COMMIT;
+SELEC 2;
+SET ROLE psch_old;
+RESET ROLE;
+ALTER ROLE psch_old RENAME TO psch_new;
+SET ROLE psch_new;
+SELEC 3;
+}, on_error_stop => 0);
+    $node->psql('postgres', 'SELEC 4',
+        connstr => $node->connstr('postgres') . " options='-c role=psch_set'");
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $rows = psch_wait_for_clickhouse_query(
+        "SELECT db_user FROM pg_stat_ch.events_raw "
+            . "WHERE err_sqlstate = '42601' ORDER BY ts FORMAT TSV",
+        sub { scalar(split /\n/, $_[0]) >= 4 },
+        10
+    );
+    my $user = $node->safe_psql('postgres', 'SELECT current_user');
+    is($rows, "psch_set\n$user\npsch_new\npsch_set", 'Current role names exported');
+};
+
+# Definer's own warning runs no hook as definer
+subtest 'security definer warning' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    $node->safe_psql('postgres', q{
+CREATE ROLE psch_owner;
+CREATE FUNCTION psch_warn() RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+    AS $$BEGIN RAISE WARNING 'psch definer'; END$$;
+ALTER FUNCTION psch_warn() OWNER TO psch_owner;
+});
+    $node->safe_psql('postgres', 'SELECT psch_warn()');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $row = psch_wait_for_clickhouse_query(
+        "SELECT db_user FROM pg_stat_ch.events_raw "
+            . "WHERE err_message = 'psch definer' FORMAT TSV",
+        sub { $_[0] ne '' },
+        10
+    );
+    is($row, 'psch_owner', 'Definer name exported');
+};
+
+# Reload enabling collection reaches session only at its next statement
+subtest 'enabled after connect' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    $node->append_conf('postgresql.conf', 'pg_stat_ch.enabled = off');
+    $node->reload;
+    $node->poll_query_until('postgres', 'SHOW pg_stat_ch.enabled', 'off');
+    my $session = $node->background_psql('postgres', on_error_stop => 0);
+    $node->append_conf('postgresql.conf', 'pg_stat_ch.enabled = on');
+    $node->reload;
+    $node->poll_query_until('postgres', 'SHOW pg_stat_ch.enabled', 'on');
+    $session->query('SELEC 3');
+    $session->quit;
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $row = psch_wait_for_clickhouse_query(
+        "SELECT db_name, db_user, err_message FROM pg_stat_ch.events_raw "
+            . "WHERE err_sqlstate = '42601' FORMAT TSV",
+        sub { $_[0] ne '' },
+        10
+    );
+    my $user = $node->safe_psql('postgres', 'SELECT current_user');
+    is($row, "postgres\t$user\tsyntax error at or near \"SELEC\"",
+        'Strings and names exported');
+};
+
 # Test 6: Connection failure handling - verify graceful failure when CH stops
 subtest 'connection failure handling' => sub {
     # This test is informational - we just verify the extension doesn't crash

@@ -12,6 +12,7 @@
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "jit/jit.h"
+#include "libpq/auth.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
@@ -21,7 +22,9 @@
 #include "tcop/utility.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/timestamp.h"
 
 #include "compat.h"
@@ -31,6 +34,8 @@
 #include "hooks/query_normalize_state.h"
 #include "hooks/string_utils.h"
 #include "queue/event.h"
+#include "queue/local_batch.h"
+#include "queue/psch_dsa.h"
 #include "queue/shmem.h"
 
 // Previous hook values for chaining
@@ -41,6 +46,8 @@ static ExecutorFinish_hook_type prev_executor_finish = NULL;
 static ExecutorEnd_hook_type prev_executor_end = NULL;
 static ProcessUtility_hook_type prev_process_utility = NULL;
 static emit_log_hook_type prev_emit_log_hook = NULL;
+static ClientAuthentication_hook_type prev_client_authentication = NULL;
+static fmgr_hook_type prev_fmgr = NULL;
 
 // Track nesting level to identify top-level queries
 static int nesting_level = 0;
@@ -61,78 +68,89 @@ static TimestampTz query_start_ts = 0;
 static bool system_init = false;
 
 static int GetClientAddress(char* buf, int buf_size);
-static void ResolveNames(PschEvent* event);
 
 // Cache for session-stable values to avoid repeated catalog lookups on every query.
 // Following pg_stat_monitor's pattern of caching client IP (pg_stat_monitor.c:73-96).
-// Database name and client address never change within a session. Username is
-// re-resolved when userid changes (handles SET ROLE). This also carries the
+// Database name and client address never change within a session. Usernames
+// are cached per userid (handles SET ROLE). This also carries the
 // session-local registry of parse-time query text looked up later by
 // ExecutorEnd or ProcessUtility.
+typedef struct PschCachedUser {
+  Oid userid;  // hash key
+  uint8 name_len;
+  char name[NAMEDATALEN];
+} PschCachedUser;
+
 typedef struct PschBackendState {
   bool initialized;
   char datname[NAMEDATALEN];
   uint8 datname_len;
-  Oid cached_userid;
-  char username[NAMEDATALEN];
-  uint8 username_len;
+  // Every role seen at a safe point, never evicted, since transaction end can
+  // restore an earlier role with no hook running before next error. Grows
+  // like Postgres's own role syscache
+  HTAB* users;
+  // Set on role rename or drop, names refreshed at next safe point
+  bool users_stale;
   char client_addr[PSCH_MAX_CLIENT_ADDR_LEN];
   uint8 client_addr_len;
   PschNormalizedQueryCache normalize_cache;
 } PschBackendState;
 static PschBackendState backend_state = {0};
 
-// Resolve and cache the current username. On initial resolve, falls back to
-// "<unknown>" if resolution fails. On SET ROLE re-resolve, keeps the existing
-// cached value on failure (better to show the old name than "<unknown>") and
-// leaves cached_userid unchanged so future calls can retry resolution.
-static void CacheUsername(Oid userid, bool fallback_on_null) {
-  const char* username = GetUserNameFromId(userid, true);
-  if (username != NULL) {
-    backend_state.username_len =
-        PschCopyName(backend_state.username, sizeof(backend_state.username), username);
-    backend_state.cached_userid = userid;
-  } else if (fallback_on_null) {
-    backend_state.username_len =
-        PschCopyName(backend_state.username, sizeof(backend_state.username), "<unknown>");
-    backend_state.cached_userid = userid;
-  }
+static void PschRoleInval(Datum arg pg_attribute_unused(),
+                          PschSysCacheId cacheid pg_attribute_unused(),
+                          uint32 hashvalue pg_attribute_unused()) {
+  backend_state.users_stale = true;
 }
 
-// Ensure the backend cache is populated. Called on each query; the first call
-// resolves datname and client_addr (session-stable), and all calls check whether
-// userid changed (SET ROLE) to re-resolve username.
-static void EnsureBackendCache(void) {
-  Oid userid = GetUserId();
-
-  if (!backend_state.initialized) {
-    // Can't resolve catalog names outside a transaction
-    if (!IsTransactionState()) {
-      return;
+// Failed resolve caches nothing so later calls retry
+static void CacheUsername(Oid userid) {
+  if (backend_state.users == NULL) {
+    HASHCTL ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(PschCachedUser)};
+    backend_state.users = hash_create("pg_stat_ch usernames", 8, &ctl, HASH_ELEM | HASH_BLOBS);
+    CacheRegisterSyscacheCallback(AUTHOID, PschRoleInval, (Datum)0);
+  }
+  if (backend_state.users_stale) {
+    // Clear first so inval during lookup marks stale again
+    backend_state.users_stale = false;
+    HASH_SEQ_STATUS scan;
+    hash_seq_init(&scan, backend_state.users);
+    PschCachedUser* user;
+    while ((user = hash_seq_search(&scan)) != NULL) {
+      const char* username = GetUserNameFromId(user->userid, true);
+      if (username != NULL) {
+        user->name_len = PschCopyName(user->name, sizeof(user->name), username);
+      }
     }
+  }
+  if (hash_search(backend_state.users, &userid, HASH_FIND, NULL) != NULL) {
+    return;
+  }
+  const char* username = GetUserNameFromId(userid, true);
+  if (username == NULL) {
+    return;
+  }
+  PschCachedUser* user = hash_search(backend_state.users, &userid, HASH_ENTER, NULL);
+  user->name_len = PschCopyName(user->name, sizeof(user->name), username);
+}
 
-    // Database name (session-stable)
+// Populate backend cache and cache current user's name, which SET ROLE or
+// SECURITY DEFINER may change
+static void EnsureBackendCache(void) {
+  // Can't resolve catalog names outside a transaction
+  if (!IsTransactionState()) {
+    return;
+  }
+  if (!backend_state.initialized) {
+    // datname and client_addr are session-stable
     const char* datname = get_database_name(MyDatabaseId);
     backend_state.datname_len = PschCopyName(backend_state.datname, sizeof(backend_state.datname),
                                              datname != NULL ? datname : "<unknown>");
-
-    // Client address (session-stable)
     backend_state.client_addr_len =
         (uint8)(GetClientAddress(backend_state.client_addr, sizeof(backend_state.client_addr)));
-
-    // Username (may change via SET ROLE)
-    CacheUsername(userid, true);
-
     backend_state.initialized = true;
-    return;
   }
-
-  // Re-resolve username if userid changed (SET ROLE)
-  if (backend_state.cached_userid != userid) {
-    if (IsTransactionState()) {
-      CacheUsername(userid, false);
-    }
-  }
+  CacheUsername(GetUserId());
 }
 
 static PschCmdType ConvertCmdType(CmdType cmd) {
@@ -262,6 +280,35 @@ static void InitEventPartial(PschEvent* event) {
   memset(event, 0, fixed_prefix_size);
 }
 
+// Copy names and client context from backend cache. No catalog access, so
+// safe inside emit_log_hook, which runs before the cache may be warm
+static void CopySessionContext(PschEvent* event) {
+  if (backend_state.initialized) {
+    memcpy(event->datname, backend_state.datname, backend_state.datname_len);
+    event->datname_len = backend_state.datname_len;
+    memcpy(event->client_addr, backend_state.client_addr, backend_state.client_addr_len);
+    event->client_addr_len = backend_state.client_addr_len;
+  } else {
+    event->datname_len = PschCopyName(event->datname, sizeof(event->datname), "<unknown>");
+    event->client_addr_len =
+        (uint8)(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
+  }
+
+  // HASH_FIND never allocates
+  const PschCachedUser* user =
+      backend_state.users != NULL
+          ? hash_search(backend_state.users, &event->userid, HASH_FIND, NULL)
+          : NULL;
+  if (user != NULL) {
+    memcpy(event->username, user->name, user->name_len);
+    event->username_len = user->name_len;
+  } else {
+    event->username_len = PschCopyName(event->username, sizeof(event->username), "<unknown>");
+  }
+
+  event->application_name_len = (uint8)(GetApplicationName(event->application_name));
+}
+
 static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level,
                           PschCmdType cmd_type) {
   InitEventPartial(event);
@@ -271,20 +318,7 @@ static void InitBaseEvent(PschEvent* event, TimestampTz ts_start, bool top_level
   event->pid = MyProcPid;
   event->top_level = top_level;
   event->cmd_type = cmd_type;
-  ResolveNames(event);
-}
-
-static void CopyClientContext(PschEvent* event) {
-  event->application_name_len = (uint8)(GetApplicationName(event->application_name));
-
-  EnsureBackendCache();
-  if (backend_state.initialized) {
-    memcpy(event->client_addr, backend_state.client_addr, backend_state.client_addr_len);
-    event->client_addr_len = backend_state.client_addr_len;
-  } else {
-    event->client_addr_len =
-        (uint8)(GetClientAddress(event->client_addr, sizeof(event->client_addr)));
-  }
+  CopySessionContext(event);
 }
 
 // Copy query text into the event buffer from the parse-time LRU cache.
@@ -297,34 +331,6 @@ static void CopyClientContext(PschEvent* event) {
 static void CopyQueryText(PschEvent* event, uint64 query_id) {
   PschLookupNormalizedQuery(&backend_state.normalize_cache, query_id, event->query,
                             sizeof(event->query), &event->query_len);
-}
-
-// Resolve database and user names, using the session cache when available.
-// Falls back to catalog lookups if cache hasn't been initialized yet (e.g.,
-// emit_log_hook fires before the first executor hook).
-static void ResolveNames(PschEvent* event) {
-  EnsureBackendCache();
-
-  if (backend_state.initialized) {
-    memcpy(event->datname, backend_state.datname, backend_state.datname_len);
-    event->datname_len = backend_state.datname_len;
-    memcpy(event->username, backend_state.username, backend_state.username_len);
-    event->username_len = backend_state.username_len;
-    return;
-  }
-
-  // Fallback: resolve fresh (cache not yet initialized, e.g. emit_log_hook early)
-  const char* datname = NULL;
-  const char* username = NULL;
-  if (IsTransactionState()) {
-    datname = get_database_name(event->dbid);
-    username = GetUserNameFromId(event->userid, true);
-  }
-
-  event->datname_len =
-      PschCopyName(event->datname, sizeof(event->datname), datname != NULL ? datname : "<unknown>");
-  event->username_len = PschCopyName(event->username, sizeof(event->username),
-                                     username != NULL ? username : "<unknown>");
 }
 
 // Copy JIT instrumentation to event
@@ -385,8 +391,51 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
 
   CopyJitInstrumentation(event, query_desc);
   CopyParallelWorkerInfo(event, query_desc);
-  CopyClientContext(event);
   CopyQueryText(event, query_desc->plannedstmt->queryId);
+}
+
+// Work that may allocate or throw, so must stay out of emit_log_hook. Also
+// clears capture guard left set by an error escaping capture
+static void AtSafePoint(void) {
+  disable_error_capture = false;
+  PschDsaAttach();
+  PschLocalBatchInit();
+  EnsureBackendCache();
+}
+
+// Startup transaction commits after database, session user, and role settings
+// from startup packet or pg_db_role_setting apply
+static void PschStartupXactCallback(XactEvent event, void* arg pg_attribute_unused()) {
+  if (event == XACT_EVENT_PRE_COMMIT) {
+    EnsureBackendCache();
+  }
+  UnregisterXactCallback(PschStartupXactCallback, NULL);
+}
+
+// Gives errors from a session's first statement strings and names, which
+// emit_log_hook can't set up itself. Runs in connection startup transaction
+static void PschClientAuthentication(Port* port, int status) {
+  if (prev_client_authentication != NULL) {
+    prev_client_authentication(port, status);
+  }
+  // Ignore pg_stat_ch.enabled, which may be turned on by reload before first statement
+  if (status != STATUS_OK) {
+    return;
+  }
+  PschDsaAttach();
+  PschLocalBatchInit();
+  RegisterXactCallback(PschStartupXactCallback, NULL);
+}
+
+// Postgres calls this for SECURITY DEFINER functions after switching to owner,
+// whose messages may come before any hook sees owner
+static void PschFmgr(FmgrHookEventType event, FmgrInfo* flinfo, Datum* arg) {
+  if (event == FHET_START) {
+    EnsureBackendCache();
+  }
+  if (prev_fmgr != NULL) {
+    prev_fmgr(event, flinfo, arg);
+  }
 }
 
 // post_parse_analyze_hook — decide query text at parse time.
@@ -401,6 +450,7 @@ static void PschPostParseAnalyze(ParseState* pstate, Query* query, PschJumbleSta
   if (!psch_enabled || IsParallelWorker()) {
     return;
   }
+  AtSafePoint();
 
   // Nothing to cache without a queryId (the executor/utility paths also skip
   // queryId == 0, so there is no consumer for this text).
@@ -452,6 +502,9 @@ static void PschExecutorStart(QueryDesc* query_desc, int eflags) {
     }
   } else {
     current_query_is_top_level = false;
+  }
+  if (psch_enabled) {
+    AtSafePoint();
   }
 
   bool track = psch_enabled && query_desc->plannedstmt->queryId != UINT64CONST(0);
@@ -561,6 +614,9 @@ static void PschExecutorEnd(QueryDesc* query_desc) {
   }
 #endif
 
+  // Before sampling, so errors after an unsampled role change see new name
+  EnsureBackendCache();
+
   // Compute duration early for sampling filter
   uint64 duration_us = QueryDurationUs(query_desc);
 
@@ -608,7 +664,6 @@ static void BuildEventForUtility(PschEvent* event, uint64 query_id, TimestampTz 
   CopyBufferUsage(event, bufusage);
   CopyIoTiming(event, bufusage);
   CopyWalUsage(event, walusage);
-  CopyClientContext(event);
   CopyQueryText(event, query_id);
 }
 
@@ -678,6 +733,7 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString, bool
     CALL_PROCESS_UTILITY();
     return;
   }
+  AtSafePoint();
 
   // Capture state before execution
   bool is_top_level = (nesting_level == 0);
@@ -697,6 +753,8 @@ static void PschProcessUtility(PlannedStmt* pstmt, const char* queryString, bool
   INSTR_TIME_SUBTRACT(duration, start_time);
 
   uint64 duration_us = INSTR_TIME_GET_MICROSEC(duration);
+  // Before sampling, so errors after an unsampled SET ROLE see new name
+  EnsureBackendCache();
   if (!ShouldSampleEvent(duration_us)) {
     return;
   }
@@ -763,10 +821,6 @@ static bool ShouldCaptureLog(ErrorData* edata) {
 // by ExecutorEnd/ProcessUtility, so reconstructing normalized SQL required
 // fuzzy matching and extra backend-local state. Error events still carry the
 // message, SQLSTATE, and client/session metadata.
-// This runs inside errfinish (via PschEmitLogHook), which holds the recursion
-// guard and wraps us in PG_TRY: if anything here throws (e.g. the catalog
-// fallback in ResolveNames failing to allocate under OOM), the nested error is
-// bounded and swallowed by the hook instead of recursing.
 static void CaptureLogEvent(ErrorData* edata) {
   PschEvent event;
   InitBaseEvent(&event, GetCurrentTimestamp(), (nesting_level == 0), PSCH_CMD_UNKNOWN);
@@ -778,8 +832,6 @@ static void CaptureLogEvent(ErrorData* edata) {
     event.err_message_len =
         (uint16)(PschCopyTrimmed(event.err_message, PSCH_MAX_ERR_MSG_LEN, edata->message));
   }
-
-  CopyClientContext(&event);
 
   PschEnqueueEvent(&event);
 }
@@ -799,36 +851,16 @@ static void PschEmitLogHook(ErrorData* edata) {
     return;
   }
 
-  // Hold the recursion guard across the whole capture. emit_log_hook runs
-  // inside errfinish, where a throw starts a new, nested error report that
-  // re-enters this hook BEFORE any longjmp: unguarded, an OOM error whose
-  // capture itself fails to allocate recurses until the errordata stack
-  // overflows into PANIC -> abort() -> database-wide crash recovery.
-  //
-  // The guard bounds that recursion at one level (the nested invocation
-  // returns at ShouldCaptureLog), and the PG_CATCH does two jobs: it restores
-  // the guard -- the nested error's longjmp would otherwise skip the clear
-  // below and permanently disable capture in this backend -- and it swallows
-  // the nested error so the original errfinish resumes and delivers the real
-  // report. The cost of a throw during capture is one lost telemetry event.
-  //
-  // errfinish zeroes holdoff counts before longjmp. Restore them when
-  // swallowing, else caller's RESUME_INTERRUPTS (eg PostgresMain error
-  // recovery) underflows and backend ignores cancels and timeouts
-  MemoryContext oldcxt = CurrentMemoryContext;
-  uint32 saved_interrupt_holdoff = InterruptHoldoffCount;
-  uint32 saved_cancel_holdoff = QueryCancelHoldoffCount;
+  // Capture must not throw: a nested ERROR here resets ErrorContext, freeing
+  // the report being emitted, so control can never return to errfinish.
+  // Holding interrupts keeps a pending cancel from firing inside capture.
+  // Should something throw anyway, let it propagate as Postgres does for an
+  // error during error processing. Guard stays set so nested report skips
+  // capture instead of recursing, AtSafePoint clears it
   disable_error_capture = true;
-  PG_TRY();
-  { CaptureLogEvent(edata); }
-  PG_CATCH();
-  {
-    MemoryContextSwitchTo(oldcxt);
-    FlushErrorState();
-    InterruptHoldoffCount = saved_interrupt_holdoff;
-    QueryCancelHoldoffCount = saved_cancel_holdoff;
-  }
-  PG_END_TRY();
+  HOLD_INTERRUPTS();
+  CaptureLogEvent(edata);
+  RESUME_INTERRUPTS();
   disable_error_capture = false;
 }
 
@@ -864,6 +896,12 @@ void PschInstallHooks(void) {
 
   prev_emit_log_hook = emit_log_hook;
   emit_log_hook = PschEmitLogHook;
+
+  prev_client_authentication = ClientAuthentication_hook;
+  ClientAuthentication_hook = PschClientAuthentication;
+
+  prev_fmgr = fmgr_hook;
+  fmgr_hook = PschFmgr;
 
   // Mark system as initialized - emit_log_hook will now capture messages
   system_init = true;
