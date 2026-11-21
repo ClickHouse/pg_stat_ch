@@ -71,11 +71,14 @@ static inline PschRingEntry* GetRingBuffer(void) {
 // DETECTING OVERFLOW: Check pg_stat_ch_stats().dropped > 0 or look for the WARNING
 // in PostgreSQL logs. The overflow_logged flag prevents log spam by warning only once
 // until stats are reset.
-static void HandleOverflow(void) {
+//
+// Callers inside error capture pass report=false: emit_log_hook must not throw,
+// and ereport can, through CHECK_FOR_INTERRUPTS or a failed client write
+static void HandleOverflow(bool report) {
   pg_atomic_fetch_add_u64(&psch_shared_state->dropped, 1);
 
   // Log overflow warning once to avoid log spam (pg_stat_monitor pattern)
-  if (pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
+  if (report && pg_atomic_test_set_flag(&psch_shared_state->overflow_logged)) {
     ereport(WARNING,
             (errmsg("pg_stat_ch: queue overflow, events being dropped"),
              errhint("Consider increasing pg_stat_ch.queue_capacity or reducing query load.")));
@@ -95,12 +98,12 @@ static const size_t kFixedPrefixSize = offsetof(PschRingEntry, err_message_dsa);
 // slots) rather than PschEvent (~4.5KB).  Query text and error messages are
 // allocated in a DSA area and referenced by dsa_pointer.  On DSA OOM the
 // event is still enqueued with numeric data intact; only the string is lost.
-static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
+static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity, bool report) {
   uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
 
   if (head - tail >= capacity || psch_debug_force_locked_overflow) {
-    HandleOverflow();
+    HandleOverflow(report);
     return false;
   }
 
@@ -317,7 +320,7 @@ bool PschEnqueueEvent(const PschEvent* event) {
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
 
   if (head - tail >= capacity) {
-    HandleOverflow();
+    HandleOverflow(!saved_capture);
     PschSuppressErrorCapture(saved_capture);
     return false;
   }
@@ -329,7 +332,7 @@ bool PschEnqueueEvent(const PschEvent* event) {
     // would otherwise longjmp past the restore and leave capture disabled for
     // the rest of the backend's lifetime.
     PG_TRY();
-    { result = TryEnqueueLocked(event, capacity); }
+    { result = TryEnqueueLocked(event, capacity, !saved_capture); }
     PG_FINALLY();
     {
       LWLockRelease(psch_shared_state->lock);
@@ -359,7 +362,7 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
   if (head - tail >= capacity) {
     for (int i = 0; i < count; i++)
-      HandleOverflow();
+      HandleOverflow(!saved_capture);
     PschSuppressErrorCapture(saved_capture);
     return 0;
   }
@@ -372,7 +375,7 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
-      if (TryEnqueueLocked(&events[i], capacity))
+      if (TryEnqueueLocked(&events[i], capacity, !saved_capture))
         enqueued++;
     }
   }

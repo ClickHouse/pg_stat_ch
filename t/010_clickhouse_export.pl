@@ -179,6 +179,24 @@ subtest 'stats accuracy' => sub {
         "exported_events ($stats->{exported}) ~ ClickHouse count ($ch_count)");
 };
 
+# Syntax error never reaches parse or executor hooks, so this relies on
+# ClientAuthentication_hook setup
+subtest 'first statement error' => sub {
+    psch_query_clickhouse("TRUNCATE TABLE pg_stat_ch.events_raw");
+    $node->psql('postgres', 'SELEC 1');
+    $node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+    my $row = psch_wait_for_clickhouse_query(
+        "SELECT db_name, db_user, err_message FROM pg_stat_ch.events_raw "
+            . "WHERE err_sqlstate = '42601' FORMAT TSV",
+        sub { $_[0] ne '' },
+        10
+    );
+    my $user = $node->safe_psql('postgres', 'SELECT current_user');
+    is($row, "postgres\t$user\tsyntax error at or near \"SELEC\"",
+        'Strings and names exported');
+};
+
 # Test 6: Connection failure handling - verify graceful failure when CH stops
 subtest 'connection failure handling' => sub {
     # This test is informational - we just verify the extension doesn't crash

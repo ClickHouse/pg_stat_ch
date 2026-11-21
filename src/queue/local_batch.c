@@ -5,9 +5,9 @@
 //
 // CALLBACK ORDERING (LIFO):
 // on_shmem_exit callbacks run in reverse registration order.
-// PschShmemShutdown (logs final stats) is registered in PschShmemStartupHook (early).
-// PschLocalBatchShutdown is registered later (on first Add), so it runs FIRST —
-// flushing buffered events before stats are logged.
+// PschShmemShutdown (logs final stats) is registered in PschShmemStartupHook (early),
+// PschDsaDetachOnExit on DSA attach, then PschLocalBatchShutdown, so it runs FIRST,
+// flushing buffered events while DSA is attached and before stats are logged.
 
 #include "postgres.h"
 
@@ -27,8 +27,10 @@ static bool local_batch_initialized = false;
 static void PschXactCallback(XactEvent event, void* arg);
 static void PschLocalBatchShutdown(int code, Datum arg);
 
-// Register callbacks lazily on first use.
-static void PschLocalBatchInit(void) {
+void PschLocalBatchInit(void) {
+  if (local_batch_initialized) {
+    return;
+  }
   RegisterXactCallback(PschXactCallback, NULL);
   on_shmem_exit(PschLocalBatchShutdown, 0);
   local_batch_initialized = true;
@@ -45,10 +47,6 @@ int PschLocalBatchFlush(void) {
 }
 
 void PschLocalBatchAdd(const PschEvent* event) {
-  if (!local_batch_initialized) {
-    PschLocalBatchInit();
-  }
-
   // If buffer is full, flush first
   if (local_batch_count >= PSCH_LOCAL_BATCH_CAPACITY) {
     PschLocalBatchFlush();
