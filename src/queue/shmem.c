@@ -22,7 +22,7 @@
 //    Critical for correctness on weakly-ordered architectures (ARM, PowerPC)
 //
 // 4. ERROR-SAFE LOCKING (pattern from pg_stat_monitor):
-//    PG_TRY/PG_FINALLY blocks ensure locks are released even if an error occurs
+//    PG_TRY/PG_CATCH blocks ensure locks are released even if an error occurs
 //    during enqueue, preventing deadlocks.
 //
 // 5. GRACEFUL OVERFLOW (pattern from pg_stat_monitor):
@@ -274,6 +274,16 @@ void PschInstallShmemHooks(void) {
   shmem_startup_hook = PschShmemStartupHook;
 }
 
+// Release queue lock while unwinding an ERROR. errfinish zeroes
+// InterruptHoldoffCount before longjmp, so rebalance the RESUME_INTERRUPTS in
+// LWLockRelease as LWLockReleaseAll does. Restore capture guard, else capture
+// stays disabled for the rest of the backend's lifetime
+static void ReleaseQueueLockOnError(bool saved_capture) {
+  HOLD_INTERRUPTS();
+  LWLockRelease(psch_shared_state->lock);
+  PschSuppressErrorCapture(saved_capture);
+}
+
 // Enqueue an event to the ring buffer (multi-producer, called from executor hooks)
 //
 // CONCURRENCY: Multiple backends can call this simultaneously. We use a
@@ -301,6 +311,9 @@ bool PschEnqueueEvent(const PschEvent* event) {
     return false;
   }
 
+  // Attach before taking the guard or lock, attach allocates and can throw
+  PschDsaAttach();
+
   // Suppress error capture for the duration of this function to prevent deadlock.
   // HandleOverflow() calls ereport(WARNING) which triggers emit_log_hook, which
   // would re-enter PschEnqueueEvent() and deadlock on LWLockAcquire. Restore
@@ -312,9 +325,10 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   // === LOCK-FREE FAST PATH: Check for overflow without acquiring lock ===
   // This eliminates lock contention during overflow conditions.
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();  // Ensure head is read before tail for correct ordering
+  // Read tail first: head never moves backwards, so head - tail can't wrap
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
 
   if (head - tail >= capacity) {
     HandleOverflow();
@@ -325,17 +339,16 @@ bool PschEnqueueEvent(const PschEvent* event) {
   // === TRY-LOCK PATH: Attempt non-blocking lock ===
   if (LWLockConditionalAcquire(psch_shared_state->lock, LW_EXCLUSIVE)) {
     bool result = false;
-    // Restore suppression in PG_FINALLY: an error escaping the locked section
-    // would otherwise longjmp past the restore and leave capture disabled for
-    // the rest of the backend's lifetime.
     PG_TRY();
     { result = TryEnqueueLocked(event, capacity); }
-    PG_FINALLY();
+    PG_CATCH();
     {
-      LWLockRelease(psch_shared_state->lock);
-      PschSuppressErrorCapture(saved_capture);
+      ReleaseQueueLockOnError(saved_capture);
+      PG_RE_THROW();
     }
     PG_END_TRY();
+    LWLockRelease(psch_shared_state->lock);
+    PschSuppressErrorCapture(saved_capture);
     return result;
   }
 
@@ -351,12 +364,13 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   if (psch_shared_state == NULL || !psch_enabled || count == 0)
     return 0;
 
+  PschDsaAttach();
   bool saved_capture = PschSuppressErrorCapture(true);
   uint32 capacity = psch_shared_state->capacity;
 
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   if (head - tail >= capacity) {
     for (int i = 0; i < count; i++)
       HandleOverflow();
@@ -366,9 +380,6 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
 
   int enqueued = 0;
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
-  // Restore suppression in PG_FINALLY: an error escaping the locked section
-  // would otherwise longjmp past the restore and leave capture disabled for
-  // the rest of the backend's lifetime.
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
@@ -376,12 +387,14 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
         enqueued++;
     }
   }
-  PG_FINALLY();
+  PG_CATCH();
   {
-    LWLockRelease(psch_shared_state->lock);
-    PschSuppressErrorCapture(saved_capture);
+    ReleaseQueueLockOnError(saved_capture);
+    PG_RE_THROW();
   }
   PG_END_TRY();
+  LWLockRelease(psch_shared_state->lock);
+  PschSuppressErrorCapture(saved_capture);
 
   return enqueued;
 }
@@ -501,10 +514,12 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   // Full barrier for consistent snapshot (counters before positions)
   pg_memory_barrier();
 
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
+  // Tail before head keeps head - tail from wrapping. Clamp, tail may be stale
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-  *queue_size = (uint32)(head - tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   *queue_capacity = psch_shared_state->capacity;
+  *queue_size = (uint32)Min(head - tail, (uint64)*queue_capacity);
 
   // Copy exporter timestamps and error text under lock to prevent torn reads.
   // The error text is copied into the caller's buffer so it remains valid after
