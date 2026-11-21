@@ -22,7 +22,7 @@
 //    Critical for correctness on weakly-ordered architectures (ARM, PowerPC)
 //
 // 4. ERROR-SAFE LOCKING (pattern from pg_stat_monitor):
-//    PG_TRY/PG_FINALLY blocks ensure locks are released even if an error occurs
+//    PG_TRY/PG_CATCH blocks ensure locks are released even if an error occurs
 //    during enqueue, preventing deadlocks.
 //
 // 5. GRACEFUL OVERFLOW (pattern from pg_stat_monitor):
@@ -104,6 +104,9 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   if (head - tail >= capacity || psch_debug_force_locked_overflow) {
     HandleOverflow();
     return false;
+  }
+  if (psch_debug_force_locked_error) {
+    elog(ERROR, "pg_stat_ch: forced error under queue lock");
   }
 
   // Fast modulo via bitmask (requires power-of-2 capacity, enforced by GUC check)
@@ -276,6 +279,16 @@ void PschInstallShmemHooks(void) {
   shmem_startup_hook = PschShmemStartupHook;
 }
 
+static void ReleaseQueueLockOnError(bool saved_capture) {
+  // errfinish zeroes InterruptHoldoffCount before longjmp. Restore the lock's
+  // increment as LWLockReleaseAll does so LWLockRelease returns it to zero
+  // without underflow.
+  HOLD_INTERRUPTS();
+  LWLockRelease(psch_shared_state->lock);
+  // Restore capture guard so later errors can be captured.
+  PschSuppressErrorCapture(saved_capture);
+}
+
 // Enqueue an event to the ring buffer (multi-producer, called from executor hooks)
 //
 // CONCURRENCY: Multiple backends can call this simultaneously. We use a
@@ -303,6 +316,9 @@ bool PschEnqueueEvent(const PschEvent* event) {
     return false;
   }
 
+  // Attach before taking the guard or lock, attach allocates and can throw
+  PschDsaAttach();
+
   // Suppress error capture for the duration of this function to prevent deadlock.
   // HandleOverflow() calls ereport(WARNING) which triggers emit_log_hook, which
   // would re-enter PschEnqueueEvent() and deadlock on LWLockAcquire. Restore
@@ -328,17 +344,16 @@ bool PschEnqueueEvent(const PschEvent* event) {
   // === TRY-LOCK PATH: Attempt non-blocking lock ===
   if (LWLockConditionalAcquire(psch_shared_state->lock, LW_EXCLUSIVE)) {
     bool result = false;
-    // Restore suppression in PG_FINALLY: an error escaping the locked section
-    // would otherwise longjmp past the restore and leave capture disabled for
-    // the rest of the backend's lifetime.
     PG_TRY();
     { result = TryEnqueueLocked(event, capacity); }
-    PG_FINALLY();
+    PG_CATCH();
     {
-      LWLockRelease(psch_shared_state->lock);
-      PschSuppressErrorCapture(saved_capture);
+      ReleaseQueueLockOnError(saved_capture);
+      PG_RE_THROW();
     }
     PG_END_TRY();
+    LWLockRelease(psch_shared_state->lock);
+    PschSuppressErrorCapture(saved_capture);
     return result;
   }
 
@@ -354,6 +369,7 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   if (psch_shared_state == NULL || !psch_enabled || count == 0)
     return 0;
 
+  PschDsaAttach();
   bool saved_capture = PschSuppressErrorCapture(true);
   uint32 capacity = psch_shared_state->capacity;
 
@@ -369,9 +385,6 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
 
   int enqueued = 0;
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
-  // Restore suppression in PG_FINALLY: an error escaping the locked section
-  // would otherwise longjmp past the restore and leave capture disabled for
-  // the rest of the backend's lifetime.
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
@@ -379,12 +392,14 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
         enqueued++;
     }
   }
-  PG_FINALLY();
+  PG_CATCH();
   {
-    LWLockRelease(psch_shared_state->lock);
-    PschSuppressErrorCapture(saved_capture);
+    ReleaseQueueLockOnError(saved_capture);
+    PG_RE_THROW();
   }
   PG_END_TRY();
+  LWLockRelease(psch_shared_state->lock);
+  PschSuppressErrorCapture(saved_capture);
 
   return enqueued;
 }
