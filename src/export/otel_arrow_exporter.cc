@@ -204,14 +204,10 @@ class OTelArrowExporter : public StatsExporter {
   int NumConsecutiveFailures() const final { return inner_->NumConsecutiveFailures(); }
   void ResetFailures() final { inner_->ResetFailures(); }
   // Report rows from THIS batch (sum across mid-batch flushes + the final
-  // flush), not the inner exporter's cumulative count.
-  // BeginBatch resets exported_in_batch_; each successful Flush adds the
-  // chunk's row count. The inner's exported_count_ accumulates across
-  // batches because we never call inner_->BeginBatch() (the inner's per-record
-  // LogRecord state machine is unused on this path). PschExportBatch reads
-  // NumExported() once per successful CommitBatch and fetch_adds it into
-  // shared stats, so a cumulative value here would cause quadratic
-  // over-reporting.
+  // flush). BeginBatch resets exported_in_batch_; each successful Flush adds
+  // the chunk's row count. PschExportBatch reads NumExported() once per
+  // successful CommitBatch and fetch_adds it into shared stats, so a
+  // cumulative value here would cause quadratic over-reporting.
   int NumExported() const final { return exported_in_batch_; }
 
  private:
