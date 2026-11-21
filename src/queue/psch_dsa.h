@@ -29,7 +29,9 @@
 // LIFECYCLE
 // =========
 //  1. Postmaster: PschDsaInit()  — dsa_create_in_place, dsa_pin, dsa_detach
-//  2. Backends:   PschDsaAllocString() attaches on first enqueue
+//  2. Backends:   Attach at client authentication or from executor and parse
+//                 hooks, never on enqueue, since emit_log_hook enqueues and
+//                 must not throw
 //  3. Bgworker:   Attach before consuming queue slots
 //  String helpers reuse process-local attachment until process exit
 //
@@ -109,7 +111,7 @@ void PschDsaInit(PschSharedState* state, void* dsa_place);
 dsa_area* PschDsaAttach(void);
 
 // Allocate a DSA string from an inline buffer, without terminator.
-// Returns InvalidDsaPointer on zero-length, unavailable DSA handle, or allocation
+// Returns InvalidDsaPointer on zero-length, unattached DSA, or allocation
 // failure.
 // On OOM, increments state->dsa_oom_count atomically.
 dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len);

@@ -19,8 +19,13 @@ extern "C" {
 
 #include "queue/event.h"
 
-// Buffer an event locally (flushes automatically if buffer is full).
-// Lazily registers XactCallback and on_shmem_exit on first call.
+// Register XactCallback and on_shmem_exit flush. Idempotent. Call after
+// PschDsaAttach so exit flush runs before DSA detach
+void PschLocalBatchInit(void);
+
+// Buffer an event locally (flushes automatically if buffer is full). Never
+// allocates, so safe inside emit_log_hook. Events buffered before
+// PschLocalBatchInit flush with a later transaction end
 void PschLocalBatchAdd(const PschEvent* event);
 
 // Flush all buffered events to the shared ring buffer via PschEnqueueBatch.

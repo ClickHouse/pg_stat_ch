@@ -80,7 +80,7 @@ dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len) {
   if (len == 0) {
     return InvalidDsaPointer;
   }
-  dsa_area* dsa = PschDsaAttach();
+  dsa_area* dsa = psch_dsa;
   if (dsa == NULL) {
     return InvalidDsaPointer;
   }
