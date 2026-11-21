@@ -11,6 +11,8 @@
 
 #include "postgres.h"
 
+#include "mb/pg_wchar.h"
+
 // Copy src into a fixed-size name buffer.  Returns the number of bytes
 // written (excluding the NUL), clamped to dst_size - 1.
 static inline uint8 PschCopyName(char* dst, size_t dst_size, const char* src) {
@@ -19,7 +21,8 @@ static inline uint8 PschCopyName(char* dst, size_t dst_size, const char* src) {
 }
 
 // Copy at most max_len bytes of src to dst, without terminator, skipping
-// leading whitespace and trimming trailing.  Returns bytes copied.
+// leading whitespace and trimming trailing, never splitting a multibyte
+// character.  Returns bytes copied.
 static inline size_t PschCopyTrimmed(char* dst, size_t max_len, const char* src) {
   if (src == NULL) {
     return 0;
@@ -28,6 +31,9 @@ static inline size_t PschCopyTrimmed(char* dst, size_t max_len, const char* src)
     src++;
   }
   size_t len = strnlen(src, max_len);
+  if (len == max_len && src[len] != '\0') {
+    len = (size_t)pg_mbcliplen(src, (int)len, (int)len);
+  }
   while (len > 0 && isspace((unsigned char)(src[len - 1]))) {
     len--;
   }
