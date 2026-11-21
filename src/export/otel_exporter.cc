@@ -494,7 +494,6 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
                                                        std::move(arena), request, &response);
 
     if (status.ok()) {
-      exported_count_ += num_rows;
       consecutive_failures_ = 0;
       return true;
     }

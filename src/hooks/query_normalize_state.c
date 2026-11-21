@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "lib/ilist.h"
+#include "mb/pg_wchar.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
@@ -49,8 +50,10 @@ static void EnsureCacheInitialized(PschNormalizedQueryCache* cache) {
   PschInitNormalizedQueryCache(cache, max_entries);
 }
 
-static int ClampCachedQueryLen(int normalized_len) {
-  return Min(normalized_len, PSCH_MAX_CACHED_QUERY_LEN);
+static int ClampCachedQueryLen(const char* normalized_query, int normalized_len) {
+  if (normalized_len <= PSCH_MAX_CACHED_QUERY_LEN)
+    return normalized_len;
+  return pg_mbcliplen(normalized_query, normalized_len, PSCH_MAX_CACHED_QUERY_LEN);
 }
 
 static void PushEntryToMru(PschNormalizedQueryCache* cache, PschNormalizeCacheEntry* entry) {
@@ -64,10 +67,10 @@ static void PromoteEntryToMru(PschNormalizedQueryCache* cache, PschNormalizeCach
 
 static char* CopyQueryText(PschNormalizedQueryCache* cache, const char* normalized_query,
                            int normalized_len) {
-  char* copy;
+  char* copy = (char*)MemoryContextAllocExtended(cache->mcxt, normalized_len, MCXT_ALLOC_NO_OOM);
 
-  copy = (char*)MemoryContextAlloc(cache->mcxt, normalized_len);
-  memcpy(copy, normalized_query, normalized_len);
+  if (copy != NULL)
+    memcpy(copy, normalized_query, normalized_len);
   return copy;
 }
 
@@ -84,8 +87,10 @@ void PschInitNormalizedQueryCache(PschNormalizedQueryCache* cache, int max_entri
   Assert(cache != NULL);
   Assert(max_entries >= PSCH_NORMALIZE_CACHE_MIN_MAX);
 
-  cache->mcxt =
-      AllocSetContextCreate(TopMemoryContext, "pg_stat_ch normalize cache", ALLOCSET_DEFAULT_SIZES);
+  // Reuse context left by a prior hash_create failure
+  if (cache->mcxt == NULL)
+    cache->mcxt = AllocSetContextCreate(TopMemoryContext, "pg_stat_ch normalize cache",
+                                        ALLOCSET_DEFAULT_SIZES);
 
   MemSet(&info, 0, sizeof(info));
   info.keysize = sizeof(PschNormalizeCacheKey);
@@ -120,14 +125,28 @@ void PschRememberNormalizedQuery(PschNormalizedQueryCache* cache, uint64 query_i
   PschNormalizeCacheKey hkey;
   PschNormalizeCacheEntry* entry;
   bool found;
+  char* copy;
 
   if (cache == NULL || normalized_query == NULL || query_id == UINT64CONST(0))
     return;
 
   EnsureCacheInitialized(cache);
 
+  // Clamp to the maximum length that events ever export — caching more than
+  // that wastes memory in the long-lived cache context.
+  normalized_len = ClampCachedQueryLen(normalized_query, normalized_len);
+
+  // Allocate before touching cache so OOM leaves it intact
+  copy = CopyQueryText(cache, normalized_query, normalized_len);
+  if (copy == NULL)
+    return;
+
   hkey = MakeCacheKey(query_id);
-  entry = (PschNormalizeCacheEntry*)hash_search(cache->htab, &hkey, HASH_ENTER, &found);
+  entry = (PschNormalizeCacheEntry*)hash_search(cache->htab, &hkey, HASH_ENTER_NULL, &found);
+  if (entry == NULL) {
+    pfree(copy);
+    return;
+  }
 
   if (found) {
     // Update existing entry — free old text and requeue it as MRU below.
@@ -139,12 +158,7 @@ void PschRememberNormalizedQuery(PschNormalizedQueryCache* cache, uint64 query_i
       EvictLru(cache);
   }
 
-  // Clamp to the maximum length that events ever export — caching more than
-  // that wastes memory in the long-lived cache context.
-  normalized_len = ClampCachedQueryLen(normalized_len);
-
-  // Copy text into the cache's own memory context.
-  entry->normalized_query = CopyQueryText(cache, normalized_query, normalized_len);
+  entry->normalized_query = copy;
   entry->normalized_len = normalized_len;
   PushEntryToMru(cache, entry);
 }

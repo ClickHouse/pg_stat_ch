@@ -60,7 +60,10 @@ constexpr int kSocketTimeoutSec = 30;
 // Bound packets consumed while awaiting response
 constexpr int kMaxRecvPackets = 4096;
 
+// NO_OOM still raises ERROR on invalid size, which must not longjmp through clickhouse-c
 void* PschChcAlloc(void* ud, size_t bytes) {
+  if (!AllocHugeSizeIsValid(bytes))
+    return nullptr;
   return MemoryContextAllocExtended(static_cast<MemoryContext>(ud), bytes,
                                     MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
 }
@@ -68,6 +71,8 @@ void* PschChcAlloc(void* ud, size_t bytes) {
 void* PschChcRealloc(void* ud, void* p, size_t /*old_bytes*/, size_t new_bytes) {
   if (p == nullptr)
     return PschChcAlloc(ud, new_bytes);
+  if (!AllocHugeSizeIsValid(new_bytes))
+    return nullptr;
   return repalloc_extended(p, new_bytes, MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
 }
 
