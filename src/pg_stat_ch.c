@@ -88,13 +88,13 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   uint32 queue_capacity = 0;
   uint64 send_failures = 0;
   TimestampTz last_success_ts = 0;
-  char last_error_text[256] = {0};
+  char last_error_text[PSCH_MAX_LAST_ERROR_LEN];
+  uint16 last_error_len = 0;
   TimestampTz last_error_ts = 0;
   uint64 dsa_oom_count = 0;
 
   PschGetStats(&enqueued, &dropped, &exported, &queue_size, &queue_capacity, &send_failures,
-               &last_success_ts, last_error_text, sizeof(last_error_text), &last_error_ts,
-               &dsa_oom_count);
+               &last_success_ts, last_error_text, &last_error_len, &last_error_ts, &dsa_oom_count);
 
   // Fill values
   MemSet(nulls, false, sizeof(nulls));
@@ -113,11 +113,11 @@ Datum pg_stat_ch_stats(PG_FUNCTION_ARGS) {
   }
 
   // last_error_text: null if empty
-  if (last_error_text[0] == '\0') {
+  if (last_error_len == 0) {
     nulls[5] = true;
     values[5] = (Datum)0;
   } else {
-    values[5] = CStringGetTextDatum(last_error_text);
+    values[5] = PointerGetDatum(cstring_to_text_with_len(last_error_text, last_error_len));
   }
 
   // last_error_ts: null if never failed

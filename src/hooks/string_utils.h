@@ -13,11 +13,11 @@
 
 #include "mb/pg_wchar.h"
 
-// Copy src into a fixed-size name buffer.  Returns the number of bytes
-// written (excluding the NUL), clamped to dst_size - 1.
+// Copy at most dst_size bytes of src to dst, without terminator.  Returns bytes copied
 static inline uint8 PschCopyName(char* dst, size_t dst_size, const char* src) {
-  size_t len = strlcpy(dst, src, dst_size);
-  return (uint8)(Min(len, dst_size - 1));
+  size_t len = strnlen(src, dst_size);
+  memcpy(dst, src, len);
+  return (uint8)len;
 }
 
 // Copy at most max_len bytes of src to dst, without terminator, skipping

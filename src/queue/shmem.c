@@ -87,7 +87,8 @@ static void HandleOverflow(void) {
 // Both structs have identical layout from offset 0 through query_len — the
 // last field before the variable-length data diverges (char arrays vs
 // dsa_pointers).  Verified by static assert in ring_entry.h.
-static const size_t kFixedPrefixSize = offsetof(PschRingEntry, err_message_dsa);
+static const size_t kFixedPrefixSize =
+    offsetof(PschRingEntry, query_len) + sizeof(((PschRingEntry*)0)->query_len);
 
 // Check queue fullness and enqueue event if space available.
 // Called with lock held.  Returns true if event was enqueued.
@@ -213,7 +214,7 @@ static void InitializeSharedState(void) {
   pg_atomic_init_u64(&psch_shared_state->send_failures, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
-  MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
+  psch_shared_state->last_error_len = 0;
   pg_atomic_init_u32(&psch_shared_state->bgworker_pid, 0);
   pg_atomic_init_u64(&psch_shared_state->dsa_oom_count, 0);
 
@@ -477,7 +478,7 @@ int PschEffectiveBatchMax(void) {
 // causing temporary inconsistencies in the reported queue_size vs counters.
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
                   uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
-                  char* last_error_buf, size_t last_error_buf_size, TimestampTz* last_error_ts,
+                  char* last_error_buf, uint16* last_error_len, TimestampTz* last_error_ts,
                   uint64* dsa_oom_count) {
   if (psch_shared_state == NULL) {
     *enqueued = 0;
@@ -487,8 +488,7 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
     *queue_capacity = 0;
     *send_failures = 0;
     *last_success_ts = 0;
-    if (last_error_buf_size > 0)
-      last_error_buf[0] = '\0';
+    *last_error_len = 0;
     *last_error_ts = 0;
     *dsa_oom_count = 0;
     return;
@@ -515,7 +515,8 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   LWLockAcquire(psch_shared_state->lock, LW_SHARED);
   *last_success_ts = psch_shared_state->last_success_ts;
   *last_error_ts = psch_shared_state->last_error_ts;
-  strlcpy(last_error_buf, psch_shared_state->last_error_text, last_error_buf_size);
+  *last_error_len = psch_shared_state->last_error_len;
+  memcpy(last_error_buf, psch_shared_state->last_error_text, *last_error_len);
   LWLockRelease(psch_shared_state->lock);
 }
 
@@ -541,7 +542,7 @@ void PschResetStats(void) {
   pg_atomic_write_u64(&psch_shared_state->dsa_oom_count, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
-  MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
+  psch_shared_state->last_error_len = 0;
   LWLockRelease(psch_shared_state->lock);
 }
 
@@ -556,9 +557,10 @@ void PschRecordExportSuccess(void) {
   LWLockRelease(psch_shared_state->lock);
 }
 
-// Copy src into dst without splitting characters, replacing each invalid byte with U+FFFD.
-// ClickHouse / gRPC errors are UTF-8 but unvalidated, independent of worker's database encoding
-static void CopyUtf8Replacing(char* dst, size_t dst_size, const char* src) {
+// Copy src into dst without terminator or splitting characters, replacing each invalid byte with
+// U+FFFD. ClickHouse / gRPC errors are UTF-8 but unvalidated, independent of worker's database
+// encoding. Returns bytes copied
+static size_t CopyUtf8Replacing(char* dst, size_t dst_size, const char* src) {
   static const char kReplacement[] = "\xEF\xBF\xBD";
   size_t out = 0;
 
@@ -572,13 +574,13 @@ static void CopyUtf8Replacing(char* dst, size_t dst_size, const char* src) {
       chunk = kReplacement;
       chunk_len = sizeof(kReplacement) - 1;
     }
-    if (out + chunk_len >= dst_size)
+    if (out + chunk_len > dst_size)
       break;
     memcpy(dst + out, chunk, chunk_len);
     out += chunk_len;
     src += src_len;
   }
-  dst[out] = '\0';
+  return out;
 }
 
 // Record an export failure (updates counter, timestamp, and error text)
@@ -593,8 +595,8 @@ void PschRecordExportFailure(const char* error_msg) {
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   psch_shared_state->last_error_ts = GetCurrentTimestamp();
   if (error_msg != NULL) {
-    CopyUtf8Replacing(psch_shared_state->last_error_text,
-                      sizeof(psch_shared_state->last_error_text), error_msg);
+    psch_shared_state->last_error_len = (uint16)CopyUtf8Replacing(
+        psch_shared_state->last_error_text, sizeof(psch_shared_state->last_error_text), error_msg);
   }
   LWLockRelease(psch_shared_state->lock);
 }
