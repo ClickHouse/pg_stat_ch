@@ -46,10 +46,10 @@ extern "C" {
 #define PSCH_MAX_ERR_MSG_LEN 2048
 
 // Maximum application name length
-#define PSCH_MAX_APP_NAME_LEN (NAMEDATALEN - 1)
+#define PSCH_MAX_APP_NAME_LEN NAMEDATALEN
 
 // Maximum client address length
-#define PSCH_MAX_CLIENT_ADDR_LEN (INET6_ADDRSTRLEN - 1)
+#define PSCH_MAX_CLIENT_ADDR_LEN INET6_ADDRSTRLEN
 
 // Command type values (matching PostgreSQL's CmdType enum)
 typedef enum PschCmdType {
@@ -96,16 +96,16 @@ typedef struct PschEvent {
   uint64 duration_us;    // Execution duration in microseconds
 
   // Identity
-  Oid dbid;              // Database OID
-  Oid userid;            // User OID
-  char datname[64];      // Database name (NAMEDATALEN=64, resolved at capture)
-  uint8 datname_len;     // Actual length
-  char username[64];     // User name (NAMEDATALEN=64, resolved at capture)
-  uint8 username_len;    // Actual length
-  int32 pid;             // Backend process ID
-  uint64 queryid;        // Query ID (from pg_stat_statements)
-  bool top_level;        // True if this is a top-level query
-  PschCmdType cmd_type;  // Command type (SELECT, UPDATE, etc.)
+  Oid dbid;                    // Database OID
+  Oid userid;                  // User OID
+  char datname[NAMEDATALEN];   // Database name, resolved at capture
+  uint8 datname_len;           // Actual length
+  char username[NAMEDATALEN];  // User name, resolved at capture
+  uint8 username_len;          // Actual length
+  int32 pid;                   // Backend process ID
+  uint64 queryid;              // Query ID (from pg_stat_statements)
+  bool top_level;              // True if this is a top-level query
+  PschCmdType cmd_type;        // Command type (SELECT, UPDATE, etc.)
 
   // Results
   uint64 rows;  // Number of rows affected/returned
@@ -152,17 +152,16 @@ typedef struct PschEvent {
   int16 parallel_workers_launched;
 
   // Error info (from emit_log_hook)
-  char err_sqlstate[6];    // SQLSTATE code (e.g., "42P01")
+  char err_sqlstate[5];    // SQLSTATE code (e.g., "42P01"), unterminated, zeroed when unset
   uint8 err_elevel;        // Error level (0=success, 19=WARNING, 21=ERROR, 22=FATAL)
-  uint8 _padding3;         // Alignment
   uint16 err_message_len;  // Actual length of error message
 
   // Client context
-  char application_name[64];   // Application name (NAMEDATALEN=64)
+  char application_name[PSCH_MAX_APP_NAME_LEN];
   uint8 application_name_len;  // Actual length
-  char client_addr[46];        // Client IP address (INET6_ADDRSTRLEN=46)
-  uint8 client_addr_len;       // Actual length
-  uint16 query_len;            // Actual length of query text
+  char client_addr[PSCH_MAX_CLIENT_ADDR_LEN];
+  uint8 client_addr_len;  // Actual length
+  uint16 query_len;       // Actual length of query text
 
   // Variable-length text fields — kept last so the fixed-size prefix can be
   // block-copied between PschEvent and PschRingEntry with a single memcpy.

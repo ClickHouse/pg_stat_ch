@@ -76,7 +76,7 @@ typedef struct PschBackendState {
   Oid cached_userid;
   char username[NAMEDATALEN];
   uint8 username_len;
-  char client_addr[46];  // INET6_ADDRSTRLEN
+  char client_addr[PSCH_MAX_CLIENT_ADDR_LEN];
   uint8 client_addr_len;
   PschNormalizedQueryCache normalize_cache;
 } PschBackendState;
@@ -160,13 +160,12 @@ static int64 TimeDiffMicrosec(struct timeval end, struct timeval start) {
   return ((int64)(end.tv_sec - start.tv_sec) * 1000000LL) + (int64)(end.tv_usec - start.tv_usec);
 }
 
-// Unpack SQLSTATE code from PostgreSQL's packed format to string
+// Unpack SQLSTATE code from PostgreSQL's packed format to 5 unterminated chars
 static void UnpackSqlState(int sql_state, char* buf) {
   for (int i = 0; i < 5; i++) {
     buf[i] = PGUNSIXBIT(sql_state);
     sql_state >>= 6;
   }
-  buf[5] = '\0';
 }
 
 // The application_name GUC is the authoritative live value (the beentry's
@@ -176,8 +175,6 @@ static int GetApplicationName(char* buf) {
 }
 
 static int GetClientAddress(char* buf, int buf_size) {
-  buf[0] = '\0';
-
   // MyProcPort->raddr is what pgstat_bestart copies into the beentry's
   // st_clientaddr; it is immutable for the life of the session. NULL in
   // background/aux processes, which have no client connection.
@@ -196,12 +193,10 @@ static int GetClientAddress(char* buf, int buf_size) {
 
   // Handle local connections
   if (strcmp(remote_host, "[local]") == 0) {
-    size_t src_len = strlcpy(buf, "127.0.0.1", buf_size);
-    return (int)(Min(src_len, (size_t)(buf_size - 1)));
+    return PschCopyName(buf, buf_size, "127.0.0.1");
   }
 
-  size_t src_len = strlcpy(buf, remote_host, buf_size);
-  return (int)(Min(src_len, (size_t)(buf_size - 1)));
+  return PschCopyName(buf, buf_size, remote_host);
 }
 
 // Check whether an event should be captured based on duration thresholds

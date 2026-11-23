@@ -52,6 +52,8 @@ extern "C" {
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 
+#define PSCH_MAX_LAST_ERROR_LEN 256
+
 // Shared state in shared memory.
 //
 // Fields are grouped by writer and separated with cache-line padding to avoid
@@ -87,7 +89,8 @@ typedef struct PschSharedState {
   pg_atomic_uint64 send_failures;
   TimestampTz last_success_ts;
   TimestampTz last_error_ts;
-  char last_error_text[256];
+  uint16 last_error_len;
+  char last_error_text[PSCH_MAX_LAST_ERROR_LEN];
   pg_atomic_uint32 bgworker_pid;
 } PschSharedState;
 

@@ -22,7 +22,7 @@ extern "C" {
 
 #include "queue/event.h"
 
-// Compact ring buffer slot.  All numeric fields through _padding3 have the
+// Compact ring buffer slot.  All fields through query_len have the
 // same types and order as PschEvent so the prefix can be block-copied.  The
 // two 2KB char arrays are replaced by 8-byte dsa_pointer values.
 typedef struct PschRingEntry {
@@ -33,9 +33,9 @@ typedef struct PschRingEntry {
   // === Identity ===
   Oid dbid;
   Oid userid;
-  char datname[64];
+  char datname[NAMEDATALEN];
   uint8 datname_len;
-  char username[64];
+  char username[NAMEDATALEN];
   uint8 username_len;
   int32 pid;
   uint64 queryid;
@@ -87,15 +87,14 @@ typedef struct PschRingEntry {
   int16 parallel_workers_launched;
 
   // === Error info ===
-  char err_sqlstate[6];
+  char err_sqlstate[5];
   uint8 err_elevel;
-  uint8 _padding3;
   uint16 err_message_len;
 
   // === Client context (kept inline — small, always populated) ===
-  char application_name[64];
+  char application_name[PSCH_MAX_APP_NAME_LEN];
   uint8 application_name_len;
-  char client_addr[46];
+  char client_addr[PSCH_MAX_CLIENT_ADDR_LEN];
   uint8 client_addr_len;
   uint16 query_len;
 
@@ -130,8 +129,6 @@ StaticAssertDecl(offsetof(PschEvent, query_len) == offsetof(PschRingEntry, query
 // Fields after query_len diverge: PschEvent has char arrays, PschRingEntry
 // has dsa_pointers.  Intentional, fixed prefix up to query_len is
 // block-copied with single memcpy.
-StaticAssertDecl(offsetof(PschEvent, err_message) == offsetof(PschRingEntry, err_message_dsa),
-                 "err_message/err_message_dsa start offset mismatch");
 
 #ifdef __cplusplus
 }

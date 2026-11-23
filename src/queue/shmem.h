@@ -32,11 +32,11 @@ bool PschDequeueEvent(PschEvent* event);
 int PschEffectiveBatchMax(void);
 
 // Get current queue statistics.
-// last_error_buf must point to a caller-owned buffer of last_error_buf_size bytes;
-// the error text is copied into it under the lock to prevent torn reads.
+// last_error_buf must point to a caller-owned buffer of PSCH_MAX_LAST_ERROR_LEN bytes;
+// the error text is copied into it unterminated under the lock to prevent torn reads.
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
                   uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
-                  char* last_error_buf, size_t last_error_buf_size, TimestampTz* last_error_ts,
+                  char* last_error_buf, uint16* last_error_len, TimestampTz* last_error_ts,
                   uint64* dsa_oom_count);
 
 // Reset all queue statistics to zero
