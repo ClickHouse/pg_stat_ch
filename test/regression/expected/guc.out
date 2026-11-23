@@ -12,6 +12,7 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.clickhouse_use_tls
  pg_stat_ch.clickhouse_user
  pg_stat_ch.debug_arrow_dump_dir
+ pg_stat_ch.debug_force_locked_error
  pg_stat_ch.debug_force_locked_overflow
  pg_stat_ch.enabled
  pg_stat_ch.extra_attributes
@@ -34,7 +35,7 @@ SELECT name FROM pg_settings WHERE name LIKE 'pg_stat_ch.%' ORDER BY name COLLAT
  pg_stat_ch.track_labels
  pg_stat_ch.use_otel
  pg_stat_ch.use_unified_arrow_exporter
-(31 rows)
+(32 rows)
 
 SHOW pg_stat_ch.enabled;
  pg_stat_ch.enabled 

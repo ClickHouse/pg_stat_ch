@@ -398,6 +398,18 @@ The direct OTLP exporter currently sends logs only, so this setting has no effec
 
 These parameters are for development and testing only.
 
+### `pg_stat_ch.debug_force_locked_error`
+
+Raise ERROR in the locked enqueue path.
+
+| | |
+|---|---|
+| **Type** | boolean |
+| **Default** | `off` |
+| **Context** | suset |
+
+Used to test lock release and interrupt recovery during error unwind. Do not enable in production.
+
 ### `pg_stat_ch.debug_force_locked_overflow`
 
 Force the overflow code path in the locked enqueue path.

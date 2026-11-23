@@ -32,6 +32,7 @@ int psch_otel_log_delay_ms = 100;
 int psch_otel_metric_interval_ms = 5000;
 bool psch_track_labels = false;
 bool psch_debug_force_locked_overflow = false;
+bool psch_debug_force_locked_error = false;
 int psch_min_duration_us = 0;
 int psch_normalize_cache_max = 32768;
 double psch_sample_rate = 1.0;
@@ -430,6 +431,17 @@ void PschInitGuc(void) {
       "When enabled, TryEnqueueLocked always calls HandleOverflow regardless of "
       "queue state. Used to deterministically test the overflow-under-lock deadlock fix.",
       &psch_debug_force_locked_overflow,
+      false,
+      PGC_SUSET,
+      0,
+      NULL, NULL, NULL);
+
+  DefineCustomBoolVariable(
+      "pg_stat_ch.debug_force_locked_error",
+      "Force ERROR in locked enqueue path (debug/test only).",
+      "When enabled, TryEnqueueLocked raises ERROR while holding the queue lock. "
+      "Used to test lock release and interrupt recovery during error unwind.",
+      &psch_debug_force_locked_error,
       false,
       PGC_SUSET,
       0,

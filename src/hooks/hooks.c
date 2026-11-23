@@ -811,7 +811,13 @@ static void PschEmitLogHook(ErrorData* edata) {
   // below and permanently disable capture in this backend -- and it swallows
   // the nested error so the original errfinish resumes and delivers the real
   // report. The cost of a throw during capture is one lost telemetry event.
+  //
+  // errfinish zeroes holdoff counts before longjmp. Restore them when
+  // swallowing, else caller's RESUME_INTERRUPTS (eg PostgresMain error
+  // recovery) underflows and backend ignores cancels and timeouts
   MemoryContext oldcxt = CurrentMemoryContext;
+  uint32 saved_interrupt_holdoff = InterruptHoldoffCount;
+  uint32 saved_cancel_holdoff = QueryCancelHoldoffCount;
   disable_error_capture = true;
   PG_TRY();
   { CaptureLogEvent(edata); }
@@ -819,6 +825,8 @@ static void PschEmitLogHook(ErrorData* edata) {
   {
     MemoryContextSwitchTo(oldcxt);
     FlushErrorState();
+    InterruptHoldoffCount = saved_interrupt_holdoff;
+    QueryCancelHoldoffCount = saved_cancel_holdoff;
   }
   PG_END_TRY();
   disable_error_capture = false;
