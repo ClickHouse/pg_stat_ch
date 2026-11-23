@@ -31,6 +31,7 @@
 
 #include "postgres.h"
 
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
@@ -312,9 +313,10 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   // === LOCK-FREE FAST PATH: Check for overflow without acquiring lock ===
   // This eliminates lock contention during overflow conditions.
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();  // Ensure head is read before tail for correct ordering
+  // Read tail first: head only grows, so a later head can't fall behind it
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
 
   if (head - tail >= capacity) {
     HandleOverflow();
@@ -354,9 +356,9 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   bool saved_capture = PschSuppressErrorCapture(true);
   uint32 capacity = psch_shared_state->capacity;
 
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   if (head - tail >= capacity) {
     for (int i = 0; i < count; i++)
       HandleOverflow();
@@ -501,10 +503,11 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   // Full barrier for consistent snapshot (counters before positions)
   pg_memory_barrier();
 
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-  *queue_size = (uint32)(head - tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   *queue_capacity = psch_shared_state->capacity;
+  *queue_size = (uint32)Min(head - tail, (uint64)*queue_capacity);
 
   // Copy exporter timestamps and error text under lock to prevent torn reads.
   // The error text is copied into the caller's buffer so it remains valid after
@@ -553,6 +556,31 @@ void PschRecordExportSuccess(void) {
   LWLockRelease(psch_shared_state->lock);
 }
 
+// Copy src into dst without splitting characters, replacing each invalid byte with U+FFFD.
+// ClickHouse / gRPC errors are UTF-8 but unvalidated, independent of worker's database encoding
+static void CopyUtf8Replacing(char* dst, size_t dst_size, const char* src) {
+  static const char kReplacement[] = "\xEF\xBF\xBD";
+  size_t out = 0;
+
+  while (*src != '\0') {
+    int src_len = pg_encoding_verifymbchar(PG_UTF8, src, (int)strnlen(src, MAX_MULTIBYTE_CHAR_LEN));
+    const char* chunk = src;
+    size_t chunk_len = src_len;
+
+    if (src_len < 0) {
+      src_len = 1;
+      chunk = kReplacement;
+      chunk_len = sizeof(kReplacement) - 1;
+    }
+    if (out + chunk_len >= dst_size)
+      break;
+    memcpy(dst + out, chunk, chunk_len);
+    out += chunk_len;
+    src += src_len;
+  }
+  dst[out] = '\0';
+}
+
 // Record an export failure (updates counter, timestamp, and error text)
 // Lock protects last_error_ts and last_error_text from torn reads by
 // PschGetStats/PschResetStats. send_failures is atomic so it's safe outside the lock.
@@ -565,8 +593,8 @@ void PschRecordExportFailure(const char* error_msg) {
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   psch_shared_state->last_error_ts = GetCurrentTimestamp();
   if (error_msg != NULL) {
-    strlcpy(psch_shared_state->last_error_text, error_msg,
-            sizeof(psch_shared_state->last_error_text));
+    CopyUtf8Replacing(psch_shared_state->last_error_text,
+                      sizeof(psch_shared_state->last_error_text), error_msg);
   }
   LWLockRelease(psch_shared_state->lock);
 }
