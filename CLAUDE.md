@@ -31,6 +31,7 @@ mise run build:release      # Release build
 mise run build:16           # Build for PostgreSQL 16
 mise run build:17           # Build for PostgreSQL 17
 mise run build:18           # Build for PostgreSQL 18
+mise run build:19           # Build for PostgreSQL 19
 mise run build:all          # Build for all PG versions
 mise run install            # Install the extension
 mise run clean              # Clean build artifacts
@@ -105,6 +106,7 @@ mise run test:isolation     # Isolation tests (race conditions)
 ## Version Compatibility
 
 Use `#if PG_VERSION_NUM >= XXXXX` for version-specific code:
+- PG 19+: Query instrumentation changes, const JumbleState, updated shared memory APIs, core ComputeConstantLengths
 - PG 18+: `execute_once` removed from ExecutorRun
 - PG 17+: Unified nesting_level, separate block timing
 - PG 15+: JIT instrumentation, temp_blk timing

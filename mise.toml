@@ -4,7 +4,7 @@ CFLAGS = "-std=gnu17"
 VCPKG_ROOT = "{{config_root}}/third_party/vcpkg"
 
 [tools]
-postgres = ["16", "17", "18"]
+postgres = ["16", "17", "18", "19"]
 
 [tasks.configure]
 run = "cmake -B build --preset default"
@@ -120,6 +120,10 @@ description = "Build for PostgreSQL 17"
 run = "rm -rf build && cmake --preset default -DPG_CONFIG=$(mise where postgres@18)/bin/pg_config && cmake --build build"
 description = "Build for PostgreSQL 18"
 
+[tasks."build:19"]
+run = "rm -rf build && cmake --preset default -DPG_CONFIG=$(mise where postgres@19)/bin/pg_config && cmake --build build"
+description = "Build for PostgreSQL 19"
+
 [tasks."build:all"]
-depends = ["build:16", "build:17", "build:18"]
+depends = ["build:16", "build:17", "build:18", "build:19"]
 description = "Build for all PostgreSQL versions"
