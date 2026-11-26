@@ -22,7 +22,7 @@
 //    Critical for correctness on weakly-ordered architectures (ARM, PowerPC)
 //
 // 4. ERROR-SAFE LOCKING (pattern from pg_stat_monitor):
-//    PG_TRY/PG_FINALLY blocks ensure locks are released even if an error occurs
+//    PG_TRY/PG_CATCH blocks ensure locks are released even if an error occurs
 //    during enqueue, preventing deadlocks.
 //
 // 5. GRACEFUL OVERFLOW (pattern from pg_stat_monitor):
@@ -31,6 +31,7 @@
 
 #include "postgres.h"
 
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
@@ -86,7 +87,8 @@ static void HandleOverflow(void) {
 // Both structs have identical layout from offset 0 through query_len — the
 // last field before the variable-length data diverges (char arrays vs
 // dsa_pointers).  Verified by static assert in ring_entry.h.
-static const size_t kFixedPrefixSize = offsetof(PschRingEntry, err_message_dsa);
+static const size_t kFixedPrefixSize =
+    offsetof(PschRingEntry, query_len) + sizeof(((PschRingEntry*)0)->query_len);
 
 // Check queue fullness and enqueue event if space available.
 // Called with lock held.  Returns true if event was enqueued.
@@ -103,6 +105,9 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
     HandleOverflow();
     return false;
   }
+  if (psch_debug_force_locked_error) {
+    elog(ERROR, "pg_stat_ch: forced error under queue lock");
+  }
 
   // Fast modulo via bitmask (requires power-of-2 capacity, enforced by GUC check)
   uint32 mask = capacity - 1;
@@ -112,10 +117,12 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(slot, event, kFixedPrefixSize);
 
-  // 2. Allocate DSA for err_message and query text
-  slot->err_message_dsa =
+  // 2. Allocate DSA for err_message and query text.  Store pointers in slot
+  //    only right before head advances, so slots outside [tail, head) never
+  //    hold references
+  dsa_pointer err_message_dsa =
       PschDsaAllocString(event->err_message, event->err_message_len, PSCH_MAX_ERR_MSG_LEN);
-  if (event->err_message_len > 0 && !DsaPointerIsValid(slot->err_message_dsa)) {
+  if (event->err_message_len > 0 && !DsaPointerIsValid(err_message_dsa)) {
     slot->err_message_len = 0;  // Lost string on OOM — numeric data preserved
   }
 
@@ -123,20 +130,21 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
   // normalized queries share a single DSA-allocated body.  See query_intern.h
   // for the design rationale.  On miss + DSA OOM, miss + hash-full, or hash
   // collision we drop the query bytes (numeric data is preserved).
+  dsa_pointer query_dsa = InvalidDsaPointer;
   if (event->query_len > 0) {
     // Clamp the input length to what we'd have stored anyway, so the intern
     // key doesn't include trailing bytes the consumer would have truncated.
-    uint16 clamped_len = Min(event->query_len, (uint16)(PSCH_MAX_QUERY_LEN - 1));
-    slot->query_dsa =
-        PschQueryInternAcquire(event->dbid, event->queryid, event->query, clamped_len);
-    if (!DsaPointerIsValid(slot->query_dsa)) {
+    uint16 clamped_len = Min(event->query_len, (uint16)PSCH_MAX_QUERY_LEN);
+    query_dsa = PschQueryInternAcquire(event->query, clamped_len);
+    if (!DsaPointerIsValid(query_dsa)) {
       slot->query_len = 0;
     } else {
       slot->query_len = clamped_len;
     }
-  } else {
-    slot->query_dsa = InvalidDsaPointer;
   }
+
+  slot->err_message_dsa = err_message_dsa;
+  slot->query_dsa = query_dsa;
 
   // CRITICAL: Memory barrier ensures the event data is written to shared memory
   // before we update head. Without this, the consumer might read stale data on
@@ -209,7 +217,7 @@ static void InitializeSharedState(void) {
   pg_atomic_init_u64(&psch_shared_state->send_failures, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
-  MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
+  psch_shared_state->last_error_len = 0;
   pg_atomic_init_u32(&psch_shared_state->bgworker_pid, 0);
   pg_atomic_init_u64(&psch_shared_state->dsa_oom_count, 0);
 
@@ -271,6 +279,16 @@ void PschInstallShmemHooks(void) {
   shmem_startup_hook = PschShmemStartupHook;
 }
 
+static void ReleaseQueueLockOnError(bool saved_capture) {
+  // errfinish zeroes InterruptHoldoffCount before longjmp. Restore the lock's
+  // increment as LWLockReleaseAll does so LWLockRelease returns it to zero
+  // without underflow.
+  HOLD_INTERRUPTS();
+  LWLockRelease(psch_shared_state->lock);
+  // Restore capture guard so later errors can be captured.
+  PschSuppressErrorCapture(saved_capture);
+}
+
 // Enqueue an event to the ring buffer (multi-producer, called from executor hooks)
 //
 // CONCURRENCY: Multiple backends can call this simultaneously. We use a
@@ -298,6 +316,9 @@ bool PschEnqueueEvent(const PschEvent* event) {
     return false;
   }
 
+  // Attach before taking the guard or lock, attach allocates and can throw
+  PschDsaAttach();
+
   // Suppress error capture for the duration of this function to prevent deadlock.
   // HandleOverflow() calls ereport(WARNING) which triggers emit_log_hook, which
   // would re-enter PschEnqueueEvent() and deadlock on LWLockAcquire. Restore
@@ -309,9 +330,10 @@ bool PschEnqueueEvent(const PschEvent* event) {
 
   // === LOCK-FREE FAST PATH: Check for overflow without acquiring lock ===
   // This eliminates lock contention during overflow conditions.
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();  // Ensure head is read before tail for correct ordering
+  // Read tail first: head only grows, so a later head can't fall behind it
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
 
   if (head - tail >= capacity) {
     HandleOverflow();
@@ -322,17 +344,16 @@ bool PschEnqueueEvent(const PschEvent* event) {
   // === TRY-LOCK PATH: Attempt non-blocking lock ===
   if (LWLockConditionalAcquire(psch_shared_state->lock, LW_EXCLUSIVE)) {
     bool result = false;
-    // Restore suppression in PG_FINALLY: an error escaping the locked section
-    // would otherwise longjmp past the restore and leave capture disabled for
-    // the rest of the backend's lifetime.
     PG_TRY();
     { result = TryEnqueueLocked(event, capacity); }
-    PG_FINALLY();
+    PG_CATCH();
     {
-      LWLockRelease(psch_shared_state->lock);
-      PschSuppressErrorCapture(saved_capture);
+      ReleaseQueueLockOnError(saved_capture);
+      PG_RE_THROW();
     }
     PG_END_TRY();
+    LWLockRelease(psch_shared_state->lock);
+    PschSuppressErrorCapture(saved_capture);
     return result;
   }
 
@@ -348,12 +369,13 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
   if (psch_shared_state == NULL || !psch_enabled || count == 0)
     return 0;
 
+  PschDsaAttach();
   bool saved_capture = PschSuppressErrorCapture(true);
   uint32 capacity = psch_shared_state->capacity;
 
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  pg_read_barrier();
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   if (head - tail >= capacity) {
     for (int i = 0; i < count; i++)
       HandleOverflow();
@@ -363,9 +385,6 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
 
   int enqueued = 0;
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
-  // Restore suppression in PG_FINALLY: an error escaping the locked section
-  // would otherwise longjmp past the restore and leave capture disabled for
-  // the rest of the backend's lifetime.
   PG_TRY();
   {
     for (int i = 0; i < count; i++) {
@@ -373,12 +392,14 @@ int PschEnqueueBatch(const PschEvent* events, int count) {
         enqueued++;
     }
   }
-  PG_FINALLY();
+  PG_CATCH();
   {
-    LWLockRelease(psch_shared_state->lock);
-    PschSuppressErrorCapture(saved_capture);
+    ReleaseQueueLockOnError(saved_capture);
+    PG_RE_THROW();
   }
   PG_END_TRY();
+  LWLockRelease(psch_shared_state->lock);
+  PschSuppressErrorCapture(saved_capture);
 
   return enqueued;
 }
@@ -425,14 +446,24 @@ bool PschDequeueEvent(PschEvent* event) {
   uint32 mask = capacity - 1;
   PschRingEntry* slot = &GetRingBuffer()[tail & mask];
 
+  // Attach up front, a lazy attach after step 2 detaches the references could raise
+  PschDsaAttach();
+
   // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
   //    client_addr, lengths — everything before the variable-length data).
   memcpy(event, slot, kFixedPrefixSize);
 
-  // 2. Resolve err_message (per-event DSA) and query text (shared interner).
-  PschDsaResolveString(slot->err_message_dsa, slot->err_message_len, event->err_message,
+  // 2. Clear each reference before consuming it.  ExportBatchWithRecovery
+  //    catches ERROR and retries this slot, so a stale pointer would be freed
+  //    twice.  An abort mid-consume leaks at most one reference
+  dsa_pointer err_message_dsa = slot->err_message_dsa;
+  slot->err_message_dsa = InvalidDsaPointer;
+  PschDsaResolveString(err_message_dsa, event->err_message_len, event->err_message,
                        PSCH_MAX_ERR_MSG_LEN, &event->err_message_len);
-  PschQueryInternResolveAndRelease(slot->query_dsa, event->query, PSCH_MAX_QUERY_LEN,
+
+  dsa_pointer query_dsa = slot->query_dsa;
+  slot->query_dsa = InvalidDsaPointer;
+  PschQueryInternResolveAndRelease(query_dsa, event->query_len, event->query, PSCH_MAX_QUERY_LEN,
                                    &event->query_len);
 
   // CRITICAL: Write barrier ensures all reads and DSA frees complete before we
@@ -442,23 +473,9 @@ bool PschDequeueEvent(PschEvent* event) {
   return true;
 }
 
-// Events waiting in the ring buffer.  Producers advance head concurrently, so
-// callers must treat the result as a sizing hint, not an exact count.
-uint32 PschQueueDepth(void) {
-  if (psch_shared_state == NULL) {
-    return 0;
-  }
-
-  uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-  pg_read_barrier();
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
-  uint64 depth = head - tail;
-  return Min((uint32)depth, psch_shared_state->capacity);
-}
-
 // A batch above queue_capacity is unreachable: one drain pass cannot yield more
 // events than the ring holds.  Clamping keeps the bgworker drain loop's
-// partial-batch test meaningful and bounds the dequeue buffer.
+// partial-batch test meaningful.
 int PschEffectiveBatchMax(void) {
   uint32 capacity =
       psch_shared_state != NULL ? psch_shared_state->capacity : (uint32)psch_queue_capacity;
@@ -476,7 +493,7 @@ int PschEffectiveBatchMax(void) {
 // causing temporary inconsistencies in the reported queue_size vs counters.
 void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* queue_size,
                   uint32* queue_capacity, uint64* send_failures, TimestampTz* last_success_ts,
-                  char* last_error_buf, size_t last_error_buf_size, TimestampTz* last_error_ts,
+                  char* last_error_buf, uint16* last_error_len, TimestampTz* last_error_ts,
                   uint64* dsa_oom_count) {
   if (psch_shared_state == NULL) {
     *enqueued = 0;
@@ -486,8 +503,7 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
     *queue_capacity = 0;
     *send_failures = 0;
     *last_success_ts = 0;
-    if (last_error_buf_size > 0)
-      last_error_buf[0] = '\0';
+    *last_error_len = 0;
     *last_error_ts = 0;
     *dsa_oom_count = 0;
     return;
@@ -502,10 +518,11 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   // Full barrier for consistent snapshot (counters before positions)
   pg_memory_barrier();
 
-  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   uint64 tail = pg_atomic_read_u64(&psch_shared_state->tail);
-  *queue_size = (uint32)(head - tail);
+  pg_read_barrier();
+  uint64 head = pg_atomic_read_u64(&psch_shared_state->head);
   *queue_capacity = psch_shared_state->capacity;
+  *queue_size = (uint32)Min(head - tail, (uint64)*queue_capacity);
 
   // Copy exporter timestamps and error text under lock to prevent torn reads.
   // The error text is copied into the caller's buffer so it remains valid after
@@ -513,7 +530,8 @@ void PschGetStats(uint64* enqueued, uint64* dropped, uint64* exported, uint32* q
   LWLockAcquire(psch_shared_state->lock, LW_SHARED);
   *last_success_ts = psch_shared_state->last_success_ts;
   *last_error_ts = psch_shared_state->last_error_ts;
-  strlcpy(last_error_buf, psch_shared_state->last_error_text, last_error_buf_size);
+  *last_error_len = psch_shared_state->last_error_len;
+  memcpy(last_error_buf, psch_shared_state->last_error_text, *last_error_len);
   LWLockRelease(psch_shared_state->lock);
 }
 
@@ -539,7 +557,7 @@ void PschResetStats(void) {
   pg_atomic_write_u64(&psch_shared_state->dsa_oom_count, 0);
   psch_shared_state->last_success_ts = 0;
   psch_shared_state->last_error_ts = 0;
-  MemSet(psch_shared_state->last_error_text, 0, sizeof(psch_shared_state->last_error_text));
+  psch_shared_state->last_error_len = 0;
   LWLockRelease(psch_shared_state->lock);
 }
 
@@ -554,6 +572,32 @@ void PschRecordExportSuccess(void) {
   LWLockRelease(psch_shared_state->lock);
 }
 
+// Copy src into dst without terminator or splitting characters, replacing each invalid byte with
+// U+FFFD. ClickHouse / gRPC errors are UTF-8 but unvalidated, independent of worker's database
+// encoding. Returns bytes copied
+static size_t CopyUtf8Replacing(char* dst, size_t dst_size, const char* src) {
+  static const char kReplacement[] = "\xEF\xBF\xBD";
+  size_t out = 0;
+
+  while (*src != '\0') {
+    int src_len = pg_encoding_verifymbchar(PG_UTF8, src, (int)strnlen(src, MAX_MULTIBYTE_CHAR_LEN));
+    const char* chunk = src;
+    size_t chunk_len = src_len;
+
+    if (src_len < 0) {
+      src_len = 1;
+      chunk = kReplacement;
+      chunk_len = sizeof(kReplacement) - 1;
+    }
+    if (out + chunk_len > dst_size)
+      break;
+    memcpy(dst + out, chunk, chunk_len);
+    out += chunk_len;
+    src += src_len;
+  }
+  return out;
+}
+
 // Record an export failure (updates counter, timestamp, and error text)
 // Lock protects last_error_ts and last_error_text from torn reads by
 // PschGetStats/PschResetStats. send_failures is atomic so it's safe outside the lock.
@@ -566,8 +610,8 @@ void PschRecordExportFailure(const char* error_msg) {
   LWLockAcquire(psch_shared_state->lock, LW_EXCLUSIVE);
   psch_shared_state->last_error_ts = GetCurrentTimestamp();
   if (error_msg != NULL) {
-    strlcpy(psch_shared_state->last_error_text, error_msg,
-            sizeof(psch_shared_state->last_error_text));
+    psch_shared_state->last_error_len = (uint16)CopyUtf8Replacing(
+        psch_shared_state->last_error_text, sizeof(psch_shared_state->last_error_text), error_msg);
   }
   LWLockRelease(psch_shared_state->lock);
 }

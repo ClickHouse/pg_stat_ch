@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS quickstart_demo (id int);
 INSERT INTO quickstart_demo(id) VALUES (1), (2), (3);
 SELECT count(*) FROM quickstart_demo;
 SELECT 42;
-SELECT '${marker}'::text;
+SELECT 1 AS ${marker};
 SELECT pg_stat_ch_flush();
 SQL
 
@@ -48,7 +48,7 @@ SQL
   found=0
   deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
-    if count="$(cmd_ch -q "SELECT count() FROM events_raw WHERE ts_start > now() - INTERVAL 10 MINUTE AND query_id != 0 AND position(query, '${marker}') > 0" 2>/dev/null | tr -d '[:space:]')" \
+    if count="$(cmd_ch -q "SELECT count() FROM events_raw WHERE ts > now() - INTERVAL 10 MINUTE AND query_id != 0 AND position(query_text, '${marker}') > 0" 2>/dev/null | tr -d '[:space:]')" \
       && [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -gt 0 ]]; then
       found=1
       break
@@ -61,7 +61,7 @@ SQL
     echo "marker rows (last 10m): $count"
     echo "Latest 10 events (query_id != 0):"
     cmd_ch -q \
-      "SELECT ts_start, query_id, cmd_type, duration_us, query FROM events_raw WHERE query_id != 0 ORDER BY ts_start DESC LIMIT 10 FORMAT PrettyCompactMonoBlock"
+      "SELECT ts, query_id, db_operation, duration_us, query_text FROM events_raw WHERE query_id != 0 ORDER BY ts DESC LIMIT 10 FORMAT PrettyCompactMonoBlock"
     echo
     echo "Explore further:"
     echo "  ./scripts/quickstart.sh pg"

@@ -15,10 +15,12 @@ extern "C" {
 #include <arrow/util/compression.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
-#include <cinttypes>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -26,8 +28,10 @@ extern "C" {
 #include <utility>
 #include <vector>
 
+#include "config/guc.h"
 #include "export/arrow_batch.h"
 #include "export/exporter_interface.h"
+#include "export/sqlcommenter_parse.h"
 
 namespace {
 
@@ -58,6 +62,16 @@ LenT ClampFieldLen(LenT len, LenT max, const char* field_name) {
   }
   elog(WARNING, "pg_stat_ch: invalid %s %u, clamping", field_name, static_cast<unsigned>(len));
   return max;
+}
+
+// Fits any T in decimal, including sign
+template <typename T>
+using IntBuf = std::array<char, std::numeric_limits<T>::digits10 + 2>;
+
+template <typename T>
+std::string_view FormatInt(IntBuf<T>* buf, T value) {
+  const char* const end = std::to_chars(buf->data(), buf->data() + buf->size(), value).ptr;
+  return {buf->data(), static_cast<size_t>(end - buf->data())};
 }
 
 template <typename BuilderT, typename ValueT>
@@ -199,9 +213,11 @@ struct ArrowBatchBuilder::Impl {
   DictBuilder service_version_builder;
   arrow::StringBuilder host_id_builder;
   arrow::StringBuilder pod_name_builder;
+  arrow::StringBuilder labels_builder;
 
   std::unordered_map<std::string, std::string> extra_attrs;
   std::string service_version;
+  bool track_labels = false;
   int num_rows = 0;
   size_t estimated_bytes = 0;
 
@@ -210,7 +226,8 @@ struct ArrowBatchBuilder::Impl {
   bool Init(const char* extra_attrs_input, const char* service_version_input) {
     service_version = service_version_input != nullptr ? service_version_input : "";
     ParseExtraAttributes(extra_attrs_input != nullptr ? extra_attrs_input : "");
-    schema = arrow::schema({
+    track_labels = psch_track_labels;
+    arrow::FieldVector fields = {
         arrow::field("ts", TimestampType()),
         arrow::field("severity", DictionaryUtf8Type()),
         arrow::field("body", arrow::utf8()),
@@ -267,7 +284,13 @@ struct ArrowBatchBuilder::Impl {
         arrow::field("service_version", DictionaryUtf8Type()),
         arrow::field("host_id", arrow::utf8()),
         arrow::field("pod_name", arrow::utf8()),
-    });
+    };
+    // Only present when label tracking is on, so producers keep the old wire
+    // shape until the downstream table has the column.
+    if (track_labels) {
+      fields.push_back(arrow::field("labels", arrow::utf8()));
+    }
+    schema = arrow::schema(std::move(fields));
     Reset();
     return true;
   }
@@ -285,10 +308,10 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    const auto datname_len = ClampFieldLen(
-        event.datname_len, static_cast<uint8>(sizeof(event.datname) - 1), "datname_len");
+    const auto datname_len =
+        ClampFieldLen(event.datname_len, static_cast<uint8>(sizeof(event.datname)), "datname_len");
     const auto username_len = ClampFieldLen(
-        event.username_len, static_cast<uint8>(sizeof(event.username) - 1), "username_len");
+        event.username_len, static_cast<uint8>(sizeof(event.username)), "username_len");
     const auto app_len =
         ClampFieldLen(event.application_name_len, static_cast<uint8>(PSCH_MAX_APP_NAME_LEN),
                       "application_name_len");
@@ -299,7 +322,7 @@ struct ArrowBatchBuilder::Impl {
     const auto err_message_len = ClampFieldLen(
         event.err_message_len, static_cast<uint16>(PSCH_MAX_ERR_MSG_LEN), "err_message_len");
     const auto err_sqlstate_len =
-        static_cast<size_t>(strnlen(event.err_sqlstate, sizeof(event.err_sqlstate) - 1));
+        static_cast<size_t>(strnlen(event.err_sqlstate, sizeof(event.err_sqlstate)));
 
     const std::string_view db_name(event.datname, datname_len);
     const std::string_view db_user(event.username, username_len);
@@ -309,12 +332,12 @@ struct ArrowBatchBuilder::Impl {
     const std::string_view err_message(event.err_message, err_message_len);
     const std::string_view err_sqlstate(event.err_sqlstate, err_sqlstate_len);
 
-    char queryid_buf[24];
-    snprintf(queryid_buf, sizeof(queryid_buf), "%" PRIu64, static_cast<uint64_t>(event.queryid));
-    char pid_buf[12];
-    snprintf(pid_buf, sizeof(pid_buf), "%d", event.pid);
+    IntBuf<uint64> queryid_buf;
+    const std::string_view queryid = FormatInt(&queryid_buf, event.queryid);
+    IntBuf<int32> pid_buf;
+    const std::string_view pid = FormatInt(&pid_buf, event.pid);
 
-    if (!AppendString(&query_id_builder, queryid_buf, "Arrow query_id append") ||
+    if (!AppendString(&query_id_builder, queryid, "Arrow query_id append") ||
         !AppendString(&db_name_builder, db_name, "Arrow db_name append") ||
         !AppendString(&db_user_builder, db_user, "Arrow db_user append") ||
         !AppendString(&db_operation_builder, PschCmdTypeToString(event.cmd_type),
@@ -322,7 +345,7 @@ struct ArrowBatchBuilder::Impl {
         !AppendString(&app_builder, app, "Arrow app append") ||
         !AppendString(&client_addr_builder, client_addr, "Arrow client_addr append") ||
         !AppendString(&query_text_builder, query_text, "Arrow query_text append") ||
-        !AppendString(&pid_builder, pid_buf, "Arrow pid append") ||
+        !AppendString(&pid_builder, pid, "Arrow pid append") ||
         !AppendString(&err_message_builder, err_message, "Arrow err_message append") ||
         !AppendString(&err_sqlstate_builder, err_sqlstate, "Arrow err_sqlstate append")) {
       return false;
@@ -436,8 +459,16 @@ struct ArrowBatchBuilder::Impl {
       return false;
     }
 
-    estimated_bytes += kFixedBytesPerRow + db_name.size() + db_user.size() + app.size() +
-                       client_addr.size() + query_text.size() + err_message.size() +
+    std::string labels;
+    if (track_labels) {
+      labels = QueryLabelsJson(query_text, PSCH_MAX_QUERY_LEN);
+      if (!AppendString(&labels_builder, labels, "Arrow labels append")) {
+        return false;
+      }
+    }
+
+    estimated_bytes += labels.size() + kFixedBytesPerRow + db_name.size() + db_user.size() +
+                       app.size() + client_addr.size() + query_text.size() + err_message.size() +
                        err_sqlstate.size() + service_version.size() +
                        ExtraAttr("instance_ubid").size() + ExtraAttr("server_ubid").size() +
                        ExtraAttr("server_role").size() + ExtraAttr("read_replica_type").size() +
@@ -529,7 +560,8 @@ struct ArrowBatchBuilder::Impl {
         !add_dict_array(&cell_builder, "Arrow cell finish") ||
         !add_dict_array(&service_version_builder, "Arrow service_version finish") ||
         !add_array(&host_id_builder, "Arrow host_id finish") ||
-        !add_array(&pod_name_builder, "Arrow pod_name finish")) {
+        !add_array(&pod_name_builder, "Arrow pod_name finish") ||
+        (track_labels && !add_array(&labels_builder, "Arrow labels finish"))) {
       return {};
     }
 
@@ -637,6 +669,7 @@ struct ArrowBatchBuilder::Impl {
     service_version_builder.ResetFull();
     host_id_builder.Reset();
     pod_name_builder.Reset();
+    labels_builder.Reset();
     num_rows = 0;
     estimated_bytes = kIpcEnvelopeBytes;
   }

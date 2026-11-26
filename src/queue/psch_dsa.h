@@ -29,9 +29,9 @@
 // LIFECYCLE
 // =========
 //  1. Postmaster: PschDsaInit()  — dsa_create_in_place, dsa_pin, dsa_detach
-//  2. Backends:   PschDsaAllocString() calls PschDsaAttach() lazily on first use
-//  3. Bgworker:   PschDsaAttach() eagerly at startup, then PschDsaResolveString()
-//                 on each dequeue (resolves pointer + frees DSA memory)
+//  2. Backends:   PschDsaAllocString() attaches on first enqueue
+//  3. Bgworker:   Attach before consuming queue slots
+//  String helpers reuse process-local attachment until process exit
 //
 // CONCURRENCY
 // ===========
@@ -51,6 +51,8 @@ extern "C" {
 #include "datatype/timestamp.h"
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
+
+#define PSCH_MAX_LAST_ERROR_LEN 256
 
 // Shared state in shared memory.
 //
@@ -87,7 +89,8 @@ typedef struct PschSharedState {
   pg_atomic_uint64 send_failures;
   TimestampTz last_success_ts;
   TimestampTz last_error_ts;
-  char last_error_text[256];
+  uint16 last_error_len;
+  char last_error_text[PSCH_MAX_LAST_ERROR_LEN];
   pg_atomic_uint32 bgworker_pid;
 } PschSharedState;
 
@@ -103,24 +106,20 @@ Size PschDsaShmemSize(void);
 // PschDsaShmemSize() bytes available.
 void PschDsaInit(PschSharedState* state, void* dsa_place);
 
-// Attach to the DSA area (lazy, idempotent).
-// Must be called before PschDsaAllocString / PschDsaResolveString.
-// Backends attach lazily on first enqueue; bgworker attaches eagerly at startup.
-void PschDsaAttach(void);
+// Attach once per process, return existing handle on subsequent calls
+// Return NULL if shared state or raw_dsa_area is unavailable
+// Call before clearing shared references, attachment can raise ERROR
+dsa_area* PschDsaAttach(void);
 
-// Get the process-local DSA handle, attaching lazily if needed.
-// Returns nullptr if shared state / raw_dsa_area is unavailable.
-dsa_area* PschDsaGetArea(void);
-
-// Allocate a DSA string from an inline buffer.
+// Allocate a DSA string from an inline buffer, without terminator.
 // Returns InvalidDsaPointer on zero-length, unavailable DSA handle, or allocation
 // failure.
 // On OOM, increments state->dsa_oom_count atomically.
 dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len);
 
-// Resolve a DSA string into a caller-owned buffer and free the DSA memory.
-// If dp is InvalidDsaPointer, or the DSA handle is unavailable, sets dst_buf to
-// "" and *out_len to 0. If the DSA handle is unavailable, the shared allocation
+// Resolve a DSA string into a caller-owned buffer, without terminator, and free
+// the DSA memory. If dp is InvalidDsaPointer, or the DSA handle is unavailable,
+// sets *out_len to 0. If the DSA handle is unavailable, the shared allocation
 // is left in place because it can't be safely resolved/freed.
 void PschDsaResolveString(dsa_pointer dp, uint16 src_len, char* dst_buf, uint16 max_len,
                           uint16* out_len);

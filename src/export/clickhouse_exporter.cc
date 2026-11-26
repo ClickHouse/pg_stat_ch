@@ -60,7 +60,10 @@ constexpr int kSocketTimeoutSec = 30;
 // Bound packets consumed while awaiting response
 constexpr int kMaxRecvPackets = 4096;
 
+// NO_OOM still raises ERROR above MaxAllocHugeSize, return NULL so clickhouse-c fails cleanly
 void* PschChcAlloc(void* ud, size_t bytes) {
+  if (!AllocHugeSizeIsValid(bytes))
+    return nullptr;
   return MemoryContextAllocExtended(static_cast<MemoryContext>(ud), bytes,
                                     MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
 }
@@ -68,6 +71,8 @@ void* PschChcAlloc(void* ud, size_t bytes) {
 void* PschChcRealloc(void* ud, void* p, size_t /*old_bytes*/, size_t new_bytes) {
   if (p == nullptr)
     return PschChcAlloc(ud, new_bytes);
+  if (!AllocHugeSizeIsValid(new_bytes))
+    return nullptr;
   return repalloc_extended(p, new_bytes, MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
 }
 
@@ -198,6 +203,7 @@ class ClickHouseExporter : public StatsExporter {
     exported_count_ = 0;
   }
   void BeginRow() final { ++exported_count_; }
+  bool EndRow() final { return true; }
   bool CommitBatch() final;
 
   bool EstablishNewConnection() final;
@@ -657,7 +663,10 @@ bool ClickHouseExporter::EstablishNewConnection() {
     chc_posix_io_init(&posix_io_, &io_, fd_, PschChcCheckCancel, nullptr);
   }
 
+  // We send LZ4, but the server compresses responses with its own
+  // network_compression_method (ZSTD by default on newer ClickHouse).
   chc_lz4_codec_init(&codec_);
+  chc_zstd_codec_init(&codec_);
 
   chc_client_opts opts = {};
   opts.client_name = "pg_stat_ch";

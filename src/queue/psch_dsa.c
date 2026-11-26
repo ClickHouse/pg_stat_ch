@@ -53,12 +53,12 @@ void PschDsaInit(PschSharedState* state, void* dsa_place) {
   dsa_detach(dsa);  // Postmaster detaches; backends/bgworker re-attach
 }
 
-void PschDsaAttach(void) {
+dsa_area* PschDsaAttach(void) {
   if (psch_dsa != NULL) {
-    return;
+    return psch_dsa;
   }
   if (psch_shared_state == NULL || psch_shared_state->raw_dsa_area == NULL) {
-    return;
+    return NULL;
   }
   // Attach in TopMemoryContext so the dsa_area handle survives transaction
   // boundaries.  Without this, the palloc'd dsa_area struct would be freed
@@ -73,12 +73,6 @@ void PschDsaAttach(void) {
     on_shmem_exit(PschDsaDetachOnExit, 0);
     psch_dsa_exit_hook_registered = true;
   }
-}
-
-dsa_area* PschDsaGetArea(void) {
-  if (psch_dsa == NULL) {
-    PschDsaAttach();
-  }
   return psch_dsa;
 }
 
@@ -86,16 +80,14 @@ dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len) {
   if (len == 0) {
     return InvalidDsaPointer;
   }
-  dsa_area* dsa = PschDsaGetArea();
+  dsa_area* dsa = PschDsaAttach();
   if (dsa == NULL) {
     return InvalidDsaPointer;
   }
-  uint16 clamped = Min(len, (uint16)(max_len - 1));
-  dsa_pointer dp = dsa_allocate_extended(dsa, clamped + 1, DSA_ALLOC_NO_OOM);
+  uint16 clamped = Min(len, max_len);
+  dsa_pointer dp = dsa_allocate_extended(dsa, clamped, DSA_ALLOC_NO_OOM);
   if (DsaPointerIsValid(dp)) {
-    char* dst = (char*)dsa_get_address(dsa, dp);
-    memcpy(dst, src, clamped);
-    dst[clamped] = '\0';
+    memcpy(dsa_get_address(dsa, dp), src, clamped);
   } else {
     pg_atomic_fetch_add_u64(&psch_shared_state->dsa_oom_count, 1);
   }
@@ -104,21 +96,13 @@ dsa_pointer PschDsaAllocString(const char* src, uint16 len, uint16 max_len) {
 
 void PschDsaResolveString(dsa_pointer dp, uint16 src_len, char* dst_buf, uint16 max_len,
                           uint16* out_len) {
-  if (DsaPointerIsValid(dp)) {
-    dsa_area* dsa = PschDsaGetArea();
-    if (dsa == NULL) {
-      dst_buf[0] = '\0';
-      *out_len = 0;
-      return;
-    }
-    char* src = (char*)dsa_get_address(dsa, dp);
-    uint16 len = Min(src_len, (uint16)(max_len - 1));
-    memcpy(dst_buf, src, len);
-    dst_buf[len] = '\0';
-    *out_len = len;
-    dsa_free(dsa, dp);
-  } else {
-    dst_buf[0] = '\0';
+  dsa_area* dsa = DsaPointerIsValid(dp) ? PschDsaAttach() : NULL;
+  if (dsa == NULL) {
     *out_len = 0;
+    return;
   }
+  uint16 len = Min(src_len, max_len);
+  memcpy(dst_buf, dsa_get_address(dsa, dp), len);
+  *out_len = len;
+  dsa_free(dsa, dp);
 }

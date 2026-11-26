@@ -134,19 +134,20 @@ class OTelExporter : public StatsExporter {
   }
 
   void BeginRow() final {
-    if (batch_failed_) {
-      return;
-    }
-    if (ChunkFull()) {
-      if (!FlushChunk()) {
-        batch_failed_ = true;
-        return;
-      }
-      ResetChunk();
-    }
     current_record_ = scope_logs_->add_log_records();
     ++chunk_count_;
     chunk_bytes_ += kLogRecordOverheadBytes;
+  }
+
+  bool EndRow() final {
+    if (ChunkFull()) {
+      if (!FlushChunk()) {
+        batch_failed_ = true;
+        return false;
+      }
+      ResetChunk();
+    }
+    return true;
   }
 
   bool CommitBatch() final;
@@ -486,12 +487,13 @@ bool OTelExporter::SendArrowBatch(const uint8_t* ipc_data, size_t ipc_len, int n
     SetInt(AddAttr(record), "pg_stat_ch.block_rows", num_rows);
 
     auto context = otlp::OtlpGrpcClient::MakeClientContext(grpc_opts_);
+    // Arrow IPC already uses ZSTD compression.
+    context->set_compression_algorithm(GRPC_COMPRESS_NONE);
     collector_logs::ExportLogsServiceResponse response;
     auto status = otlp::OtlpGrpcClient::DelegateExport(stub_.get(), std::move(context),
                                                        std::move(arena), request, &response);
 
     if (status.ok()) {
-      exported_count_ += num_rows;
       consecutive_failures_ = 0;
       return true;
     }

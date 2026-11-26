@@ -148,8 +148,12 @@ Quickstart path: run `./scripts/quickstart.sh up` and schema setup is handled au
 Manual / existing ClickHouse paths:
 
 ```bash
-clickhouse-client < docker/init/00-schema.sql
+clickhouse-client --host HOST --port 9000 --database default \
+  --query "CREATE DATABASE IF NOT EXISTS pg_stat_ch"
+goose -dir schema/migrations clickhouse "tcp://HOST:9000?database=pg_stat_ch" up
 ```
+
+The schema lives in [`schema/migrations/`](schema/migrations) and is applied with [goose](https://github.com/pressly/goose). goose connects to the `pg_stat_ch` database, so create it first (shown above).
 
 Creates `events_raw` plus materialized views. See [docs/clickhouse.md](docs/clickhouse.md) for full schema details.
 
@@ -209,7 +213,7 @@ SELECT query_id,
        quantile(0.99)(duration_us) / 1000 AS p99_ms
 FROM pg_stat_ch.events_raw
 WHERE app = 'myapp'
-  AND ts_start > now() - INTERVAL 1 HOUR
+  AND ts > now() - INTERVAL 1 HOUR
 GROUP BY query_id
 ORDER BY p99_ms DESC
 LIMIT 10;
