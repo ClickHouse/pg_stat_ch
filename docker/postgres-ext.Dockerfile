@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
       --x-install-root=/build/vcpkg_installed \
       --clean-after-build
 
-COPY CMakeLists.txt ./
+COPY CMakeLists.txt META.json ./
 COPY cmake/ cmake/
 COPY include/ include/
 COPY src/ src/
