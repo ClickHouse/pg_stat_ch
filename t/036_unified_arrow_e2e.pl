@@ -69,6 +69,7 @@ pg_stat_ch.use_otel = on
 pg_stat_ch.otel_endpoint = 'localhost:14317'
 pg_stat_ch.otel_arrow_passthrough = on
 pg_stat_ch.use_unified_arrow_exporter = on
+pg_stat_ch.relations_enabled = on
 pg_stat_ch.debug_arrow_dump_dir = '$dump_dir'
 pg_stat_ch.hostname = 'unified-arrow-e2e-host'
 pg_stat_ch.extra_attributes = 'instance_ubid:test-instance;server_role:primary;region:test-region;cell:test-cell;read_replica_type:none'
@@ -121,14 +122,11 @@ my $insert_url =
     'http://localhost:18123/?query=' .
     'INSERT%20INTO%20pg_stat_ch.events_raw%20FORMAT%20ArrowStream';
 
-my $total_posted = 0;
-for my $f (@ipc_files) {
+# --fail-with-body makes HTTP 4xx/5xx from CH surface as a non-zero curl exit
+# code (default curl returns 0 on any completed transfer regardless of status).
+sub post_ipc_file {
+    my ($f) = @_;
     my $err_file = "$f.err";
-    # --fail-with-body makes HTTP 4xx/5xx responses from CH surface as a
-    # non-zero curl exit code (default curl returns 0 on any completed
-    # HTTP transfer regardless of status). The subsequent SELECT count()
-    # assertion would catch ingestion failure too, but failing here gives
-    # a sharper error message at the point the bug actually happened.
     my $rc = system("curl -sS --fail-with-body -X POST " .
                     "-H 'Content-Type: application/octet-stream' " .
                     "--data-binary \@$f '$insert_url' 2>$err_file >/dev/null");
@@ -137,6 +135,12 @@ for my $f (@ipc_files) {
     } : '';
     is($rc, 0, basename($f) . " accepted by CH ArrowStream parser" .
        ($stderr ? " (stderr: $stderr)" : ""));
+    return $rc == 0;
+}
+
+my $total_posted = 0;
+for my $f (@ipc_files) {
+    post_ipc_file($f);
     ++$total_posted;
 }
 cmp_ok($total_posted, '>=', 1, "Posted at least one IPC file to CH");
@@ -185,6 +189,48 @@ my $envelope = psch_query_clickhouse(
 chomp $envelope;
 is($envelope, "test-instance\tprimary\ttest-region\ttest-cell\tnone",
    "envelope columns populated from extra_attributes");
+
+# A second, separately-flushed batch: checks the Arrow list-builder resets
+# across flushes. Polls ClickHouse for the marker rather than local file state,
+# since the bgworker's dump is async and not pinned to one file per flush.
+my %posted = map { $_ => 1 } @ipc_files;
+
+$node->safe_psql('postgres', 'CREATE TABLE arrow_rel_t1 (id int)');
+$node->safe_psql('postgres', 'CREATE TABLE arrow_rel_t2 (id int)');
+$node->safe_psql('postgres',
+    'SELECT arrow_rel_t1.id FROM arrow_rel_t1 JOIN arrow_rel_t2 ' .
+    'ON arrow_rel_t1.id = arrow_rel_t2.id');
+$node->safe_psql('postgres', 'SELECT 99 AS arrow_rel_zero_marker');
+$node->safe_psql('postgres', 'SELECT pg_stat_ch_flush()');
+
+my $rel_two = '';
+my $rel_zero = '';
+$deadline = time() + 10;
+while (time() < $deadline) {
+    for my $f (glob("$dump_dir/*.ipc")) {
+        next if $posted{$f};
+        $posted{$f} = 1;
+        post_ipc_file($f);
+    }
+    $rel_two ||= psch_query_clickhouse(
+        "SELECT relation_names, relation_kinds, relations_truncated FROM pg_stat_ch.events_raw " .
+        "WHERE query_text LIKE '%FROM arrow_rel_t1 JOIN arrow_rel_t2%' ORDER BY ts DESC LIMIT 1 FORMAT TSV");
+    chomp $rel_two;
+    $rel_zero ||= psch_query_clickhouse(
+        "SELECT relation_names, relations_truncated FROM pg_stat_ch.events_raw " .
+        "WHERE query_text LIKE '%arrow_rel_zero_marker%' ORDER BY ts DESC LIMIT 1 FORMAT TSV");
+    chomp $rel_zero;
+    last if $rel_two ne '' && $rel_zero ne '';
+    select(undef, undef, undef, 0.2);
+}
+
+like($rel_two, qr/'arrow_rel_t1'/, "two-relation query exported relation_names (got: $rel_two)");
+like($rel_two, qr/'arrow_rel_t2'/, "two-relation query exported both tables (got: $rel_two)");
+like($rel_two, qr/'r','r'/,        "relation_kinds has two ordinary tables (got: $rel_two)");
+like($rel_two, qr/false$/,         "two-relation query not truncated (got: $rel_two)");
+
+is($rel_zero, "[]\tfalse",
+   "zero-relation query in the next batch shows an empty array, not leftover data");
 
 $node->stop();
 done_testing();

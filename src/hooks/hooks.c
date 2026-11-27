@@ -12,6 +12,7 @@
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "jit/jit.h"
+#include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
@@ -21,7 +22,6 @@
 #include "tcop/utility.h"
 #include "utils/elog.h"
 #include "utils/guc.h"
-#include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 
 #include "compat.h"
@@ -29,6 +29,7 @@
 #include "hooks/hooks.h"
 #include "hooks/query_normalize.h"
 #include "hooks/query_normalize_state.h"
+#include "hooks/relations_collect.h"
 #include "hooks/string_utils.h"
 #include "queue/event.h"
 #include "queue/shmem.h"
@@ -299,6 +300,29 @@ static void CopyQueryText(PschEvent* event, uint64 query_id) {
                             sizeof(event->query), &event->query_len);
 }
 
+// Relations are collected only here, at ExecutorEnd, so only queries that run
+// to completion carry them. A query that errors out (including failures before
+// execution starts, e.g. permission denied) never reaches ExecutorEnd, and its
+// error event (built from ErrorData in CaptureLogEvent) has relations_len = 0.
+// That reads as empty arrays with relations_truncated = false, so an empty list
+// on an error event means "not recorded", not "touched nothing".
+static void CopyRelations(PschEvent* event, QueryDesc* query_desc) {
+  if (!psch_relations_enabled) {
+    event->relations_len = 0;
+    return;
+  }
+
+  MemoryContext oldcxt = MemoryContextSwitchTo(query_desc->estate->es_query_cxt);
+  StringInfoData buf;
+  initStringInfo(&buf);
+  CollectRelations(&buf, query_desc->plannedstmt->rtable, query_desc->plannedstmt->appendRelations);
+  Assert(buf.len <= (int)sizeof(event->relations));
+  event->relations_len = (uint16)Min(buf.len, (int)sizeof(event->relations));
+  memcpy(event->relations, buf.data, event->relations_len);
+  pfree(buf.data);
+  MemoryContextSwitchTo(oldcxt);
+}
+
 // Resolve database and user names, using the session cache when available.
 // Falls back to catalog lookups if cache hasn't been initialized yet (e.g.,
 // emit_log_hook fires before the first executor hook).
@@ -388,6 +412,7 @@ static void BuildEventFromQueryDesc(QueryDesc* query_desc, PschEvent* event, int
   CopyParallelWorkerInfo(event, query_desc);
   CopyClientContext(event);
   CopyQueryText(event, query_desc->plannedstmt->queryId);
+  CopyRelations(event, query_desc);
 }
 
 // post_parse_analyze_hook — decide query text at parse time.

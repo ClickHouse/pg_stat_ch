@@ -21,6 +21,7 @@ When `use_otel` is enabled, the ClickHouse connection parameters are ignored. Th
 The OTel exporter maps pg_stat_ch events to OpenTelemetry semantic conventions:
 
 - **Logs**: Each query execution becomes an OTel log record with attributes following the [database semantic conventions](https://opentelemetry.io/docs/specs/semconv/database/) (`db.name`, `db.user`, `db.operation.name`, `db.query.text`).
+- **Relations**: tables/views touched by the query are exported as 3 separate native OTel array attributes, positionally parallel to each other: `relation_namespaces` (schema names), `relation_names` (relation names), `relation_kinds` (single-character `pg_class.relkind` per entry: `r`=table, `v`=view, `m`=matview, `f`=foreign table, `p`=partitioned table, ...). This mirrors the 3-array shape used for the ClickHouse-native export path; neither shape is final -- OTLP 1.9.0 added complex-type array attributes, and the ClickHouse schema may move to `Array(Tuple(...))`, so this representation may change.
 
 The exporter builds OTLP log requests directly in the bgworker. pg_stat_ch's shared-memory queue already buffers events, and the exporter chunks those events into bounded gRPC requests.
 
