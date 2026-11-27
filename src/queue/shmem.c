@@ -85,11 +85,21 @@ static void HandleOverflow(void) {
 }
 
 // Size of the fixed-field prefix shared between PschEvent and PschRingEntry.
-// Both structs have identical layout from offset 0 through query_len — the
+// Both structs have identical layout from offset 0 through relations_len — the
 // last field before the variable-length data diverges (char arrays vs
-// dsa_pointers).  Verified by static assert in ring_entry.h.
-static const size_t kFixedPrefixSize =
-    offsetof(PschRingEntry, query_len) + sizeof(((PschRingEntry*)0)->query_len);
+// dsa_pointers).  Must cover relations_len: it is the last length field, written
+// at enqueue and recovered at dequeue by the prefix memcpy.  A macro (not a
+// const) so the static assert below can reference it.
+#define PSCH_FIXED_PREFIX_SIZE \
+  (offsetof(PschRingEntry, relations_len) + sizeof(((PschRingEntry*)0)->relations_len))
+
+// Guard: the prefix must end exactly where the trailing padding begins, i.e. it
+// must cover relations_len but not _padding4.  Fires if the prefix is narrowed
+// (a rebase once shrank it to query_len, silently dropping relations_len so the
+// dequeue read a stale length) or if a scalar field is added after relations_len.
+StaticAssertDecl(PSCH_FIXED_PREFIX_SIZE == offsetof(PschRingEntry, _padding4),
+                 "fixed prefix must cover through relations_len; "
+                 "extend PSCH_FIXED_PREFIX_SIZE when adding scalar fields");
 
 // Check queue fullness and enqueue event if space available.
 // Called with lock held.  Returns true if event was enqueued.
@@ -116,7 +126,7 @@ static bool TryEnqueueLocked(const PschEvent* event, uint32 capacity) {
 
   // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
   //    client_addr, lengths — everything before the variable-length data).
-  memcpy(slot, event, kFixedPrefixSize);
+  memcpy(slot, event, PSCH_FIXED_PREFIX_SIZE);
 
   // 2. Allocate DSA for err_message, relations, and query text.  Store
   //    pointers in slot only right before head advances, so slots outside
@@ -461,7 +471,7 @@ bool PschDequeueEvent(PschEvent* event) {
 
   // 1. Copy the entire fixed-field prefix (all numeric fields, app_name,
   //    client_addr, lengths — everything before the variable-length data).
-  memcpy(event, slot, kFixedPrefixSize);
+  memcpy(event, slot, PSCH_FIXED_PREFIX_SIZE);
 
   // 2. Clear each reference before consuming it.  ExportBatchWithRecovery
   //    catches ERROR and retries this slot, so a stale pointer would be freed

@@ -133,7 +133,8 @@ StaticAssertDecl(offsetof(PschEvent, relations_len) == offsetof(PschRingEntry, r
                  "relations_len offset mismatch");
 // Fields after relations_len diverge: PschEvent has char arrays, PschRingEntry
 // has dsa_pointers.  Intentional, fixed prefix up to relations_len is
-// block-copied with single memcpy.
+// block-copied with single memcpy.  See PSCH_FIXED_PREFIX_SIZE in shmem.c for
+// the prefix-coverage guard.
 
 #ifdef __cplusplus
 }
